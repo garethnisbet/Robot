@@ -1,3 +1,5 @@
 numpy
-matplotlib
 scipy
+pyqtgraph
+PyQt6
+PyOpenGL

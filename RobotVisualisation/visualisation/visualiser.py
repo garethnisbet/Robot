@@ -1,21 +1,19 @@
 """
-Interactive 3D visualiser for a serial manipulator.
+Interactive 3D visualiser for a serial manipulator using PyQtGraph.
 
 Left column  — joint-space sliders (FK):  moving these runs FK and syncs Cartesian sliders.
 Right column — Cartesian sliders (IK):    X/Y/Z position + ZYZ intrinsic Euler angles.
                                            Moving these runs full-pose IK and syncs joint sliders.
 """
 
+import sys
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider, Button
-from mpl_toolkits.mplot3d import Axes3D
+import pyqtgraph as pg
+import pyqtgraph.opengl as gl
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from robot.robot import Robot
 from robot.ik import inverse_kinematics
-
-
-_FRAME_COLORS = ["r", "g", "b"]
 
 
 # ---------------------------------------------------------------------------
@@ -30,7 +28,6 @@ def _rot_to_zyz(R: np.ndarray) -> tuple[float, float, float]:
     """
     sb = np.sqrt(R[2, 0] ** 2 + R[2, 1] ** 2)
     if sb < 1e-8:
-        # Gimbal lock: beta = 0 or pi
         beta = 0.0 if R[2, 2] > 0 else np.pi
         alpha = 0.0
         gamma = np.arctan2(-R[1, 0], R[0, 0]) if R[2, 2] > 0 else np.arctan2(R[1, 0], -R[0, 0])
@@ -53,8 +50,79 @@ def _zyz_to_rot(alpha: float, beta: float, gamma: float) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# Float slider widget
+# ---------------------------------------------------------------------------
+
+class LabeledSlider(QtWidgets.QWidget):
+    """A labeled float slider built on QSlider with integer steps."""
+
+    valueChanged = QtCore.Signal(float)
+    STEPS = 1000
+
+    def __init__(self, label: str, lo: float, hi: float, v0: float,
+                 fmt: str = "{:.3f}", parent=None):
+        super().__init__(parent)
+        self._lo  = lo
+        self._hi  = hi
+        self._fmt = fmt
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(2, 1, 2, 1)
+        layout.setSpacing(4)
+
+        lbl = QtWidgets.QLabel(label)
+        lbl.setMinimumWidth(110)
+        lbl.setMaximumWidth(110)
+
+        self._slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self._slider.setRange(0, self.STEPS)
+
+        self._val_lbl = QtWidgets.QLabel()
+        self._val_lbl.setMinimumWidth(75)
+        self._val_lbl.setMaximumWidth(75)
+        self._val_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+
+        layout.addWidget(lbl)
+        layout.addWidget(self._slider, stretch=1)
+        layout.addWidget(self._val_lbl)
+
+        self._slider.valueChanged.connect(self._on_int_changed)
+        self.set_value(v0)
+
+    def _on_int_changed(self, int_val: int):
+        v = self._int_to_float(int_val)
+        self._val_lbl.setText(self._fmt.format(v))
+        self.valueChanged.emit(v)
+
+    def _int_to_float(self, int_val: int) -> float:
+        return self._lo + (int_val / self.STEPS) * (self._hi - self._lo)
+
+    def _float_to_int(self, v: float) -> int:
+        return round(np.clip((v - self._lo) / (self._hi - self._lo), 0.0, 1.0) * self.STEPS)
+
+    @property
+    def value(self) -> float:
+        return self._int_to_float(self._slider.value())
+
+    def set_value(self, v: float):
+        """Set value without emitting valueChanged."""
+        self._slider.blockSignals(True)
+        self._slider.setValue(self._float_to_int(v))
+        self._slider.blockSignals(False)
+        self._val_lbl.setText(self._fmt.format(np.clip(v, self._lo, self._hi)))
+
+
+# ---------------------------------------------------------------------------
 # Visualiser
 # ---------------------------------------------------------------------------
+
+# Axis colours: X=red, Y=green, Z=blue
+_AXIS_COLORS = [
+    (1.0, 0.0, 0.0, 1.0),
+    (0.0, 0.8, 0.0, 1.0),
+    (0.0, 0.4, 1.0, 1.0),
+]
+
 
 class RobotVisualiser:
     AXIS_LEN = 0.12
@@ -62,186 +130,164 @@ class RobotVisualiser:
     def __init__(self, robot: Robot):
         self.robot = robot
         self._updating = False
+        self._app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
         self._build_gui()
 
     # ------------------------------------------------------------------
-    # Layout
+    # GUI construction
     # ------------------------------------------------------------------
 
     def _build_gui(self):
-        n = self.robot.n_dof
+        self._win = QtWidgets.QMainWindow()
+        self._win.setWindowTitle(self.robot.name)
+        self._win.resize(1300, 750)
 
-        # ---- Physical layout constants (inches) -------------------------
-        ROW_H_IN     = 0.30   # height of each slider bar
-        ROW_GAP_IN   = 0.13   # gap between consecutive sliders
-        GROUP_GAP_IN = 0.30   # extra gap between position / orientation groups
-        HEADER_IN    = 0.38   # space for column header label
-        BUTTON_IN    = 0.45   # space for reset button at bottom
-        VIEW_H_IN    = 5.5    # height reserved for 3D view + info panel
-        FIG_W_IN     = 13.0
-        # -----------------------------------------------------------------
+        central = QtWidgets.QWidget()
+        self._win.setCentralWidget(central)
+        main_layout = QtWidgets.QHBoxLayout(central)
+        main_layout.setSpacing(8)
 
-        N_RIGHT  = 6                   # 3 position + 3 orientation sliders
-        n_rows   = max(n, N_RIGHT)
+        # ---- Left: 3D view + info panel ----
+        left_widget = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
 
-        slider_area_in = (
-            n_rows * (ROW_H_IN + ROW_GAP_IN)
-            + GROUP_GAP_IN             # extra gap in right column
-            + HEADER_IN
-            + BUTTON_IN
-        )
-        fig_h = VIEW_H_IN + slider_area_in
+        self._view = gl.GLViewWidget()
+        self._view.setMinimumSize(600, 450)
+        self._view.setCameraPosition(distance=self._max_reach() * 3.0, elevation=30, azimuth=45)
 
-        self.fig = plt.figure(figsize=(FIG_W_IN, fig_h))
-        self.fig.canvas.manager.set_window_title(self.robot.name)
+        grid = gl.GLGridItem()
+        grid.scale(0.5, 0.5, 0.5)
+        self._view.addItem(grid)
 
-        # Convert physical measurements to normalised figure fractions
-        F          = fig_h             # shorthand
-        row_h      = ROW_H_IN    / F
-        row_gap    = ROW_GAP_IN  / F
-        group_gap  = GROUP_GAP_IN / F
-        header_h   = HEADER_IN   / F
-        button_h   = BUTTON_IN   / F
-        slider_frac = slider_area_in / F   # fraction of figure used by slider area
+        self._info_label = QtWidgets.QLabel()
+        self._info_label.setFont(QtGui.QFont("Monospace", 9))
+        self._info_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
+        self._info_label.setMinimumHeight(140)
 
-        top_bot = slider_frac + 0.03   # bottom edge of the 3D / info area
+        left_layout.addWidget(self._view, stretch=3)
+        left_layout.addWidget(self._info_label, stretch=1)
 
-        self.ax3d: Axes3D = self.fig.add_axes(
-            [0.03, top_bot, 0.52, 1.0 - top_bot - 0.04],
-            projection="3d",
-        )
-        self.ax_info = self.fig.add_axes(
-            [0.60, top_bot, 0.37, 1.0 - top_bot - 0.04]
-        )
-        self.ax_info.axis("off")
-        self._info_text = self.ax_info.text(
-            0.02, 0.98, "", transform=self.ax_info.transAxes,
-            va="top", ha="left", fontsize=9, family="monospace",
-        )
+        # ---- Right: two slider columns ----
+        right_widget = QtWidgets.QWidget()
+        right_layout = QtWidgets.QHBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
 
-        self._joint_sliders: list[Slider] = []
-        self._cart_sliders:  list[Slider] = []   # [x, y, z, alpha, beta, gamma]
+        right_layout.addWidget(self._build_joint_panel())
+        right_layout.addWidget(self._build_cart_panel())
 
-        # col_top: normalised y of the top of the slider area
-        col_top = slider_frac - 0.01
-        self._build_joint_sliders(col_top, row_h, row_gap, header_h)
-        self._build_cart_sliders(col_top, row_h, row_gap, group_gap, header_h)
-        self._build_reset_button(button_h)
+        main_layout.addWidget(left_widget, stretch=2)
+        main_layout.addWidget(right_widget, stretch=1)
+
+        # 3D item handles (created lazily on first _draw)
+        self._link_item:  gl.GLLinePlotItem    | None = None
+        self._joint_item: gl.GLScatterPlotItem | None = None
+        self._frame_items: list[gl.GLLinePlotItem] = []
 
         self._draw()
 
-    def _build_joint_sliders(self, col_top, row_h, row_gap, header_h):
-        left, width = 0.07, 0.37
-        self.fig.text(left + width / 2, col_top - header_h * 0.4,
-                      "Joint angles (FK)", ha="center", fontsize=9,
-                      fontweight="bold", color="steelblue")
+    def _build_joint_panel(self) -> QtWidgets.QGroupBox:
+        box = QtWidgets.QGroupBox("Joint Angles (FK)")
+        layout = QtWidgets.QVBoxLayout(box)
+        self._joint_sliders: list[LabeledSlider] = []
 
         for i, joint in enumerate(self.robot.joints):
-            bot = col_top - header_h - (i + 1) * (row_h + row_gap) + row_gap
-            ax_s = self.fig.add_axes([left, bot, width, row_h])
             label = joint.name if joint.name else f"q{i + 1}"
-            unit = "m" if joint.joint_type == "prismatic" else "rad"
+            unit  = "m" if joint.joint_type == "prismatic" else "rad"
             lo, hi = joint.limits
-            s = Slider(ax_s, label, lo, hi,
-                       valinit=self.robot.q[i],
-                       valfmt=f"%.3f {unit}")
-            s.on_changed(self._on_joint_slider)
+            s = LabeledSlider(f"{label} ({unit})", lo, hi, self.robot.q[i], fmt="{:.3f}")
+            s.valueChanged.connect(self._on_joint_slider)
+            layout.addWidget(s)
             self._joint_sliders.append(s)
 
-    def _build_cart_sliders(self, col_top, row_h, row_gap, group_gap, header_h):
-        left, width = 0.57, 0.37
+        layout.addStretch()
+
+        reset_btn = QtWidgets.QPushButton("Reset")
+        reset_btn.clicked.connect(self._on_reset)
+        layout.addWidget(reset_btn)
+        return box
+
+    def _build_cart_panel(self) -> QtWidgets.QGroupBox:
         reach = self._max_reach()
-        T0 = self.robot.end_effector_pose()
-        pos0 = T0[:3, 3]
+        T0    = self.robot.end_effector_pose()
+        pos0  = T0[:3, 3]
         a0, b0, g0 = _rot_to_zyz(T0[:3, :3])
 
-        self.fig.text(left + width / 2, col_top - header_h * 0.4,
-                      "Cartesian (IK)", ha="center", fontsize=9,
-                      fontweight="bold", color="darkorange")
+        box = QtWidgets.QGroupBox("Cartesian (IK)")
+        box_layout = QtWidgets.QVBoxLayout(box)
+        self._cart_sliders: list[LabeledSlider] = []
 
-        pos_specs = [
+        # Position sub-group
+        pos_box = QtWidgets.QGroupBox("Position")
+        pos_layout = QtWidgets.QVBoxLayout(pos_box)
+        for label, lo, hi, v0 in [
             ("X (m)", -reach, reach, pos0[0]),
             ("Y (m)", -reach, reach, pos0[1]),
             ("Z (m)", -reach, reach, pos0[2]),
-        ]
-        ori_specs = [
-            ("\u03b1  ZYZ (rad)", -np.pi, np.pi, a0),
-            ("\u03b2  ZYZ (rad)",  0.0,   np.pi, b0),
-            ("\u03b3  ZYZ (rad)", -np.pi, np.pi, g0),
-        ]
-
-        # Position sliders (rows 0-2)
-        for i, (label, lo, hi, v0) in enumerate(pos_specs):
-            bot = col_top - header_h - (i + 1) * (row_h + row_gap) + row_gap
-            ax_s = self.fig.add_axes([left, bot, width, row_h])
-            s = Slider(ax_s, label, lo, hi, valinit=v0, valfmt="%.4f")
-            s.on_changed(self._on_cart_slider)
+        ]:
+            s = LabeledSlider(label, lo, hi, v0, fmt="{:.4f}")
+            s.valueChanged.connect(self._on_cart_slider)
+            pos_layout.addWidget(s)
             self._cart_sliders.append(s)
 
-        # Orientation group separator label
-        ori_top = col_top - header_h - 3 * (row_h + row_gap) - group_gap
-        self.fig.text(left + width / 2, ori_top + row_h * 0.8,
-                      "Orientation \u2014 ZYZ intrinsic", ha="center",
-                      fontsize=8, color="dimgray", style="italic")
-
-        # Orientation sliders (rows 3-5, shifted down by group_gap)
-        for i, (label, lo, hi, v0) in enumerate(ori_specs):
-            bot = ori_top - (i + 1) * (row_h + row_gap) + row_gap
-            ax_s = self.fig.add_axes([left, bot, width, row_h])
-            s = Slider(ax_s, label, lo, hi, valinit=v0, valfmt="%.4f rad")
-            s.on_changed(self._on_cart_slider)
+        # Orientation sub-group
+        ori_box = QtWidgets.QGroupBox("Orientation — ZYZ intrinsic")
+        ori_layout = QtWidgets.QVBoxLayout(ori_box)
+        for label, lo, hi, v0 in [
+            ("\u03b1 ZYZ (rad)", -np.pi, np.pi, a0),
+            ("\u03b2 ZYZ (rad)",  0.0,   np.pi, b0),
+            ("\u03b3 ZYZ (rad)", -np.pi, np.pi, g0),
+        ]:
+            s = LabeledSlider(label, lo, hi, v0, fmt="{:.4f}")
+            s.valueChanged.connect(self._on_cart_slider)
+            ori_layout.addWidget(s)
             self._cart_sliders.append(s)
 
-    def _build_reset_button(self, button_h):
-        ax_btn = self.fig.add_axes([0.07, button_h * 0.15, 0.10, button_h * 0.55])
-        self.btn_reset = Button(ax_btn, "Reset")
-        self.btn_reset.on_clicked(self._on_reset)
-
-    def _max_reach(self) -> float:
-        return max(0.5, sum(abs(j.a) + abs(j.d) for j in self.robot.joints))
+        box_layout.addWidget(pos_box)
+        box_layout.addWidget(ori_box)
+        box_layout.addStretch()
+        return box
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
+    def _max_reach(self) -> float:
+        return max(0.5, sum(abs(j.a) + abs(j.d) for j in self.robot.joints))
+
     def _ee_cartesian(self) -> tuple[np.ndarray, float, float, float]:
-        """Return (pos, alpha, beta, gamma) for the current EE pose."""
         T = self.robot.end_effector_pose()
         return T[:3, 3], *_rot_to_zyz(T[:3, :3])
 
     def _sync_cart_sliders(self):
         pos, a, b, g = self._ee_cartesian()
-        vals = [*pos, a, b, g]
-        for s, v in zip(self._cart_sliders, vals):
-            s.set_val(np.clip(v, s.valmin, s.valmax))
+        for s, v in zip(self._cart_sliders, [*pos, a, b, g]):
+            s.set_value(v)
 
     def _sync_joint_sliders(self, q: np.ndarray):
         for s, v in zip(self._joint_sliders, q):
-            s.set_val(v)
+            s.set_value(v)
 
     # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
 
-    def _on_joint_slider(self, _val):
+    def _on_joint_slider(self, _val=None):
         if self._updating:
             return
-        self.robot.q = np.array([s.val for s in self._joint_sliders])
+        self.robot.q = np.array([s.value for s in self._joint_sliders])
         self._updating = True
         self._sync_cart_sliders()
         self._updating = False
         self._draw()
 
-    def _on_cart_slider(self, _val):
+    def _on_cart_slider(self, _val=None):
         if self._updating:
             return
-        vals = [s.val for s in self._cart_sliders]
-        target_pos = np.array(vals[:3])
-        target_rot = _zyz_to_rot(*vals[3:])
+        vals = [s.value for s in self._cart_sliders]
         T_target = np.eye(4)
-        T_target[:3, :3] = target_rot
-        T_target[:3, 3]  = target_pos
-
+        T_target[:3, :3] = _zyz_to_rot(*vals[3:])
+        T_target[:3, 3]  = vals[:3]
         q_sol = self._solve_ik(T_target)
         self.robot.q = q_sol
         self._updating = True
@@ -250,101 +296,118 @@ class RobotVisualiser:
         self._draw()
 
     def _solve_ik(self, T_target: np.ndarray) -> np.ndarray:
-        """Use analytical IK if available, otherwise fall back to numerical."""
         if hasattr(self.robot, "analytical_ik"):
             limits = [j.limits for j in self.robot.joints]
             q_sol = self.robot.analytical_ik(T_target, self.robot.q, limits)
             if q_sol is not None:
                 return q_sol
-        # Numerical fallback
-        q_sol, _ = inverse_kinematics(
-            self.robot, T_target[:3, 3], target_rot=T_target[:3, :3]
-        )
+        q_sol, _ = inverse_kinematics(self.robot, T_target[:3, 3], target_rot=T_target[:3, :3])
         return q_sol
 
-    def _on_reset(self, _event):
+    def _on_reset(self):
         self.robot.q = np.zeros(self.robot.n_dof)
         self._updating = True
         for s in self._joint_sliders:
-            s.set_val(0.0)
+            s.set_value(0.0)
         self._sync_cart_sliders()
         self._updating = False
         self._draw()
 
     # ------------------------------------------------------------------
-    # Drawing
+    # 3D drawing
     # ------------------------------------------------------------------
 
     def _draw(self):
-        self.ax3d.cla()
         transforms = self.robot.transforms()
-        positions = np.array([T[:3, 3] for T in transforms])
+        positions  = np.array([T[:3, 3] for T in transforms], dtype=np.float32)
         self._draw_links(positions)
         self._draw_joints(positions)
         self._draw_frames(transforms)
-        self._style_axes(positions)
         self._update_info()
-        self.fig.canvas.draw_idle()
+        self._view.update()
 
     def _draw_links(self, positions: np.ndarray):
-        for i in range(len(positions) - 1):
-            self.ax3d.plot(
-                [positions[i, 0], positions[i + 1, 0]],
-                [positions[i, 1], positions[i + 1, 1]],
-                [positions[i, 2], positions[i + 1, 2]],
-                "o-", color="steelblue", linewidth=4,
-                markersize=8, markerfacecolor="white",
-                markeredgecolor="steelblue", markeredgewidth=2,
-                solid_capstyle="round", zorder=3,
+        color = (0.27, 0.51, 0.71, 1.0)  # steelblue
+        if self._link_item is None:
+            self._link_item = gl.GLLinePlotItem(
+                pos=positions, color=color, width=3, antialias=True, mode="line_strip"
             )
+            self._view.addItem(self._link_item)
+        else:
+            self._link_item.setData(pos=positions, color=color, width=3)
 
     def _draw_joints(self, positions: np.ndarray):
-        self.ax3d.scatter(*positions[0],  s=120, c="black",  zorder=5, depthshade=False)
-        self.ax3d.scatter(*positions[-1], s=100, c="orange", zorder=5, depthshade=False)
+        n = len(positions)
+        colors = np.tile([0.27, 0.51, 0.71, 1.0], (n, 1)).astype(np.float32)
+        colors[0]  = [0.0, 0.0, 0.0, 1.0]   # base: black
+        colors[-1] = [1.0, 0.65, 0.0, 1.0]  # EE: orange
+        sizes = np.full(n, 10.0)
+        sizes[0] = 14.0
+
+        if self._joint_item is None:
+            self._joint_item = gl.GLScatterPlotItem(
+                pos=positions, color=colors, size=sizes, pxMode=True
+            )
+            self._view.addItem(self._joint_item)
+        else:
+            self._joint_item.setData(pos=positions, color=colors, size=sizes)
 
     def _draw_frames(self, transforms: list[np.ndarray]):
         L = self.AXIS_LEN
-        for T in transforms:
-            origin = T[:3, 3]
-            for j, color in enumerate(_FRAME_COLORS):
-                self.ax3d.quiver(*origin, *(T[:3, j] * L),
-                                 color=color, linewidth=1.2,
-                                 arrow_length_ratio=0.25, alpha=0.8)
+        needed = len(transforms) * 3  # 3 axes per frame
 
-    def _style_axes(self, positions: np.ndarray):
-        extent = np.max(np.linalg.norm(positions, axis=1)) * 1.3 + 0.1
-        self.ax3d.set_xlim(-extent, extent)
-        self.ax3d.set_ylim(-extent, extent)
-        self.ax3d.set_zlim(-0.05, extent * 1.5)
-        self.ax3d.set_xlabel("X (m)", fontsize=8)
-        self.ax3d.set_ylabel("Y (m)", fontsize=8)
-        self.ax3d.set_zlabel("Z (m)", fontsize=8)
-        self.ax3d.set_title(self.robot.name, fontsize=10)
-        self.ax3d.tick_params(labelsize=7)
+        # Add missing items
+        while len(self._frame_items) < needed:
+            axis_idx = len(self._frame_items) % 3
+            item = gl.GLLinePlotItem(
+                pos=np.zeros((2, 3), dtype=np.float32),
+                color=_AXIS_COLORS[axis_idx],
+                width=1.5,
+                antialias=True,
+            )
+            self._view.addItem(item)
+            self._frame_items.append(item)
+
+        # Remove excess items (DOF changed)
+        while len(self._frame_items) > needed:
+            self._view.removeItem(self._frame_items.pop())
+
+        idx = 0
+        for T in transforms:
+            origin = T[:3, 3].astype(np.float32)
+            for j in range(3):
+                end = (origin + T[:3, j] * L).astype(np.float32)
+                self._frame_items[idx].setData(pos=np.array([origin, end], dtype=np.float32))
+                idx += 1
 
     def _update_info(self):
-        T = self.robot.end_effector_pose()
+        T   = self.robot.end_effector_pose()
         pos = T[:3, 3]
         a, b, g = _rot_to_zyz(T[:3, :3])
         q = self.robot.q
         lines = [
-            "End-effector position:",
+            "<b>End-effector position:</b>",
             f"  x = {pos[0]:+.4f} m",
             f"  y = {pos[1]:+.4f} m",
             f"  z = {pos[2]:+.4f} m",
             "",
-            "Orientation (ZYZ):",
+            "<b>Orientation (ZYZ):</b>",
             f"  \u03b1 = {a:+.4f} rad",
             f"  \u03b2 = {b:+.4f} rad",
             f"  \u03b3 = {g:+.4f} rad",
             "",
-            "Joint angles:",
+            "<b>Joint angles:</b>",
         ]
         for joint, qi in zip(self.robot.joints, q):
             unit = "m" if joint.joint_type == "prismatic" else "rad"
             name = joint.name if joint.name else "q"
             lines.append(f"  {name}: {qi:+.4f} {unit}")
-        self._info_text.set_text("\n".join(lines))
+        self._info_label.setText("<br>".join(lines))
+
+    # ------------------------------------------------------------------
+    # Entry point
+    # ------------------------------------------------------------------
 
     def show(self):
-        plt.show()
+        self._win.show()
+        self._app.exec()
