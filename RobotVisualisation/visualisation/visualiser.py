@@ -71,15 +71,15 @@ class LabeledSlider(QtWidgets.QWidget):
         layout.setSpacing(4)
 
         lbl = QtWidgets.QLabel(label)
-        lbl.setMinimumWidth(110)
-        lbl.setMaximumWidth(110)
+        lbl.setMinimumWidth(90)
+        lbl.setMaximumWidth(140)
 
         self._slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self._slider.setRange(0, self.STEPS)
 
         self._val_lbl = QtWidgets.QLabel()
-        self._val_lbl.setMinimumWidth(75)
-        self._val_lbl.setMaximumWidth(75)
+        self._val_lbl.setMinimumWidth(65)
+        self._val_lbl.setMaximumWidth(65)
         self._val_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
 
         layout.addWidget(lbl)
@@ -168,9 +168,9 @@ class RobotVisualiser:
         left_layout.addWidget(self._view, stretch=3)
         left_layout.addWidget(self._info_label, stretch=1)
 
-        # ---- Right: two slider columns ----
+        # ---- Right: slider panels stacked vertically ----
         right_widget = QtWidgets.QWidget()
-        right_layout = QtWidgets.QHBoxLayout(right_widget)
+        right_layout = QtWidgets.QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
 
         right_layout.addWidget(self._build_joint_panel())
@@ -324,7 +324,6 @@ class RobotVisualiser:
         self._draw_joints(positions)
         self._draw_frames(transforms)
         self._update_info()
-        self._view.update()
 
     def _draw_links(self, positions: np.ndarray):
         color = (0.27, 0.51, 0.71, 1.0)  # steelblue
