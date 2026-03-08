@@ -90,18 +90,25 @@ def make_3dof_planar(link_lengths=(1.0, 0.8, 0.6)) -> Robot:
 
 
 def make_6dof_arm() -> Robot:
-    """6-DOF arm with UR5 DH parameters and analytical IK attached."""
-    from .ur5_ik import best_ur5_solution
-    d1, d4, d5, d6 = 0.089159, 0.10915, 0.09465, 0.0823
-    a2, a3 = -0.425, -0.39225
+    """Meca500 (R3) 6-DOF arm.
+
+    DH parameters derived from the Meca500 user manual (Figure 3 / Table 1):
+      d1=135 mm, a2=135 mm, a3=38 mm, d4=120 mm, d6=70 mm
+    """
+    d1, d4, d6 = 0.135, 0.120, 0.070
+    a2, a3 = 0.135, 0.038
     joints = [
-        Joint(d=d1, a=0,  alpha= np.pi/2, name="Shoulder Pan"),
-        Joint(d=0,  a=a2, alpha=0,        name="Shoulder Lift"),
-        Joint(d=0,  a=a3, alpha=0,        name="Elbow"),
-        Joint(d=d4, a=0,  alpha= np.pi/2, name="Wrist 1"),
-        Joint(d=d5, a=0,  alpha=-np.pi/2, name="Wrist 2"),
-        Joint(d=d6, a=0,  alpha=0,        name="Wrist 3"),
+        Joint(d=d1, a=0,  alpha=-np.pi/2, name="Joint 1",
+              limits=(-np.radians(175), np.radians(175))),
+        Joint(d=0,  a=a2, alpha=0,        name="Joint 2",
+              limits=(-np.radians(70),  np.radians(90))),
+        Joint(d=0,  a=a3, alpha=np.pi/2,  name="Joint 3",
+              limits=(-np.radians(135), np.radians(70))),
+        Joint(d=d4, a=0,  alpha=-np.pi/2, name="Wrist 1",
+              limits=(-np.radians(170), np.radians(170))),
+        Joint(d=0,  a=0,  alpha=np.pi/2,  name="Wrist 2",
+              limits=(-np.radians(115), np.radians(115))),
+        Joint(d=d6, a=0,  alpha=0,        name="Wrist 3",
+              limits=(-np.pi, np.pi)),
     ]
-    robot = Robot(joints, name="6-DOF Arm (UR5)")
-    robot.analytical_ik = best_ur5_solution   # attached for use by visualiser
-    return robot
+    return Robot(joints, name="Meca500 (R3)")

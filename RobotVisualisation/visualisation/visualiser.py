@@ -54,17 +54,25 @@ def _zyz_to_rot(alpha: float, beta: float, gamma: float) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 class LabeledSlider(QtWidgets.QWidget):
-    """A labeled float slider built on QSlider with integer steps."""
+    """A labeled float slider with an editable value field.
+
+    Parameters
+    ----------
+    scale : float
+        Multiply the internal value by this factor for display/input.
+        E.g. ``180/pi`` to show degrees when the internal unit is radians.
+    """
 
     valueChanged = QtCore.Signal(float)
     STEPS = 1000
 
     def __init__(self, label: str, lo: float, hi: float, v0: float,
-                 fmt: str = "{:.3f}", parent=None):
+                 fmt: str = "{:.3f}", scale: float = 1.0, parent=None):
         super().__init__(parent)
-        self._lo  = lo
-        self._hi  = hi
-        self._fmt = fmt
+        self._lo    = lo
+        self._hi    = hi
+        self._fmt   = fmt
+        self._scale = scale
 
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(2, 1, 2, 1)
@@ -77,22 +85,38 @@ class LabeledSlider(QtWidgets.QWidget):
         self._slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self._slider.setRange(0, self.STEPS)
 
-        self._val_lbl = QtWidgets.QLabel()
-        self._val_lbl.setMinimumWidth(65)
-        self._val_lbl.setMaximumWidth(65)
-        self._val_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        self._val_edit = QtWidgets.QLineEdit()
+        self._val_edit.setMinimumWidth(70)
+        self._val_edit.setMaximumWidth(70)
+        self._val_edit.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
 
         layout.addWidget(lbl)
         layout.addWidget(self._slider, stretch=1)
-        layout.addWidget(self._val_lbl)
+        layout.addWidget(self._val_edit)
 
         self._slider.valueChanged.connect(self._on_int_changed)
+        self._val_edit.editingFinished.connect(self._on_edit_finished)
         self.set_value(v0)
 
     def _on_int_changed(self, int_val: int):
         v = self._int_to_float(int_val)
-        self._val_lbl.setText(self._fmt.format(v))
+        if not self._val_edit.hasFocus():
+            self._val_edit.setText(self._fmt.format(v * self._scale))
         self.valueChanged.emit(v)
+
+    def _on_edit_finished(self):
+        try:
+            v_display = float(self._val_edit.text())
+            v_internal = v_display / self._scale
+            v_internal = float(np.clip(v_internal, self._lo, self._hi))
+            self._slider.blockSignals(True)
+            self._slider.setValue(self._float_to_int(v_internal))
+            self._slider.blockSignals(False)
+            self._val_edit.setText(self._fmt.format(v_internal * self._scale))
+            self.valueChanged.emit(v_internal)
+        except ValueError:
+            # Revert to current slider value
+            self._val_edit.setText(self._fmt.format(self.value * self._scale))
 
     def _int_to_float(self, int_val: int) -> float:
         return self._lo + (int_val / self.STEPS) * (self._hi - self._lo)
@@ -105,11 +129,12 @@ class LabeledSlider(QtWidgets.QWidget):
         return self._int_to_float(self._slider.value())
 
     def set_value(self, v: float):
-        """Set value without emitting valueChanged."""
+        """Set value (internal units) without emitting valueChanged."""
         self._slider.blockSignals(True)
         self._slider.setValue(self._float_to_int(v))
         self._slider.blockSignals(False)
-        self._val_lbl.setText(self._fmt.format(np.clip(v, self._lo, self._hi)))
+        if not self._val_edit.hasFocus():
+            self._val_edit.setText(self._fmt.format(np.clip(v, self._lo, self._hi) * self._scale))
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +147,56 @@ _AXIS_COLORS = [
     (0.0, 0.8, 0.0, 1.0),
     (0.0, 0.4, 1.0, 1.0),
 ]
+
+
+class LabelledGLViewWidget(gl.GLViewWidget):
+    """GLViewWidget that overlays 3D-anchored text labels via paintEvent."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._overlay_labels: list[tuple[np.ndarray, str]] = []
+
+    def set_labels(self, labels: list[tuple[np.ndarray, str]]):
+        self._overlay_labels = labels
+        self.update()
+
+    def _project(self, pos: np.ndarray) -> QtCore.QPointF | None:
+        w, h = self.width(), self.height()
+        if w == 0 or h == 0:
+            return None
+        region   = (0, 0, w, h)
+        viewport = (0, 0, w, h)
+        proj = self.projectionMatrix(region, viewport)
+        mv   = self.viewMatrix()
+        mvp  = proj * mv
+        v = QtGui.QVector4D(float(pos[0]), float(pos[1]), float(pos[2]), 1.0)
+        clip = mvp.map(v)
+        if abs(clip.w()) < 1e-6:
+            return None
+        xn = clip.x() / clip.w()
+        yn = clip.y() / clip.w()
+        sx = (xn + 1.0) / 2.0 * w
+        sy = (1.0 - yn) / 2.0 * h
+        return QtCore.QPointF(sx, sy)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._overlay_labels:
+            return
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing)
+        painter.setFont(QtGui.QFont("Helvetica", 11, QtGui.QFont.Weight.Bold))
+        for pos3d, text in self._overlay_labels:
+            pt = self._project(pos3d)
+            if pt is None:
+                continue
+            # draw dark outline for contrast
+            painter.setPen(QtGui.QColor(0, 0, 0, 200))
+            for dx, dy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+                painter.drawText(pt + QtCore.QPointF(dx, dy), text)
+            painter.setPen(QtGui.QColor(255, 220, 0, 255))
+            painter.drawText(pt, text)
+        painter.end()
 
 
 class RobotVisualiser:
@@ -152,7 +227,7 @@ class RobotVisualiser:
         left_layout = QtWidgets.QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
 
-        self._view = gl.GLViewWidget()
+        self._view = LabelledGLViewWidget()
         self._view.setMinimumSize(600, 450)
         self._view.setCameraPosition(distance=self._max_reach() * 3.0, elevation=30, azimuth=45)
 
@@ -193,9 +268,13 @@ class RobotVisualiser:
 
         for i, joint in enumerate(self.robot.joints):
             label = joint.name if joint.name else f"q{i + 1}"
-            unit  = "m" if joint.joint_type == "prismatic" else "rad"
             lo, hi = joint.limits
-            s = LabeledSlider(f"{label} ({unit})", lo, hi, self.robot.q[i], fmt="{:.3f}")
+            if joint.joint_type == "prismatic":
+                s = LabeledSlider(f"{label} (m)", lo, hi, self.robot.q[i],
+                                  fmt="{:.4f}", scale=1.0)
+            else:
+                s = LabeledSlider(f"{label} (deg)", lo, hi, self.robot.q[i],
+                                  fmt="{:.2f}", scale=180.0 / np.pi)
             s.valueChanged.connect(self._on_joint_slider)
             layout.addWidget(s)
             self._joint_sliders.append(s)
@@ -234,11 +313,11 @@ class RobotVisualiser:
         ori_box = QtWidgets.QGroupBox("Orientation — ZYZ intrinsic")
         ori_layout = QtWidgets.QVBoxLayout(ori_box)
         for label, lo, hi, v0 in [
-            ("\u03b1 ZYZ (rad)", -np.pi, np.pi, a0),
-            ("\u03b2 ZYZ (rad)",  0.0,   np.pi, b0),
-            ("\u03b3 ZYZ (rad)", -np.pi, np.pi, g0),
+            ("\u03b1 ZYZ (deg)", -np.pi, np.pi, a0),
+            ("\u03b2 ZYZ (deg)",  0.0,   np.pi, b0),
+            ("\u03b3 ZYZ (deg)", -np.pi, np.pi, g0),
         ]:
-            s = LabeledSlider(label, lo, hi, v0, fmt="{:.4f}")
+            s = LabeledSlider(label, lo, hi, v0, fmt="{:.2f}", scale=180.0 / np.pi)
             s.valueChanged.connect(self._on_cart_slider)
             ori_layout.addWidget(s)
             self._cart_sliders.append(s)
@@ -323,6 +402,7 @@ class RobotVisualiser:
         self._draw_links(positions)
         self._draw_joints(positions)
         self._draw_frames(transforms)
+        self._draw_labels(positions)
         self._update_info()
 
     def _draw_links(self, positions: np.ndarray):
@@ -379,6 +459,14 @@ class RobotVisualiser:
                 self._frame_items[idx].setData(pos=np.array([origin, end], dtype=np.float32))
                 idx += 1
 
+    def _draw_labels(self, positions: np.ndarray):
+        labels = []
+        for i in range(len(positions) - 1):
+            mid = (positions[i] + positions[i + 1]) / 2
+            name = self.robot.joints[i].name if self.robot.joints[i].name else f"L{i + 1}"
+            labels.append((mid, name))
+        self._view.set_labels(labels)
+
     def _update_info(self):
         T   = self.robot.end_effector_pose()
         pos = T[:3, 3]
@@ -398,9 +486,11 @@ class RobotVisualiser:
             "<b>Joint angles:</b>",
         ]
         for joint, qi in zip(self.robot.joints, q):
-            unit = "m" if joint.joint_type == "prismatic" else "rad"
             name = joint.name if joint.name else "q"
-            lines.append(f"  {name}: {qi:+.4f} {unit}")
+            if joint.joint_type == "prismatic":
+                lines.append(f"  {name}: {qi:+.4f} m")
+            else:
+                lines.append(f"  {name}: {np.degrees(qi):+.2f} deg")
         self._info_label.setText("<br>".join(lines))
 
     # ------------------------------------------------------------------
