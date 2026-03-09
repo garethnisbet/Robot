@@ -101,6 +101,7 @@ def make_6dof_arm() -> Robot:
         Joint(d=d1, a=0,  alpha=-np.pi/2, name="Joint 1",
               limits=(-np.radians(175), np.radians(175))),
         Joint(d=0,  a=a2, alpha=0,        name="Joint 2",
+              theta_offset=-np.pi/2,
               limits=(-np.radians(70),  np.radians(90))),
         Joint(d=0,  a=a3, alpha=np.pi/2,  name="Joint 3",
               limits=(-np.radians(135), np.radians(70))),

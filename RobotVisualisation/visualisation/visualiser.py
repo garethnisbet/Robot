@@ -12,8 +12,41 @@ import pyqtgraph as pg
 import pyqtgraph.opengl as gl
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
+
+# ---------------------------------------------------------------------------
+# STL loader
+# ---------------------------------------------------------------------------
+
+def _load_stl(path: str) -> tuple[np.ndarray, np.ndarray]:
+    """Load a binary STL file.
+
+    Returns
+    -------
+    vertices : float32 array, shape (3*N, 3)  — in metres (converted from mm)
+    faces    : uint32  array, shape (N, 3)
+    """
+    with open(path, 'rb') as f:
+        data = f.read()
+    n = int(np.frombuffer(data, dtype=np.uint32, count=1, offset=80)[0])
+    dtype = np.dtype([
+        ('normal', np.float32, (3,)),
+        ('v0',     np.float32, (3,)),
+        ('v1',     np.float32, (3,)),
+        ('v2',     np.float32, (3,)),
+        ('attr',   np.uint16),
+    ])
+    tris = np.frombuffer(data, dtype=dtype, count=n, offset=84)
+    verts = np.empty((n * 3, 3), dtype=np.float32)
+    verts[0::3] = tris['v0']
+    verts[1::3] = tris['v1']
+    verts[2::3] = tris['v2']
+    verts *= 1e-3                                          # mm → m
+    faces = np.arange(n * 3, dtype=np.uint32).reshape(-1, 3)
+    return verts, faces
+
 from robot.robot import Robot
 from robot.ik import inverse_kinematics
+from robot.kinematics import forward_kinematics
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +188,26 @@ class LabelledGLViewWidget(gl.GLViewWidget):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._overlay_labels: list[tuple[np.ndarray, str]] = []
+        self._ortho = False
+
+    def projectionMatrix(self, region, viewport):
+        if not self._ortho:
+            return super().projectionMatrix(region, viewport)
+        from math import tan, radians
+        x0, y0, w, h = viewport
+        dist    = self.opts['distance']
+        fov     = self.opts['fov']
+        half_h  = dist * tan(0.5 * radians(fov))
+        half_w  = half_h * w / h
+        left    = half_w * ((region[0] - x0) * (2.0 / w) - 1)
+        right   = half_w * ((region[0] + region[2] - x0) * (2.0 / w) - 1)
+        bottom  = half_h * ((region[1] - y0) * (2.0 / h) - 1)
+        top     = half_h * ((region[1] + region[3] - y0) * (2.0 / h) - 1)
+        near    = -dist * 1000.0
+        far     =  dist * 1000.0
+        tr = QtGui.QMatrix4x4()
+        tr.ortho(left, right, bottom, top, near, far)
+        return tr
 
     def set_labels(self, labels: list[tuple[np.ndarray, str]]):
         self._overlay_labels = labels
@@ -201,9 +254,22 @@ class LabelledGLViewWidget(gl.GLViewWidget):
 
 class RobotVisualiser:
     AXIS_LEN = 0.12
+    # Light silver-grey to mimic the Meca500's appearance
+    _MESH_COLOR = (0.80, 0.80, 0.84, 1.0)
 
-    def __init__(self, robot: Robot):
+    def __init__(self, robot: Robot, stl_map: list[tuple[str, int]] | None = None):
+        """
+        Parameters
+        ----------
+        robot   : Robot instance
+        stl_map : list of (path, frame_index) pairs.
+                  Each STL file is attached to the DH frame at *frame_index*
+                  (0 = world/base, 1 = after joint 1, …, n = end-effector).
+                  When provided the skeleton lines/dots are hidden.
+        """
         self.robot = robot
+        self._stl_map = stl_map or []
+        self._mesh_items: list[tuple[gl.GLMeshItem, int, np.ndarray]] = []
         self._updating = False
         self._app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
         self._build_gui()
@@ -248,6 +314,11 @@ class RobotVisualiser:
         right_layout = QtWidgets.QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
 
+        self._proj_btn = QtWidgets.QPushButton("Switch to Orthographic")
+        self._proj_btn.setCheckable(True)
+        self._proj_btn.toggled.connect(self._on_proj_toggle)
+        right_layout.addWidget(self._proj_btn)
+        right_layout.addWidget(self._build_view_buttons())
         right_layout.addWidget(self._build_joint_panel())
         right_layout.addWidget(self._build_cart_panel())
 
@@ -258,6 +329,26 @@ class RobotVisualiser:
         self._link_item:  gl.GLLinePlotItem    | None = None
         self._joint_item: gl.GLScatterPlotItem | None = None
         self._frame_items: list[gl.GLLinePlotItem] = []
+
+        # Load STL meshes — compute zero-config correction so world-space
+        # STL geometry maps correctly to each DH frame.
+        if self._stl_map:
+            T_zero = forward_kinematics(self.robot.joints, np.zeros(self.robot.n_dof))
+        for path, frame_idx in self._stl_map:
+            try:
+                verts, faces = _load_stl(path)
+                md   = gl.MeshData(vertexes=verts, faces=faces)
+                item = gl.GLMeshItem(meshdata=md, smooth=False,
+                                     color=self._MESH_COLOR,
+                                     shader='shaded',
+                                     drawFaces=True, drawEdges=False,
+                                     glOptions='opaque')
+                self._view.addItem(item)
+                # T_correction maps STL world-space coords into DH frame coords
+                T_correction = np.linalg.inv(T_zero[frame_idx])
+                self._mesh_items.append((item, frame_idx, T_correction))
+            except Exception as exc:
+                print(f"Warning: could not load {path}: {exc}")
 
         self._draw()
 
@@ -286,8 +377,23 @@ class RobotVisualiser:
         layout.addWidget(reset_btn)
         return box
 
+    def _build_view_buttons(self) -> QtWidgets.QWidget:
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(QtWidgets.QLabel("View:"))
+        # (label, elevation, azimuth)
+        for label, elev, azim in [("X", 0, 90), ("Y", 0, 0), ("Z", 90, 0)]:
+            btn = QtWidgets.QPushButton(label)
+            btn.setFixedWidth(36)
+            btn.clicked.connect(lambda _, e=elev, a=azim: self._view.setCameraPosition(elevation=e, azimuth=a))
+            layout.addWidget(btn)
+        layout.addStretch()
+        return widget
+
     def _build_cart_panel(self) -> QtWidgets.QGroupBox:
-        reach = self._max_reach()
+        reach = self._max_reach() * 2
         T0    = self.robot.end_effector_pose()
         pos0  = T0[:3, 3]
         a0, b0, g0 = _rot_to_zyz(T0[:3, :3])
@@ -383,6 +489,11 @@ class RobotVisualiser:
         q_sol, _ = inverse_kinematics(self.robot, T_target[:3, 3], target_rot=T_target[:3, :3])
         return q_sol
 
+    def _on_proj_toggle(self, checked: bool):
+        self._view._ortho = checked
+        self._proj_btn.setText("Switch to Perspective" if checked else "Switch to Orthographic")
+        self._view.update()
+
     def _on_reset(self):
         self.robot.q = np.zeros(self.robot.n_dof)
         self._updating = True
@@ -399,10 +510,12 @@ class RobotVisualiser:
     def _draw(self):
         transforms = self.robot.transforms()
         positions  = np.array([T[:3, 3] for T in transforms], dtype=np.float32)
-        self._draw_links(positions)
-        self._draw_joints(positions)
+        if not self._mesh_items:
+            self._draw_links(positions)
+            self._draw_joints(positions)
         self._draw_frames(transforms)
         self._draw_labels(positions)
+        self._draw_meshes(transforms)
         self._update_info()
 
     def _draw_links(self, positions: np.ndarray):
@@ -466,6 +579,17 @@ class RobotVisualiser:
             name = self.robot.joints[i].name if self.robot.joints[i].name else f"L{i + 1}"
             labels.append((mid, name))
         self._view.set_labels(labels)
+
+    def _draw_meshes(self, transforms: list[np.ndarray]):
+        for item, frame_idx, T_correction in self._mesh_items:
+            T = transforms[frame_idx] @ T_correction
+            tr = pg.Transform3D(
+                float(T[0,0]), float(T[0,1]), float(T[0,2]), float(T[0,3]),
+                float(T[1,0]), float(T[1,1]), float(T[1,2]), float(T[1,3]),
+                float(T[2,0]), float(T[2,1]), float(T[2,2]), float(T[2,3]),
+                float(T[3,0]), float(T[3,1]), float(T[3,2]), float(T[3,3]),
+            )
+            item.setTransform(tr)
 
     def _update_info(self):
         T   = self.robot.end_effector_pose()

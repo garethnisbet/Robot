@@ -15,10 +15,23 @@ Controls:
 """
 
 import argparse
+import os
 import numpy as np
 
 from robot.robot import make_3dof_planar, make_6dof_arm, Robot, Joint
 from visualisation.visualiser import RobotVisualiser
+
+_STL_DIR = os.path.join(os.path.dirname(__file__), 'stl_files')
+
+# (path, DH frame index): frame 0 = world/base, frame i = after joint i
+MECA500_STL_MAP = [
+    (os.path.join(_STL_DIR, 'A0.stl'),   0),  # base
+    (os.path.join(_STL_DIR, 'A1.stl'),   1),  # after joint 1
+    (os.path.join(_STL_DIR, 'A2.stl'),   2),  # after joint 2
+    (os.path.join(_STL_DIR, 'A3_4.stl'), 3),  # after joint 3 (forearm + wrist housing)
+    (os.path.join(_STL_DIR, 'A5.stl'),   5),  # after joint 5
+    (os.path.join(_STL_DIR, 'A6.stl'),   6),  # end effector
+]
 
 
 def make_custom_robot() -> Robot:
@@ -60,17 +73,19 @@ def main():
 
     if args.robot == "3dof":
         robot = make_3dof_planar()
+        vis = RobotVisualiser(robot)
     elif args.robot == "6dof":
         robot = make_6dof_arm()
+        vis = RobotVisualiser(robot, stl_map=MECA500_STL_MAP)
     else:
         robot = make_custom_robot()
+        vis = RobotVisualiser(robot)
 
     print(f"Loaded: {robot.name}  ({robot.n_dof} DOF)")
     print("  FK mode  : use joint sliders to control the arm")
     print("  IK mode  : click in the 3D view to set a target position")
     print("  Reset    : zero all joints\n")
 
-    vis = RobotVisualiser(robot)
     vis.show()
 
 
