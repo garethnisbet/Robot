@@ -101,12 +101,12 @@
       <input type="range" id="ikx" min="-400" max="400" value="190" step="1">
     </div>
     <div class="slider-row">
-      <label>Y <span id="ikvy">308</span></label>
-      <input type="range" id="iky" min="-100" max="500" value="308" step="1">
+      <label>Y <span id="ikvy">0</span></label>
+      <input type="range" id="iky" min="-400" max="400" value="0" step="1">
     </div>
     <div class="slider-row">
-      <label>Z <span id="ikvz">0</span></label>
-      <input type="range" id="ikz" min="-400" max="400" value="0" step="1">
+      <label>Z <span id="ikvz">308</span></label>
+      <input type="range" id="ikz" min="-100" max="500" value="308" step="1">
     </div>
     <h2 style="color:#5b5; margin-top:8px;">IK Orientation (deg)</h2>
     <div class="slider-row">
@@ -296,7 +296,7 @@ scene.add(ikTarget);
 
 // Target orientation (quaternion, set from Euler sliders)
 const ikTargetQuat = new THREE.Quaternion();
-const ikTargetEuler = new THREE.Euler(0, 0, 0, 'ZYX');
+const ikTargetEuler = new THREE.Euler(0, 0, 0, 'YZX');
 
 // Dashed line from EE to target
 const lineGeo = new THREE.BufferGeometry().setFromPoints([
@@ -621,7 +621,7 @@ function setIKMode(on) {
     scene.updateMatrixWorld(true);
     ikTarget.position.copy(getEEWorldPosition());
     ikTargetQuat.copy(getEEWorldQuaternion());
-    ikTargetEuler.setFromQuaternion(ikTargetQuat, 'ZYX');
+    ikTargetEuler.setFromQuaternion(ikTargetQuat, 'YZX');
     transformControls.attach(ikTarget);
     syncIKSliders();
   } else {
@@ -630,10 +630,11 @@ function setIKMode(on) {
 }
 
 function syncIKSliders() {
+  // Z-up convention: slider Y = Three.js Z, slider Z = Three.js Y
   const p = ikTarget.position;
   const xmm = Math.round(p.x * 1000);
-  const ymm = Math.round(p.y * 1000);
-  const zmm = Math.round(p.z * 1000);
+  const ymm = Math.round(p.z * 1000);
+  const zmm = Math.round(p.y * 1000);
   document.getElementById('ikx').value = xmm;
   document.getElementById('ikvx').textContent = xmm;
   document.getElementById('iky').value = ymm;
@@ -641,9 +642,9 @@ function syncIKSliders() {
   document.getElementById('ikz').value = zmm;
   document.getElementById('ikvz').textContent = zmm;
 
-  // Sync orientation sliders from ikTargetEuler (ZYX: α=Rz, β=Ry, γ=Rx)
-  const ad = Math.round(ikTargetEuler.z * rad2deg);
-  const bd = Math.round(ikTargetEuler.y * rad2deg);
+  // Sync orientation sliders (ZYX Z-up: α=Rz_user=Ry_three, β=Ry_user=Rz_three, γ=Rx)
+  const ad = Math.round(ikTargetEuler.y * rad2deg);
+  const bd = Math.round(ikTargetEuler.z * rad2deg);
   const cd = Math.round(ikTargetEuler.x * rad2deg);
   document.getElementById('ika').value = ad;
   document.getElementById('ikva').textContent = ad;
@@ -669,7 +670,7 @@ for (let i = 1; i <= 6; i++) {
       scene.updateMatrixWorld(true);
       ikTarget.position.copy(getEEWorldPosition());
       ikTargetQuat.copy(getEEWorldQuaternion());
-      ikTargetEuler.setFromQuaternion(ikTargetQuat, 'ZYX');
+      ikTargetEuler.setFromQuaternion(ikTargetQuat, 'YZX');
       syncIKSliders();
     }
   });
@@ -683,7 +684,7 @@ document.getElementById('resetBtn').addEventListener('click', () => {
     scene.updateMatrixWorld(true);
     ikTarget.position.copy(getEEWorldPosition());
     ikTargetQuat.copy(getEEWorldQuaternion());
-    ikTargetEuler.setFromQuaternion(ikTargetQuat, 'ZYX');
+    ikTargetEuler.setFromQuaternion(ikTargetQuat, 'YZX');
     syncIKSliders();
   }
 });
@@ -697,7 +698,7 @@ document.getElementById('demoBtn').addEventListener('click', () => {
     scene.updateMatrixWorld(true);
     ikTarget.position.copy(getEEWorldPosition());
     ikTargetQuat.copy(getEEWorldQuaternion());
-    ikTargetEuler.setFromQuaternion(ikTargetQuat, 'ZYX');
+    ikTargetEuler.setFromQuaternion(ikTargetQuat, 'YZX');
     syncIKSliders();
   }
 });
@@ -714,23 +715,24 @@ document.getElementById('labelBtn').addEventListener('click', () => {
   meshLabels.forEach(l => l.visible = labelsOn);
 });
 
-// IK target position sliders (mm → meters)
+// IK target position sliders (mm → meters, Z-up convention: Y↔Z swap)
 ['ikx', 'iky', 'ikz'].forEach((id) => {
   document.getElementById(id).addEventListener('input', (e) => {
     const mm = parseFloat(e.target.value);
     document.getElementById(id.replace('ik', 'ikv')).textContent = Math.round(mm);
-    const axis = id.charAt(2); // 'x', 'y', or 'z'
-    ikTarget.position[axis] = mm / 1000;
+    const sliderAxis = id.charAt(2); // 'x', 'y', or 'z'
+    const threeAxis = sliderAxis === 'y' ? 'z' : sliderAxis === 'z' ? 'y' : 'x';
+    ikTarget.position[threeAxis] = mm / 1000;
   });
 });
 
-// IK target orientation sliders (deg → rad, ZYX: α=Rz, β=Ry, γ=Rx)
+// IK target orientation sliders (ZYX Z-up: α=Rz_user→euler.y, β=Ry_user→euler.z, γ=Rx→euler.x)
 ['ika', 'ikb', 'ikc'].forEach((id) => {
   document.getElementById(id).addEventListener('input', (e) => {
     const deg = parseFloat(e.target.value);
     document.getElementById(id.replace('ik', 'ikv')).textContent = Math.round(deg);
-    const comp = id.charAt(2); // 'a'→z, 'b'→y, 'c'→x
-    const axis = comp === 'a' ? 'z' : comp === 'b' ? 'y' : 'x';
+    const comp = id.charAt(2); // 'a'→y(three), 'b'→z(three), 'c'→x
+    const axis = comp === 'a' ? 'y' : comp === 'b' ? 'z' : 'x';
     ikTargetEuler[axis] = deg * deg2rad;
     ikTargetQuat.setFromEuler(ikTargetEuler);
   });
@@ -790,7 +792,8 @@ const tgtPosEl = document.getElementById('tgtPos');
 const ikErrEl = document.getElementById('ikErr');
 
 function fmtV(v) {
-  return `(${(v.x*1000).toFixed(1)}, ${(v.y*1000).toFixed(1)}, ${(v.z*1000).toFixed(1)})mm`;
+  // Z-up: display X=three.x, Y=three.z, Z=three.y
+  return `(${(v.x*1000).toFixed(1)}, ${(v.z*1000).toFixed(1)}, ${(v.y*1000).toFixed(1)})mm`;
 }
 
 function animate() {
