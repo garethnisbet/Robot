@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Meca500 Robot - Three.js FK/IK Viewer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #1a1a2e; font-family: 'Segoe UI', monospace; }
+  canvas { display: block; }
+  #panel {
+    position: absolute; top: 10px; right: 10px; width: 260px;
+    background: rgba(10,10,30,0.85); color: #ccc; padding: 14px;
+    border-radius: 8px; backdrop-filter: blur(8px);
+    border: 1px solid rgba(100,100,200,0.2);
+  }
+  #panel h2 { font-size: 14px; margin-bottom: 10px; color: #aac; }
+  .slider-row { margin-bottom: 8px; }
+  .slider-row label {
+    display: flex; justify-content: space-between; font-size: 12px;
+    margin-bottom: 2px; color: #99a;
+  }
+  .slider-row label span { color: #8cf; font-weight: bold; }
+  input[type="range"] {
+    width: 100%; height: 6px; -webkit-appearance: none; appearance: none;
+    background: #2a2a4a; border-radius: 3px; outline: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 14px; height: 14px;
+    background: #6688ff; border-radius: 50%; cursor: pointer;
+  }
+  #info {
+    position: absolute; bottom: 10px; left: 10px; color: #667;
+    font-size: 11px; font-family: monospace;
+  }
+  #loading {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: #aac; font-size: 16px; font-family: monospace;
+  }
+  button {
+    width: 100%; padding: 6px; margin-top: 6px; background: #334;
+    color: #aac; border: 1px solid #446; border-radius: 4px; cursor: pointer;
+    font-size: 12px;
+  }
+  button:hover { background: #445; }
+  button.active { background: #448; border-color: #66f; color: #fff; }
+  #ee-info {
+    margin-top: 8px; padding-top: 8px; border-top: 1px solid #334;
+    font-size: 11px; color: #889;
+  }
+  #ee-info span { color: #8cf; }
+</style>
+</head>
+<body>
+<div id="loading">Loading robot model...</div>
+<div id="panel">
+  <h2>Joint Angles (deg)</h2>
+  <div class="slider-row">
+    <label>J1 Base <span id="v1">0</span></label>
+    <input type="range" id="j1" min="-175" max="175" value="0" step="0.5">
+  </div>
+  <div class="slider-row">
+    <label>J2 Shoulder <span id="v2">0</span></label>
+    <input type="range" id="j2" min="-70" max="90" value="0" step="0.5">
+  </div>
+  <div class="slider-row">
+    <label>J3 Elbow <span id="v3">0</span></label>
+    <input type="range" id="j3" min="-135" max="70" value="0" step="0.5">
+  </div>
+  <div class="slider-row">
+    <label>J4 Wrist Roll <span id="v4">0</span></label>
+    <input type="range" id="j4" min="-170" max="170" value="0" step="0.5">
+  </div>
+  <div class="slider-row">
+    <label>J5 Wrist Pitch <span id="v5">0</span></label>
+    <input type="range" id="j5" min="-115" max="115" value="0" step="0.5">
+  </div>
+  <div class="slider-row">
+    <label>J6 Flange <span id="v6">0</span></label>
+    <input type="range" id="j6" min="-360" max="360" value="0" step="0.5">
+  </div>
+  <button id="resetBtn">Reset to Home</button>
+  <button id="demoBtn">Demo Pose</button>
+  <button id="ikBtn">IK Mode: OFF</button>
+  <div id="ik-panel" style="display:none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #334;">
+    <h2 style="color:#5b5;">IK Target (mm)</h2>
+    <div class="slider-row">
+      <label>X <span id="ikvx">190</span></label>
+      <input type="range" id="ikx" min="-400" max="400" value="190" step="1">
+    </div>
+    <div class="slider-row">
+      <label>Y <span id="ikvy">308</span></label>
+      <input type="range" id="iky" min="-100" max="500" value="308" step="1">
+    </div>
+    <div class="slider-row">
+      <label>Z <span id="ikvz">0</span></label>
+      <input type="range" id="ikz" min="-400" max="400" value="0" step="1">
+    </div>
+  </div>
+  <div id="ee-info">
+    EE: <span id="eePos">-</span><br>
+    Target: <span id="tgtPos">-</span><br>
+    Error: <span id="ikErr">-</span>
+  </div>
+</div>
+<div id="info">Scroll to zoom | Drag to orbit | Right-drag to pan | IK: drag the green sphere</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
+
+// ============================================================
+// Scene
+// ============================================================
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2a2a3a);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.001, 50);
+camera.position.set(0.45, 0.30, 0.40);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(devicePixelRatio);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.4;
+document.body.appendChild(renderer.domElement);
+
+const orbitControls = new OrbitControls(camera, renderer.domElement);
+orbitControls.target.set(0, 0.15, 0);
+orbitControls.enableDamping = true;
+orbitControls.dampingFactor = 0.08;
+orbitControls.update();
+
+// ============================================================
+// Lighting
+// ============================================================
+const sun = new THREE.DirectionalLight(0xffffff, 3);
+sun.position.set(0.53, 0.72, 0.41);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 0.01;
+sun.shadow.camera.far = 3;
+sun.shadow.camera.left = sun.shadow.camera.bottom = -0.5;
+sun.shadow.camera.right = sun.shadow.camera.top = 0.5;
+scene.add(sun);
+
+const fill = new THREE.DirectionalLight(0xffffff, 0.8);
+fill.position.set(-0.886, 1.022, 0.668);
+scene.add(fill);
+
+const spot = new THREE.SpotLight(0x0058ff, 40, 3, Math.PI / 4, 0.5);
+spot.position.set(-0.068, 0.586, -0.830);
+scene.add(spot);
+
+scene.add(new THREE.AmbientLight(0x404060, 0.7));
+scene.add(new THREE.HemisphereLight(0x8888bb, 0x333344, 0.4));
+
+// ============================================================
+// FK chain built from Blender armature bone transforms
+// (converted to Three.js Y-up coords)
+// ============================================================
+
+const jointData = [
+  { // J1 (Bone) - base rotation
+    restPos: [0, 0.09498, 0],
+    restQuat: [0.70711, 0.70711, 0, 0],  // w,x,y,z
+    axis: [0, 0, 1],  // local Z
+  },
+  { // J2 (Bone.001) - shoulder pitch
+    restPos: [0, 0, -0.04002],
+    restQuat: [0.99999, 0, 0.00401, 0.00015],
+    axis: [0, -1, 0],  // local -Y
+  },
+  { // J3 (Bone.002) - elbow pitch
+    restPos: [0, 0, -0.135],
+    restQuat: [0.87216, 0.00338, -0.48916, -0.00629],
+    axis: [0, -1, 0],  // local -Y
+  },
+  { // J4 (Bone.003) - forearm roll
+    restPos: [0, 0, -0.07194],
+    restQuat: [0.96152, 0.00229, -0.27466, 0.00558],
+    axis: [0, 0, 1],  // local Z
+  },
+  { // J5 (Bone.004) - wrist pitch
+    restPos: [0, 0, -0.06],
+    restQuat: [1, 0, -0.00001, 0.00278],
+    axis: [0, -1, 0],  // local -Y
+  },
+  { // J6 (Bone.006) - flange roll around forearm/approach axis
+    restPos: [0, 0, -0.07],
+    restQuat: [0.70711, 0.00215, 0.7071, 0],
+    axis: [1, 0, 0],  // local X
+  },
+];
+
+// Joint limits in radians [min, max]
+const jointLimits = [
+  [-175 * Math.PI/180, 175 * Math.PI/180],   // J1
+  [-70 * Math.PI/180,  90 * Math.PI/180],    // J2
+  [-135 * Math.PI/180, 70 * Math.PI/180],    // J3
+  [-170 * Math.PI/180, 170 * Math.PI/180],   // J4
+  [-115 * Math.PI/180, 115 * Math.PI/180],   // J5
+  [-360 * Math.PI/180, 360 * Math.PI/180],   // J6
+];
+
+// Link name -> joint index
+const linkToJoint = { 'L0': 0, 'L1': 1, 'L2': 2, 'L3': 3, 'L4': 4, 'L5': 5, 'Cross': 5, 'Icosphere': 5 };
+
+// Build the FK chain
+const jointRestGroups = [];
+const jointRotGroups = [];
+const jointAxes = [];
+
+let parent = scene;
+for (let i = 0; i < 6; i++) {
+  const d = jointData[i];
+
+  const restGrp = new THREE.Group();
+  restGrp.name = `J${i+1}_rest`;
+  restGrp.position.set(d.restPos[0], d.restPos[1], d.restPos[2]);
+  restGrp.quaternion.set(d.restQuat[1], d.restQuat[2], d.restQuat[3], d.restQuat[0]);
+  parent.add(restGrp);
+  jointRestGroups.push(restGrp);
+
+  const rotGrp = new THREE.Group();
+  rotGrp.name = `J${i+1}_rot`;
+  restGrp.add(rotGrp);
+  jointRotGroups.push(rotGrp);
+
+  jointAxes.push(new THREE.Vector3(d.axis[0], d.axis[1], d.axis[2]).normalize());
+
+  parent = rotGrp;
+}
+
+// End-effector frame marker
+const eeMarker = new THREE.AxesHelper(0.03);
+parent.add(eeMarker);
+
+// ============================================================
+// IK target
+// ============================================================
+const targetGeo = new THREE.SphereGeometry(0.012, 16, 16);
+const targetMat = new THREE.MeshStandardMaterial({
+  color: 0x22ff44, emissive: 0x115522, transparent: true, opacity: 0.8
+});
+const ikTarget = new THREE.Mesh(targetGeo, targetMat);
+ikTarget.position.set(0.19, 0.308, 0); // start at EE rest position
+ikTarget.visible = false;
+scene.add(ikTarget);
+
+// Dashed line from EE to target
+const lineGeo = new THREE.BufferGeometry().setFromPoints([
+  new THREE.Vector3(), new THREE.Vector3()
+]);
+const lineMat = new THREE.LineBasicMaterial({ color: 0x22ff44, transparent: true, opacity: 0.5 });
+const ikLine = new THREE.Line(lineGeo, lineMat);
+ikLine.visible = false;
+scene.add(ikLine);
+
+// Transform controls for dragging the target
+const transformControls = new TransformControls(camera, renderer.domElement);
+transformControls.setSize(0.5);
+transformControls.setMode('translate');
+transformControls.addEventListener('dragging-changed', (e) => {
+  orbitControls.enabled = !e.value;
+});
+scene.add(transformControls);
+
+// ============================================================
+// Load glTF and attach meshes
+// ============================================================
+const loader = new GLTFLoader();
+loader.load('robot_scene.glb', (gltf) => {
+  document.getElementById('loading').style.display = 'none';
+  const model = gltf.scene;
+
+  const allNodes = {};
+  model.traverse((child) => {
+    if (child.name) allNodes[child.name] = child;
+    if (child.isMesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+    }
+  });
+  console.log('glTF nodes:', Object.keys(allNodes));
+
+  const reparented = new Set();
+  for (const [linkName, jointIdx] of Object.entries(linkToJoint)) {
+    const node = allNodes[linkName];
+    if (!node) {
+      console.warn(`${linkName} not found in glTF`);
+      continue;
+    }
+
+    node.updateWorldMatrix(true, false);
+    const worldMat = node.matrixWorld.clone();
+    node.removeFromParent();
+
+    const target = jointRotGroups[jointIdx];
+    target.updateWorldMatrix(true, false);
+    const localMat = target.matrixWorld.clone().invert().multiply(worldMat);
+
+    node.matrix.copy(localMat);
+    node.matrix.decompose(node.position, node.quaternion, node.scale);
+    target.add(node);
+
+    reparented.add(linkName);
+    node.traverse((c) => { if (c.name) reparented.add(c.name); });
+  }
+
+  const statics = [];
+  model.traverse((child) => {
+    if (child.isMesh && !reparented.has(child.name)) {
+      statics.push(child);
+    }
+  });
+  for (const mesh of statics) {
+    mesh.updateWorldMatrix(true, false);
+    const wm = mesh.matrixWorld.clone();
+    mesh.removeFromParent();
+    scene.add(mesh);
+    mesh.matrix.copy(wm);
+    mesh.matrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
+  }
+
+}, (progress) => {
+  const pct = progress.total ? Math.round(progress.loaded / progress.total * 100) : '?';
+  document.getElementById('loading').textContent = `Loading... ${pct}%`;
+}, (err) => {
+  console.error('Load error:', err);
+  document.getElementById('loading').textContent =
+    'Failed to load. Run: python3 -m http.server 8000';
+});
+
+// ============================================================
+// Ground + grid
+// ============================================================
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(4, 4),
+  new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.9 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.063;
+ground.receiveShadow = true;
+scene.add(ground);
+
+scene.add(new THREE.GridHelper(2, 40, 0x333355, 0x222244).translateY(-0.062));
+
+// ============================================================
+// FK functions
+// ============================================================
+const deg2rad = Math.PI / 180;
+const rad2deg = 180 / Math.PI;
+const jointAngles = [0, 0, 0, 0, 0, 0];
+
+function updateFK() {
+  for (let i = 0; i < 6; i++) {
+    jointRotGroups[i].quaternion.setFromAxisAngle(jointAxes[i], jointAngles[i]);
+  }
+}
+
+function updateSliders() {
+  for (let i = 0; i < 6; i++) {
+    const deg = jointAngles[i] * rad2deg;
+    document.getElementById(`j${i+1}`).value = deg;
+    document.getElementById(`v${i+1}`).textContent = deg.toFixed(1);
+  }
+}
+
+function getEEWorldPosition() {
+  eeMarker.updateWorldMatrix(true, false);
+  return new THREE.Vector3().setFromMatrixPosition(eeMarker.matrixWorld);
+}
+
+function clampJoints() {
+  for (let i = 0; i < 6; i++) {
+    jointAngles[i] = Math.max(jointLimits[i][0], Math.min(jointLimits[i][1], jointAngles[i]));
+  }
+}
+
+// ============================================================
+// IK solver — Jacobian transpose (position-only, 3×6)
+// ============================================================
+function getJointWorldAxis(i) {
+  // The rotation axis is defined in the rest group's local frame
+  // Transform it to world space
+  const worldQuat = new THREE.Quaternion();
+  jointRestGroups[i].getWorldQuaternion(worldQuat);
+  return jointAxes[i].clone().applyQuaternion(worldQuat).normalize();
+}
+
+function getJointWorldPosition(i) {
+  jointRestGroups[i].updateWorldMatrix(true, false);
+  return new THREE.Vector3().setFromMatrixPosition(jointRestGroups[i].matrixWorld);
+}
+
+function solveIK(targetPos, maxIter = 20, tolerance = 0.0005) {
+  const lambda = 0.5;       // damping factor for DLS
+  const stepScale = 1.0;    // step size multiplier
+
+  for (let iter = 0; iter < maxIter; iter++) {
+    updateFK();
+
+    // Force world matrix update through the chain
+    scene.updateMatrixWorld(true);
+
+    const eePos = getEEWorldPosition();
+    const error = new THREE.Vector3().subVectors(targetPos, eePos);
+    const errNorm = error.length();
+
+    if (errNorm < tolerance) return errNorm;
+
+    // Build 3×6 Jacobian (geometric — linear velocity part only)
+    // Column i = worldAxis_i × (eePos - jointPos_i)
+    const J = [];
+    for (let i = 0; i < 6; i++) {
+      const axis = getJointWorldAxis(i);
+      const jPos = getJointWorldPosition(i);
+      const r = new THREE.Vector3().subVectors(eePos, jPos);
+      const col = new THREE.Vector3().crossVectors(axis, r);
+      J.push(col);
+    }
+
+    // Damped least squares: Δq = J^T (J J^T + λ²I)^{-1} e
+    // For a 3×6 Jacobian, J J^T is 3×3
+
+    // Compute JJT (3×3)
+    const JJT = [
+      [0, 0, 0],
+      [0, 0, 0],
+      [0, 0, 0],
+    ];
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 3; c++) {
+        let sum = 0;
+        for (let k = 0; k < 6; k++) {
+          sum += getJCol(J, k, r) * getJCol(J, k, c);
+        }
+        JJT[r][c] = sum;
+      }
+    }
+
+    // Add damping: JJT + λ²I
+    const lam2 = lambda * lambda;
+    JJT[0][0] += lam2;
+    JJT[1][1] += lam2;
+    JJT[2][2] += lam2;
+
+    // Invert 3×3
+    const inv = invert3x3(JJT);
+    if (!inv) continue;
+
+    // Compute (JJT + λ²I)^{-1} * error
+    const v = [
+      inv[0][0]*error.x + inv[0][1]*error.y + inv[0][2]*error.z,
+      inv[1][0]*error.x + inv[1][1]*error.y + inv[1][2]*error.z,
+      inv[2][0]*error.x + inv[2][1]*error.y + inv[2][2]*error.z,
+    ];
+
+    // Δq = J^T * v
+    for (let i = 0; i < 6; i++) {
+      const dq = (getJCol(J, i, 0)*v[0] + getJCol(J, i, 1)*v[1] + getJCol(J, i, 2)*v[2]) * stepScale;
+      jointAngles[i] += dq;
+    }
+
+    clampJoints();
+  }
+
+  updateFK();
+  scene.updateMatrixWorld(true);
+  return getEEWorldPosition().distanceTo(targetPos);
+}
+
+// Helper: get Jacobian element — J is array of Vector3 columns
+function getJCol(J, col, row) {
+  return row === 0 ? J[col].x : row === 1 ? J[col].y : J[col].z;
+}
+
+// Invert a 3×3 matrix
+function invert3x3(m) {
+  const a = m[0][0], b = m[0][1], c = m[0][2];
+  const d = m[1][0], e = m[1][1], f = m[1][2];
+  const g = m[2][0], h = m[2][1], k = m[2][2];
+  const det = a*(e*k - f*h) - b*(d*k - f*g) + c*(d*h - e*g);
+  if (Math.abs(det) < 1e-12) return null;
+  const id = 1 / det;
+  return [
+    [(e*k-f*h)*id, (c*h-b*k)*id, (b*f-c*e)*id],
+    [(f*g-d*k)*id, (a*k-c*g)*id, (c*d-a*f)*id],
+    [(d*h-e*g)*id, (b*g-a*h)*id, (a*e-b*d)*id],
+  ];
+}
+
+// ============================================================
+// IK mode state
+// ============================================================
+let ikMode = false;
+
+function setIKMode(on) {
+  ikMode = on;
+  const btn = document.getElementById('ikBtn');
+  btn.textContent = `IK Mode: ${on ? 'ON' : 'OFF'}`;
+  btn.classList.toggle('active', on);
+
+  ikTarget.visible = on;
+  ikLine.visible = on;
+
+  // Show/hide IK sliders panel
+  document.getElementById('ik-panel').style.display = on ? 'block' : 'none';
+
+  if (on) {
+    // Move target to current EE position
+    scene.updateMatrixWorld(true);
+    ikTarget.position.copy(getEEWorldPosition());
+    transformControls.attach(ikTarget);
+    syncIKSliders();
+  } else {
+    transformControls.detach();
+  }
+}
+
+function syncIKSliders() {
+  const p = ikTarget.position;
+  const xmm = Math.round(p.x * 1000);
+  const ymm = Math.round(p.y * 1000);
+  const zmm = Math.round(p.z * 1000);
+  document.getElementById('ikx').value = xmm;
+  document.getElementById('ikvx').textContent = xmm;
+  document.getElementById('iky').value = ymm;
+  document.getElementById('ikvy').textContent = ymm;
+  document.getElementById('ikz').value = zmm;
+  document.getElementById('ikvz').textContent = zmm;
+}
+
+// ============================================================
+// Joint slider controls
+// ============================================================
+for (let i = 1; i <= 6; i++) {
+  const slider = document.getElementById(`j${i}`);
+  const label = document.getElementById(`v${i}`);
+  slider.addEventListener('input', () => {
+    const deg = parseFloat(slider.value);
+    label.textContent = deg.toFixed(1);
+    jointAngles[i-1] = deg * deg2rad;
+    updateFK();
+    // If in IK mode, move target to new EE position
+    if (ikMode) {
+      scene.updateMatrixWorld(true);
+      ikTarget.position.copy(getEEWorldPosition());
+    }
+  });
+}
+
+document.getElementById('resetBtn').addEventListener('click', () => {
+  for (let i = 0; i < 6; i++) jointAngles[i] = 0;
+  updateFK();
+  updateSliders();
+  if (ikMode) {
+    scene.updateMatrixWorld(true);
+    ikTarget.position.copy(getEEWorldPosition());
+  }
+});
+
+document.getElementById('demoBtn').addEventListener('click', () => {
+  const demo = [0, -30, 60, 0, 45, 90];
+  for (let i = 0; i < 6; i++) jointAngles[i] = demo[i] * deg2rad;
+  updateFK();
+  updateSliders();
+  if (ikMode) {
+    scene.updateMatrixWorld(true);
+    ikTarget.position.copy(getEEWorldPosition());
+  }
+});
+
+document.getElementById('ikBtn').addEventListener('click', () => {
+  setIKMode(!ikMode);
+});
+
+// IK target position sliders (mm → meters)
+['ikx', 'iky', 'ikz'].forEach((id) => {
+  document.getElementById(id).addEventListener('input', (e) => {
+    const mm = parseFloat(e.target.value);
+    document.getElementById(id.replace('ik', 'ikv')).textContent = Math.round(mm);
+    const axis = id.charAt(2); // 'x', 'y', or 'z'
+    ikTarget.position[axis] = mm / 1000;
+  });
+});
+
+// ============================================================
+// Render loop
+// ============================================================
+const eePosEl = document.getElementById('eePos');
+const tgtPosEl = document.getElementById('tgtPos');
+const ikErrEl = document.getElementById('ikErr');
+
+function fmtV(v) {
+  return `(${(v.x*1000).toFixed(1)}, ${(v.y*1000).toFixed(1)}, ${(v.z*1000).toFixed(1)})mm`;
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  if (ikMode) {
+    // Run IK solver toward the target
+    const err = solveIK(ikTarget.position, 10, 0.0003);
+    updateSliders();
+
+    // Update line from EE to target
+    const eePos = getEEWorldPosition();
+    const pts = ikLine.geometry.attributes.position;
+    pts.setXYZ(0, eePos.x, eePos.y, eePos.z);
+    pts.setXYZ(1, ikTarget.position.x, ikTarget.position.y, ikTarget.position.z);
+    pts.needsUpdate = true;
+
+    eePosEl.textContent = fmtV(eePos);
+    tgtPosEl.textContent = fmtV(ikTarget.position);
+    ikErrEl.textContent = (err * 1000).toFixed(2) + 'mm';
+
+    // Keep IK sliders in sync when target is dragged via gizmo
+    syncIKSliders();
+  } else {
+    const eePos = getEEWorldPosition();
+    eePosEl.textContent = fmtV(eePos);
+    tgtPosEl.textContent = '-';
+    ikErrEl.textContent = '-';
+  }
+
+  orbitControls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

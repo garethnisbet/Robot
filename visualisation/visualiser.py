@@ -113,13 +113,13 @@ class RobotVisualiser:
         with ui.row().classes('w-full no-wrap').style(
             'padding:0; gap:0; align-items:flex-start;'
         ):
-            # 3D scene column — 9:16 aspect ratio, height-constrained to viewport
+            # 3D scene column — 4:3 aspect ratio, height-constrained to viewport
             with ui.column().classes('gap-0').style(
-                'height:calc(100vh - 72px); aspect-ratio:9/16; flex-shrink:0;'
+                'height:calc(100vh - 72px); aspect-ratio:4/3; flex-shrink:0;'
                 'background:#888; position:relative;'
             ):
                 self._scene = ui.scene(
-                    width=900, height=600,
+                    width=800, height=600,
                     grid=(1, 10),
                     background_color='#7a7a7a',
                 ).style('width:100%; height:100%;')
@@ -640,22 +640,39 @@ class RobotVisualiser:
             envTex.dispose();
             pmrem.dispose();
 
-            // Replace MeshPhongMaterial with MeshStandardMaterial on STL meshes
-            vue.scene.traverse(obj => {{
-                if (obj.isMesh && obj.material && obj.material.type === 'MeshPhongMaterial') {{
-                    const old = obj.material;
-                    obj.material = new THREE.MeshStandardMaterial({{
-                        color: old.color.clone(),
-                        metalness: 0.75,
-                        roughness: 0.25,
-                        envMap: envMap,
-                        envMapIntensity: 1.5,
-                        transparent: old.transparent,
-                        opacity: old.opacity,
-                        side: old.side,
-                    }});
-                    old.dispose();
+            // Log all meshes and their world bounding boxes for diagnostics
+            const box = new THREE.Box3();
+            vue.scene.traverse(child => {{
+                if (child.isMesh) {{
+                    box.setFromObject(child);
+                    const sz = new THREE.Vector3(); box.getSize(sz);
+                    const ctr = new THREE.Vector3(); box.getCenter(ctr);
+                    console.log('MESH', child.uuid.slice(0,6), child.material.type,
+                        'size', sz.x.toFixed(3), sz.y.toFixed(3), sz.z.toFixed(3),
+                        'center', ctr.x.toFixed(3), ctr.y.toFixed(3), ctr.z.toFixed(3));
                 }}
+            }});
+
+            // Replace MeshPhongMaterial with MeshStandardMaterial on STL meshes only
+            // Skip "scene" key to avoid traversing the entire scene tree
+            vue.objects.forEach((obj, key) => {{
+                if (key === 'scene') return;
+                obj.traverse(child => {{
+                    if (child.isMesh && child.material && child.material.type === 'MeshPhongMaterial') {{
+                        const old = child.material;
+                        child.material = new THREE.MeshStandardMaterial({{
+                            color: old.color.clone(),
+                            metalness: 0.75,
+                            roughness: 0.25,
+                            envMap: envMap,
+                            envMapIntensity: 1.5,
+                            transparent: old.transparent,
+                            opacity: old.opacity,
+                            side: old.side,
+                        }});
+                        old.dispose();
+                    }}
+                }});
             }});
         }})();
         """
