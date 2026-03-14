@@ -49,6 +49,17 @@
     font-size: 11px; color: #889;
   }
   #ee-info span { color: #8cf; }
+  .slider-row label span { cursor: text; }
+  .val-input {
+    width: 54px; background: rgba(0,0,40,0.6); border: 1px solid #66f;
+    color: #8cf; font-weight: bold; font-size: 12px; font-family: monospace;
+    text-align: right; outline: none; padding: 0 3px; border-radius: 2px;
+  }
+  .mesh-label {
+    color: #fff; font-size: 11px; font-family: monospace;
+    background: rgba(0,0,0,0.6); padding: 1px 5px; border-radius: 3px;
+    white-space: nowrap; pointer-events: none;
+  }
 </style>
 </head>
 <body>
@@ -82,6 +93,7 @@
   <button id="resetBtn">Reset to Home</button>
   <button id="demoBtn">Demo Pose</button>
   <button id="ikBtn">IK Mode: OFF</button>
+  <button id="labelBtn">Labels: OFF</button>
   <div id="ik-panel" style="display:none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #334;">
     <h2 style="color:#5b5;">IK Target (mm)</h2>
     <div class="slider-row">
@@ -95,6 +107,19 @@
     <div class="slider-row">
       <label>Z <span id="ikvz">0</span></label>
       <input type="range" id="ikz" min="-400" max="400" value="0" step="1">
+    </div>
+    <h2 style="color:#5b5; margin-top:8px;">IK Orientation (deg)</h2>
+    <div class="slider-row">
+      <label>&alpha; (Rz) <span id="ikva">0</span></label>
+      <input type="range" id="ika" min="-180" max="180" value="0" step="1">
+    </div>
+    <div class="slider-row">
+      <label>&beta; (Ry) <span id="ikvb">0</span></label>
+      <input type="range" id="ikb" min="-180" max="180" value="0" step="1">
+    </div>
+    <div class="slider-row">
+      <label>&gamma; (Rx) <span id="ikvc">0</span></label>
+      <input type="range" id="ikc" min="-180" max="180" value="0" step="1">
     </div>
   </div>
   <div id="ee-info">
@@ -119,6 +144,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 
 // ============================================================
 // Scene
@@ -137,6 +163,13 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.4;
 document.body.appendChild(renderer.domElement);
+
+const labelRenderer = new CSS2DRenderer();
+labelRenderer.setSize(innerWidth, innerHeight);
+labelRenderer.domElement.style.position = 'absolute';
+labelRenderer.domElement.style.top = '0';
+labelRenderer.domElement.style.pointerEvents = 'none';
+document.body.appendChild(labelRenderer.domElement);
 
 const orbitControls = new OrbitControls(camera, renderer.domElement);
 orbitControls.target.set(0, 0.15, 0);
@@ -217,7 +250,7 @@ const jointLimits = [
 ];
 
 // Link name -> joint index
-const linkToJoint = { 'L0': 0, 'L1': 1, 'L2': 2, 'L3': 3, 'L4': 4, 'L5': 5, 'Cross': 5, 'Icosphere': 5 };
+const linkToJoint = { 'L0': 0, 'L1': 1, 'L2': 2, 'L3': 3, 'L4': 4, 'L5': 5 };
 
 // Build the FK chain
 const jointRestGroups = [];
@@ -261,6 +294,10 @@ ikTarget.position.set(0.19, 0.308, 0); // start at EE rest position
 ikTarget.visible = false;
 scene.add(ikTarget);
 
+// Target orientation (quaternion, set from Euler sliders)
+const ikTargetQuat = new THREE.Quaternion();
+const ikTargetEuler = new THREE.Euler(0, 0, 0, 'ZYX');
+
 // Dashed line from EE to target
 const lineGeo = new THREE.BufferGeometry().setFromPoints([
   new THREE.Vector3(), new THREE.Vector3()
@@ -282,6 +319,8 @@ scene.add(transformControls);
 // ============================================================
 // Load glTF and attach meshes
 // ============================================================
+const meshLabels = [];
+
 const loader = new GLTFLoader();
 loader.load('robot_scene.glb', (gltf) => {
   document.getElementById('loading').style.display = 'none';
@@ -321,9 +360,22 @@ loader.load('robot_scene.glb', (gltf) => {
     node.traverse((c) => { if (c.name) reparented.add(c.name); });
   }
 
+  // Remove hidden objects that were reparented as children of links
+  const hideNames = ['Icosphere', 'Cross'];
+  scene.traverse((child) => {
+    if (child.name && hideNames.includes(child.name)) {
+      child.removeFromParent();
+    }
+  });
+  const hiddenNodes = new Set();
+  model.traverse((child) => {
+    if (child.name && hideNames.includes(child.name)) {
+      child.traverse((c) => hiddenNodes.add(c));
+    }
+  });
   const statics = [];
   model.traverse((child) => {
-    if (child.isMesh && !reparented.has(child.name)) {
+    if (child.isMesh && !reparented.has(child.name) && !hiddenNodes.has(child)) {
       statics.push(child);
     }
   });
@@ -334,6 +386,30 @@ loader.load('robot_scene.glb', (gltf) => {
     scene.add(mesh);
     mesh.matrix.copy(wm);
     mesh.matrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
+  }
+
+  // Create labels for all named mesh nodes (links + statics)
+  function createLabel(name, parentObj) {
+    const div = document.createElement('div');
+    div.className = 'mesh-label';
+    div.textContent = name;
+    const label = new CSS2DObject(div);
+    label.visible = false;
+    // Position label at the bounding box center
+    const box = new THREE.Box3().setFromObject(parentObj);
+    const center = box.getCenter(new THREE.Vector3());
+    parentObj.worldToLocal(center);
+    label.position.copy(center);
+    parentObj.add(label);
+    meshLabels.push(label);
+  }
+
+  for (const [linkName] of Object.entries(linkToJoint)) {
+    const node = allNodes[linkName];
+    if (node) createLabel(linkName, node);
+  }
+  for (const mesh of statics) {
+    if (mesh.name) createLabel(mesh.name, mesh);
   }
 
 }, (progress) => {
@@ -392,11 +468,9 @@ function clampJoints() {
 }
 
 // ============================================================
-// IK solver — Jacobian transpose (position-only, 3×6)
+// IK solver — 6-DOF DLS (position + orientation)
 // ============================================================
 function getJointWorldAxis(i) {
-  // The rotation axis is defined in the rest group's local frame
-  // Transform it to world space
   const worldQuat = new THREE.Quaternion();
   jointRestGroups[i].getWorldQuaternion(worldQuat);
   return jointAxes[i].clone().applyQuaternion(worldQuat).normalize();
@@ -407,72 +481,86 @@ function getJointWorldPosition(i) {
   return new THREE.Vector3().setFromMatrixPosition(jointRestGroups[i].matrixWorld);
 }
 
-function solveIK(targetPos, maxIter = 20, tolerance = 0.0005) {
-  const lambda = 0.5;       // damping factor for DLS
-  const stepScale = 1.0;    // step size multiplier
+function getEEWorldQuaternion() {
+  eeMarker.updateWorldMatrix(true, false);
+  return new THREE.Quaternion().setFromRotationMatrix(eeMarker.matrixWorld);
+}
+
+function orientationError(qTarget, qCurrent) {
+  const qErr = qTarget.clone().multiply(qCurrent.clone().conjugate());
+  if (qErr.w < 0) { qErr.x = -qErr.x; qErr.y = -qErr.y; qErr.z = -qErr.z; qErr.w = -qErr.w; }
+  const sinHalf = Math.sqrt(qErr.x*qErr.x + qErr.y*qErr.y + qErr.z*qErr.z);
+  if (sinHalf < 1e-8) return new THREE.Vector3(0, 0, 0);
+  const angle = 2 * Math.atan2(sinHalf, qErr.w);
+  return new THREE.Vector3(qErr.x/sinHalf * angle, qErr.y/sinHalf * angle, qErr.z/sinHalf * angle);
+}
+
+function solveIK(targetPos, targetQuat, maxIter = 20, tolerance = 0.0005) {
+  const lambda = 0.5;
+  const oriWeight = 0.3;  // scale orientation vs position importance
 
   for (let iter = 0; iter < maxIter; iter++) {
     updateFK();
-
-    // Force world matrix update through the chain
     scene.updateMatrixWorld(true);
 
     const eePos = getEEWorldPosition();
-    const error = new THREE.Vector3().subVectors(targetPos, eePos);
-    const errNorm = error.length();
+    const eeQuat = getEEWorldQuaternion();
 
-    if (errNorm < tolerance) return errNorm;
+    const posErr = new THREE.Vector3().subVectors(targetPos, eePos);
+    const oriErr = orientationError(targetQuat, eeQuat);
+    const posNorm = posErr.length();
 
-    // Build 3×6 Jacobian (geometric — linear velocity part only)
-    // Column i = worldAxis_i × (eePos - jointPos_i)
-    const J = [];
-    for (let i = 0; i < 6; i++) {
-      const axis = getJointWorldAxis(i);
-      const jPos = getJointWorldPosition(i);
+    if (posNorm < tolerance && oriErr.length() < 0.01) return posNorm;
+
+    // Build 6×6 Jacobian: J[taskDOF][joint]
+    // Rows 0-2: linear (axis × lever), Rows 3-5: angular (axis, scaled)
+    const J = Array.from({length: 6}, () => Array(6).fill(0));
+    for (let j = 0; j < 6; j++) {
+      const axis = getJointWorldAxis(j);
+      const jPos = getJointWorldPosition(j);
       const r = new THREE.Vector3().subVectors(eePos, jPos);
-      const col = new THREE.Vector3().crossVectors(axis, r);
-      J.push(col);
+      const lin = new THREE.Vector3().crossVectors(axis, r);
+      J[0][j] = lin.x;  J[1][j] = lin.y;  J[2][j] = lin.z;
+      J[3][j] = axis.x * oriWeight;
+      J[4][j] = axis.y * oriWeight;
+      J[5][j] = axis.z * oriWeight;
     }
 
-    // Damped least squares: Δq = J^T (J J^T + λ²I)^{-1} e
-    // For a 3×6 Jacobian, J J^T is 3×3
-
-    // Compute JJT (3×3)
-    const JJT = [
-      [0, 0, 0],
-      [0, 0, 0],
-      [0, 0, 0],
+    // Error vector (6×1)
+    const e = [
+      posErr.x, posErr.y, posErr.z,
+      oriErr.x * oriWeight, oriErr.y * oriWeight, oriErr.z * oriWeight
     ];
-    for (let r = 0; r < 3; r++) {
-      for (let c = 0; c < 3; c++) {
+
+    // JJT (6×6)
+    const n = 6;
+    const JJT = Array.from({length: n}, () => Array(n).fill(0));
+    for (let r = 0; r < n; r++) {
+      for (let c = 0; c < n; c++) {
         let sum = 0;
-        for (let k = 0; k < 6; k++) {
-          sum += getJCol(J, k, r) * getJCol(J, k, c);
-        }
+        for (let k = 0; k < 6; k++) sum += J[r][k] * J[c][k];
         JJT[r][c] = sum;
       }
     }
 
-    // Add damping: JJT + λ²I
+    // Damping
     const lam2 = lambda * lambda;
-    JJT[0][0] += lam2;
-    JJT[1][1] += lam2;
-    JJT[2][2] += lam2;
+    for (let i = 0; i < n; i++) JJT[i][i] += lam2;
 
-    // Invert 3×3
-    const inv = invert3x3(JJT);
+    // Invert 6×6
+    const inv = invertNxN(JJT, n);
     if (!inv) continue;
 
-    // Compute (JJT + λ²I)^{-1} * error
-    const v = [
-      inv[0][0]*error.x + inv[0][1]*error.y + inv[0][2]*error.z,
-      inv[1][0]*error.x + inv[1][1]*error.y + inv[1][2]*error.z,
-      inv[2][0]*error.x + inv[2][1]*error.y + inv[2][2]*error.z,
-    ];
+    // v = inv * e
+    const v = Array(n).fill(0);
+    for (let i = 0; i < n; i++)
+      for (let j = 0; j < n; j++)
+        v[i] += inv[i][j] * e[j];
 
     // Δq = J^T * v
     for (let i = 0; i < 6; i++) {
-      const dq = (getJCol(J, i, 0)*v[0] + getJCol(J, i, 1)*v[1] + getJCol(J, i, 2)*v[2]) * stepScale;
+      let dq = 0;
+      for (let j = 0; j < n; j++) dq += J[j][i] * v[j];
       jointAngles[i] += dq;
     }
 
@@ -484,24 +572,31 @@ function solveIK(targetPos, maxIter = 20, tolerance = 0.0005) {
   return getEEWorldPosition().distanceTo(targetPos);
 }
 
-// Helper: get Jacobian element — J is array of Vector3 columns
-function getJCol(J, col, row) {
-  return row === 0 ? J[col].x : row === 1 ? J[col].y : J[col].z;
-}
-
-// Invert a 3×3 matrix
-function invert3x3(m) {
-  const a = m[0][0], b = m[0][1], c = m[0][2];
-  const d = m[1][0], e = m[1][1], f = m[1][2];
-  const g = m[2][0], h = m[2][1], k = m[2][2];
-  const det = a*(e*k - f*h) - b*(d*k - f*g) + c*(d*h - e*g);
-  if (Math.abs(det) < 1e-12) return null;
-  const id = 1 / det;
-  return [
-    [(e*k-f*h)*id, (c*h-b*k)*id, (b*f-c*e)*id],
-    [(f*g-d*k)*id, (a*k-c*g)*id, (c*d-a*f)*id],
-    [(d*h-e*g)*id, (b*g-a*h)*id, (a*e-b*d)*id],
-  ];
+// Gauss-Jordan NxN matrix inverse
+function invertNxN(m, n) {
+  const aug = Array.from({length: n}, (_, i) => {
+    const row = Array(2 * n).fill(0);
+    for (let j = 0; j < n; j++) row[j] = m[i][j];
+    row[n + i] = 1;
+    return row;
+  });
+  for (let col = 0; col < n; col++) {
+    let maxRow = col, maxVal = Math.abs(aug[col][col]);
+    for (let row = col + 1; row < n; row++) {
+      const v = Math.abs(aug[row][col]);
+      if (v > maxVal) { maxVal = v; maxRow = row; }
+    }
+    if (maxVal < 1e-12) return null;
+    [aug[col], aug[maxRow]] = [aug[maxRow], aug[col]];
+    const pivot = aug[col][col];
+    for (let j = 0; j < 2 * n; j++) aug[col][j] /= pivot;
+    for (let row = 0; row < n; row++) {
+      if (row === col) continue;
+      const f = aug[row][col];
+      for (let j = 0; j < 2 * n; j++) aug[row][j] -= f * aug[col][j];
+    }
+  }
+  return aug.map(row => row.slice(n));
 }
 
 // ============================================================
@@ -522,9 +617,11 @@ function setIKMode(on) {
   document.getElementById('ik-panel').style.display = on ? 'block' : 'none';
 
   if (on) {
-    // Move target to current EE position
+    // Move target to current EE position and orientation
     scene.updateMatrixWorld(true);
     ikTarget.position.copy(getEEWorldPosition());
+    ikTargetQuat.copy(getEEWorldQuaternion());
+    ikTargetEuler.setFromQuaternion(ikTargetQuat, 'ZYX');
     transformControls.attach(ikTarget);
     syncIKSliders();
   } else {
@@ -543,6 +640,17 @@ function syncIKSliders() {
   document.getElementById('ikvy').textContent = ymm;
   document.getElementById('ikz').value = zmm;
   document.getElementById('ikvz').textContent = zmm;
+
+  // Sync orientation sliders from ikTargetEuler (ZYX: α=Rz, β=Ry, γ=Rx)
+  const ad = Math.round(ikTargetEuler.z * rad2deg);
+  const bd = Math.round(ikTargetEuler.y * rad2deg);
+  const cd = Math.round(ikTargetEuler.x * rad2deg);
+  document.getElementById('ika').value = ad;
+  document.getElementById('ikva').textContent = ad;
+  document.getElementById('ikb').value = bd;
+  document.getElementById('ikvb').textContent = bd;
+  document.getElementById('ikc').value = cd;
+  document.getElementById('ikvc').textContent = cd;
 }
 
 // ============================================================
@@ -556,10 +664,13 @@ for (let i = 1; i <= 6; i++) {
     label.textContent = deg.toFixed(1);
     jointAngles[i-1] = deg * deg2rad;
     updateFK();
-    // If in IK mode, move target to new EE position
+    // If in IK mode, move target to new EE pose
     if (ikMode) {
       scene.updateMatrixWorld(true);
       ikTarget.position.copy(getEEWorldPosition());
+      ikTargetQuat.copy(getEEWorldQuaternion());
+      ikTargetEuler.setFromQuaternion(ikTargetQuat, 'ZYX');
+      syncIKSliders();
     }
   });
 }
@@ -571,6 +682,9 @@ document.getElementById('resetBtn').addEventListener('click', () => {
   if (ikMode) {
     scene.updateMatrixWorld(true);
     ikTarget.position.copy(getEEWorldPosition());
+    ikTargetQuat.copy(getEEWorldQuaternion());
+    ikTargetEuler.setFromQuaternion(ikTargetQuat, 'ZYX');
+    syncIKSliders();
   }
 });
 
@@ -582,11 +696,22 @@ document.getElementById('demoBtn').addEventListener('click', () => {
   if (ikMode) {
     scene.updateMatrixWorld(true);
     ikTarget.position.copy(getEEWorldPosition());
+    ikTargetQuat.copy(getEEWorldQuaternion());
+    ikTargetEuler.setFromQuaternion(ikTargetQuat, 'ZYX');
+    syncIKSliders();
   }
 });
 
 document.getElementById('ikBtn').addEventListener('click', () => {
   setIKMode(!ikMode);
+});
+
+let labelsOn = false;
+document.getElementById('labelBtn').addEventListener('click', () => {
+  labelsOn = !labelsOn;
+  document.getElementById('labelBtn').textContent = `Labels: ${labelsOn ? 'ON' : 'OFF'}`;
+  document.getElementById('labelBtn').classList.toggle('active', labelsOn);
+  meshLabels.forEach(l => l.visible = labelsOn);
 });
 
 // IK target position sliders (mm → meters)
@@ -596,6 +721,64 @@ document.getElementById('ikBtn').addEventListener('click', () => {
     document.getElementById(id.replace('ik', 'ikv')).textContent = Math.round(mm);
     const axis = id.charAt(2); // 'x', 'y', or 'z'
     ikTarget.position[axis] = mm / 1000;
+  });
+});
+
+// IK target orientation sliders (deg → rad, ZYX: α=Rz, β=Ry, γ=Rx)
+['ika', 'ikb', 'ikc'].forEach((id) => {
+  document.getElementById(id).addEventListener('input', (e) => {
+    const deg = parseFloat(e.target.value);
+    document.getElementById(id.replace('ik', 'ikv')).textContent = Math.round(deg);
+    const comp = id.charAt(2); // 'a'→z, 'b'→y, 'c'→x
+    const axis = comp === 'a' ? 'z' : comp === 'b' ? 'y' : 'x';
+    ikTargetEuler[axis] = deg * deg2rad;
+    ikTargetQuat.setFromEuler(ikTargetEuler);
+  });
+});
+
+// ============================================================
+// Double-click on value labels to type a value
+// ============================================================
+function makeSpanEditable(spanId, onCommit) {
+  const span = document.getElementById(spanId);
+  if (!span) return;
+  span.addEventListener('dblclick', () => {
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.className = 'val-input';
+    input.value = parseFloat(span.textContent);
+    span.style.display = 'none';
+    span.parentNode.insertBefore(input, span.nextSibling);
+    input.focus();
+    input.select();
+    const finish = (apply) => {
+      if (apply) {
+        const v = parseFloat(input.value);
+        if (!isNaN(v)) onCommit(v);
+      }
+      input.remove();
+      span.style.display = '';
+    };
+    input.addEventListener('blur', () => finish(true));
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      if (e.key === 'Escape') finish(false);
+    });
+  });
+}
+
+for (let i = 1; i <= 6; i++) {
+  makeSpanEditable(`v${i}`, (val) => {
+    const s = document.getElementById(`j${i}`);
+    s.value = Math.max(s.min, Math.min(s.max, val));
+    s.dispatchEvent(new Event('input'));
+  });
+}
+['ikx','iky','ikz','ika','ikb','ikc'].forEach(id => {
+  makeSpanEditable(id.replace('ik', 'ikv'), (val) => {
+    const s = document.getElementById(id);
+    s.value = Math.max(s.min, Math.min(s.max, val));
+    s.dispatchEvent(new Event('input'));
   });
 });
 
@@ -615,7 +798,7 @@ function animate() {
 
   if (ikMode) {
     // Run IK solver toward the target
-    const err = solveIK(ikTarget.position, 10, 0.0003);
+    const err = solveIK(ikTarget.position, ikTargetQuat, 10, 0.0003);
     updateSliders();
 
     // Update line from EE to target
@@ -640,6 +823,7 @@ function animate() {
 
   orbitControls.update();
   renderer.render(scene, camera);
+  labelRenderer.render(scene, camera);
 }
 animate();
 
@@ -647,6 +831,7 @@ window.addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  labelRenderer.setSize(innerWidth, innerHeight);
 });
 </script>
 </body>
