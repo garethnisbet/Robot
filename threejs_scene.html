@@ -181,7 +181,7 @@ orbitControls.update();
 // Lighting
 // ============================================================
 const sun = new THREE.DirectionalLight(0xffffff, 3);
-sun.position.set(0.53, 0.72, 0.41);
+sun.position.set(-0.53, 0.72, 0.41);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.near = 0.01;
@@ -195,7 +195,7 @@ fill.position.set(-0.886, 1.022, 0.668);
 scene.add(fill);
 
 const spot = new THREE.SpotLight(0x0058ff, 40, 3, Math.PI / 4, 0.5);
-spot.position.set(-0.068, 0.586, -0.830);
+spot.position.set(-0.068, 0.586, 0.830);
 scene.add(spot);
 
 scene.add(new THREE.AmbientLight(0x404060, 0.7));
@@ -278,9 +278,18 @@ for (let i = 0; i < 6; i++) {
   parent = rotGrp;
 }
 
-// End-effector frame marker
-const eeMarker = new THREE.AxesHelper(0.03);
+// End-effector frame marker (custom colors to match robot convention)
+// Local +X = Robot +X (Blue), Local +Y = Robot +Y (Green), Local +Z = Down (Red)
+const eeMarker = new THREE.Group();
 parent.add(eeMarker);
+const axLen = 0.03;
+function makeAxis(dir, color) {
+  const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), dir.clone().multiplyScalar(axLen)]);
+  return new THREE.Line(g, new THREE.LineBasicMaterial({ color }));
+}
+eeMarker.add(makeAxis(new THREE.Vector3(1, 0, 0), 0x0000ff));  // Blue  → Robot +X
+eeMarker.add(makeAxis(new THREE.Vector3(0, -1, 0), 0x00ff00)); // Green → Robot +Y
+eeMarker.add(makeAxis(new THREE.Vector3(0, 0, 1), 0xff0000));  // Red   → Down
 
 // ============================================================
 // IK target

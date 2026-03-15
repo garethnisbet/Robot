@@ -200,6 +200,33 @@ The template is built for 6-DOF. For robots with a different number of joints:
 - For N > 6: the system is redundant — DLS handles this naturally
 - JJT is always 6x6 (or 3x3 for position-only), so `invertNxN` still works
 
+### End-effector crosshair:
+
+Do NOT use `THREE.AxesHelper` for the EE frame marker. The Y↔Z coordinate swap between robot Z-up and Three.js Y-up creates a left-handed mapping that AxesHelper (which is always right-handed) cannot represent correctly. Instead, create custom colored lines using a `THREE.Group`:
+
+```js
+const eeMarker = new THREE.Group();
+parent.add(eeMarker);
+const axLen = 0.03;
+function makeAxis(dir, color) {
+  const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), dir.clone().multiplyScalar(axLen)]);
+  return new THREE.Line(g, new THREE.LineBasicMaterial({ color }));
+}
+```
+
+The directions must be computed for each robot. At home position (all joints = 0), compute the cumulative world orientation of the last joint's rotation group by multiplying all rest quaternions in the FK chain. Then determine which local directions correspond to:
+- **Blue** → Robot +X direction (typically the approach axis at home)
+- **Green** → Robot +Y direction
+- **Red** → Robot -Z direction (down)
+
+Add lines in the LOCAL frame of the last joint's rotation group using the computed directions. Since the lines are children of the FK chain, they will correctly follow joint rotations.
+
+The `eeMarker` Group (with no local rotation) must be preserved for `getEEWorldPosition()` and `getEEWorldQuaternion()` used by the IK solver.
+
+### Lighting:
+
+Ensure the main directional light (`sun`) and any strong spot lights are positioned to illuminate the **front** of the robot — the side facing the default camera position. The camera defaults to `(0.45, 0.30, 0.40)`, so lights should generally have positive Z in Three.js coordinates to light the front. Avoid placing high-intensity lights behind the robot (negative Z) as this creates unwanted backlighting.
+
 ### Coordinate convention:
 
 The viewer uses Z-up display convention with Y-up Three.js internals:
@@ -218,7 +245,9 @@ Tell the user to open `http://localhost:8000/FILENAME.html` and verify:
 1. All meshes load and appear correctly
 2. FK sliders move the correct joints
 3. Each joint rotates about the correct axis
-4. IK mode works — dragging the target moves the robot
-5. Labels toggle shows correct mesh names
+4. EE crosshair at home: Blue points in robot +X, Green in robot +Y, Red points down
+5. Lighting illuminates the front of the robot (not the back)
+6. IK mode works — dragging the target moves the robot
+7. Labels toggle shows correct mesh names
 
-If something is wrong, iterate on the joint axes or mesh parenting.
+If the crosshair axes are wrong, adjust the local directions in the `makeAxis` calls. If something else is wrong, iterate on the joint axes or mesh parenting.
