@@ -13,8 +13,6 @@ Interactive 3D visualisation and control of a Meca500 R3 6-DOF serial manipulato
 
 ## Quick Start
 
-### Three.js Viewer (recommended)
-
 ```bash
 python3 -m http.server 8000
 ```
@@ -23,33 +21,14 @@ Open `http://localhost:8000/threejs_scene.html` in a browser.
 
 Requires `robot_scene.glb` (exported from Blender with the Meca500 armature and meshes).
 
-### PyQtGraph Viewer
-
-```bash
-pip install -r requirements.txt
-python3 main.py --robot 6dof
-```
-
-Other robot options: `3dof` (planar arm), `custom`.
-
 ## Project Structure
 
 ```
-main.py                  Entry point, STL map with T_correction matrices
 threejs_scene.html       Three.js FK/IK viewer (standalone, loads robot_scene.glb)
 robot_scene.glb          glTF binary exported from Blender (armature + meshes)
-requirements.txt         Python dependencies (numpy, scipy, pyqtgraph, PyQt6, PyOpenGL)
-
-robot/
-  robot.py               Joint/Robot classes, DH parameters, make_6dof_arm()
-  kinematics.py           Forward kinematics (standard DH), Jacobian
-  ik.py                  Inverse kinematics (damped least-squares)
-
-visualisation/
-  visualiser.py          PyQtGraph/NiceGUI 3D visualiser with sliders
 
 stl_files/
-  A0.stl – A7.stl        Meca500 component meshes (base, shoulder, links, EE)
+  A0.stl – A7.stl        Meca500 component meshes (source CAD assets)
 
 Images/
   SideView.png           Reference zero-config side view (XZ plane)
@@ -69,7 +48,7 @@ Images/
 
 ## IK Solver
 
-The Three.js viewer uses a 6x6 geometric Jacobian with damped least-squares (DLS):
+The viewer uses a 6x6 geometric Jacobian with damped least-squares (DLS):
 
 - **Position error**: difference between target and end-effector world position
 - **Orientation error**: rotation vector from quaternion error (target * current^-1)
