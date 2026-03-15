@@ -60,10 +60,25 @@
     background: rgba(0,0,0,0.6); padding: 1px 5px; border-radius: 3px;
     white-space: nowrap; pointer-events: none;
   }
+  #ws-status {
+    position: absolute; top: 10px; left: 10px;
+    font-size: 11px; font-family: monospace; color: #889;
+    background: rgba(10,10,30,0.85); padding: 6px 10px;
+    border-radius: 6px; backdrop-filter: blur(8px);
+    border: 1px solid rgba(100,100,200,0.2);
+  }
+  #ws-status .dot {
+    display: inline-block; width: 8px; height: 8px;
+    border-radius: 50%; margin-right: 6px; vertical-align: middle;
+  }
+  #ws-status .dot.off { background: #555; }
+  #ws-status .dot.on { background: #4f4; box-shadow: 0 0 4px #4f4; }
+  #ws-status .dot.err { background: #f44; box-shadow: 0 0 4px #f44; }
 </style>
 </head>
 <body>
 <div id="loading">Loading robot model...</div>
+<div id="ws-status"><span class="dot off" id="ws-dot"></span><span id="ws-text">API: not connected</span></div>
 <div id="panel">
   <h2>Joint Angles (deg)</h2>
   <div class="slider-row">
@@ -845,6 +860,147 @@ window.addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
   labelRenderer.setSize(innerWidth, innerHeight);
 });
+
+// ============================================================
+// WebSocket API — two-way remote control
+// ============================================================
+const wsDot = document.getElementById('ws-dot');
+const wsText = document.getElementById('ws-text');
+let ws = null;
+let wsReconnectTimer = null;
+
+function wsSetStatus(state) {
+  wsDot.className = 'dot ' + (state === 'on' ? 'on' : state === 'err' ? 'err' : 'off');
+  wsText.textContent = state === 'on' ? 'API: connected' :
+                        state === 'err' ? 'API: error' : 'API: not connected';
+}
+
+function buildState() {
+  scene.updateMatrixWorld(true);
+  const eePos = getEEWorldPosition();
+  const eeQuat = getEEWorldQuaternion();
+  const euler = new THREE.Euler().setFromQuaternion(eeQuat, 'YZX');
+  return {
+    type: 'state',
+    joints: jointAngles.map(a => +(a * rad2deg).toFixed(2)),
+    // Z-up: X=three.x, Y=three.z, Z=three.y
+    eePosition: [+(eePos.x * 1000).toFixed(2), +(eePos.z * 1000).toFixed(2), +(eePos.y * 1000).toFixed(2)],
+    eeOrientation: [+(euler.y * rad2deg).toFixed(2), +(euler.z * rad2deg).toFixed(2), +(euler.x * rad2deg).toFixed(2)],
+    mode: ikMode ? 'IK' : 'FK',
+    ikError: ikMode ? +((getEEWorldPosition().distanceTo(ikTarget.position)) * 1000).toFixed(3) : null,
+  };
+}
+
+function wsSend(data) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(data));
+  }
+}
+
+function handleCommand(data) {
+  const cmd = data.cmd;
+  if (!cmd) return;
+
+  if (cmd === 'getState') {
+    wsSend(buildState());
+
+  } else if (cmd === 'setJoints') {
+    const angles = data.angles;
+    if (Array.isArray(angles) && angles.length === 6) {
+      for (let i = 0; i < 6; i++) jointAngles[i] = angles[i] * deg2rad;
+      clampJoints();
+      updateFK();
+      updateSliders();
+      if (ikMode) {
+        scene.updateMatrixWorld(true);
+        ikTarget.position.copy(getEEWorldPosition());
+        ikTargetQuat.copy(getEEWorldQuaternion());
+        ikTargetEuler.setFromQuaternion(ikTargetQuat, 'YZX');
+        syncIKSliders();
+      }
+      wsSend(buildState());
+    }
+
+  } else if (cmd === 'home') {
+    for (let i = 0; i < 6; i++) jointAngles[i] = 0;
+    updateFK();
+    updateSliders();
+    if (ikMode) {
+      scene.updateMatrixWorld(true);
+      ikTarget.position.copy(getEEWorldPosition());
+      ikTargetQuat.copy(getEEWorldQuaternion());
+      ikTargetEuler.setFromQuaternion(ikTargetQuat, 'YZX');
+      syncIKSliders();
+    }
+    wsSend(buildState());
+
+  } else if (cmd === 'setMode') {
+    if (data.mode === 'FK' || data.mode === 'IK') {
+      setIKMode(data.mode === 'IK');
+      wsSend(buildState());
+    }
+
+  } else if (cmd === 'setIKTarget') {
+    applyIKTarget(data);
+    wsSend(buildState());
+
+  } else if (cmd === 'moveTo') {
+    if (!ikMode) setIKMode(true);
+    applyIKTarget(data);
+    wsSend(buildState());
+  }
+}
+
+function applyIKTarget(data) {
+  if (Array.isArray(data.position) && data.position.length === 3) {
+    // Z-up input: [x, y, z] → Three.js: x=x, y=z, z=y
+    ikTarget.position.set(data.position[0] / 1000, data.position[2] / 1000, data.position[1] / 1000);
+  }
+  if (Array.isArray(data.orientation) && data.orientation.length === 3) {
+    // Z-up Euler [α,β,γ] → Three.js YZX: y=α, z=β, x=γ
+    ikTargetEuler.set(data.orientation[2] * deg2rad, data.orientation[0] * deg2rad, data.orientation[1] * deg2rad, 'YZX');
+    ikTargetQuat.setFromEuler(ikTargetEuler);
+  }
+  syncIKSliders();
+}
+
+function wsConnect() {
+  // Only connect via WebSocket if served from a server (not file://)
+  if (location.protocol === 'file:') return;
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${proto}//${location.host}/ws?role=viewer`;
+
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    wsSetStatus('on');
+    console.log('WebSocket connected');
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      handleCommand(data);
+    } catch (e) {
+      console.warn('WS bad message:', e);
+    }
+  };
+
+  ws.onclose = () => {
+    wsSetStatus('off');
+    ws = null;
+    // Reconnect after 2 seconds
+    wsReconnectTimer = setTimeout(wsConnect, 2000);
+  };
+
+  ws.onerror = () => {
+    wsSetStatus('err');
+  };
+}
+
+// Start WebSocket connection
+wsConnect();
 </script>
 </body>
 </html>
