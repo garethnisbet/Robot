@@ -99,8 +99,13 @@ async def index_handler(request):
     return web.FileResponse(ROOT / "threejs_scene.html")
 
 
+async def healthz_handler(request):
+    return web.Response(text="ok")
+
+
 def create_app():
     app = web.Application()
+    app.router.add_get("/healthz", healthz_handler)
     app.router.add_get("/ws", ws_handler)
     app.router.add_get("/", index_handler)
     # Serve static files (GLB, images, etc.)
@@ -110,7 +115,7 @@ def create_app():
 
 def main():
     parser = argparse.ArgumentParser(description="Meca500 Robot WebSocket Server")
-    parser.add_argument("--port", type=int, default=8000, help="HTTP port (default: 8000)")
+    parser.add_argument("--port", type=int, default=8080, help="HTTP port (default: 8080)")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
     args = parser.parse_args()
 

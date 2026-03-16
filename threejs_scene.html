@@ -825,7 +825,7 @@ function animate() {
 
   if (ikMode) {
     // Run IK solver toward the target
-    const err = solveIK(ikTarget.position, ikTargetQuat, 10, 0.0003);
+    const err = solveIK(ikTarget.position, ikTargetQuat, 10, 0.00005);
     updateSliders();
 
     // Update line from EE to target

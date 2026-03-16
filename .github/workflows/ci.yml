@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    tags:
+      - '*'
+  pull_request:
+
+jobs:
+  container:
+    uses: ./.github/workflows/_container.yml
+    with:
+      publish: ${{ github.ref_type == 'tag' }}
+    permissions:
+      contents: read
+      packages: write

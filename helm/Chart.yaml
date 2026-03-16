@@ -1,0 +1,6 @@
+apiVersion: v2
+name: robot-visualisation
+description: Meca500 robot 3D viewer — Three.js + WebSocket
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
