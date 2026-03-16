@@ -19,6 +19,11 @@ COPY stl_files/ ./stl_files/
 
 ENV PATH="/app/.venv/bin:$PATH"
 
+RUN useradd -u 1000 -M -s /sbin/nologin appuser && \
+    chown -R appuser /app
+
+USER appuser
+
 EXPOSE 8080
 
 ENTRYPOINT ["python", "server.py"]
