@@ -60,6 +60,51 @@
     background: rgba(0,0,0,0.6); padding: 1px 5px; border-radius: 3px;
     white-space: nowrap; pointer-events: none;
   }
+  #stl-list { margin-top: 6px; max-height: 150px; overflow-y: auto; }
+  .stl-item {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 11px; color: #aac; padding: 3px 0;
+    border-bottom: 1px solid rgba(100,100,200,0.1);
+  }
+  .stl-item .stl-color {
+    width: 12px; height: 12px; border-radius: 2px; margin-right: 6px;
+    border: 1px solid rgba(255,255,255,0.2); cursor: pointer; flex-shrink: 0;
+  }
+  .stl-item .stl-name {
+    flex: 1; cursor: text; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .stl-item .stl-vis, .stl-item .stl-rm {
+    background: none; border: none; color: #889; cursor: pointer;
+    font-size: 11px; padding: 0 3px; width: auto; margin: 0;
+  }
+  .stl-item .stl-vis:hover, .stl-item .stl-rm:hover { color: #fff; }
+  .stl-item.selected { background: rgba(100,140,255,0.15); border-radius: 3px; }
+  .stl-item .stl-name.selected { color: #8cf; font-weight: bold; }
+  #stl-mode {
+    display: none; margin-top: 6px; font-size: 11px; color: #889;
+    padding: 6px 0 0;
+    border-top: 1px solid #334;
+  }
+  #stl-mode .stl-mode-name {
+    display: block; margin-bottom: 5px; color: #8cf;
+    font-size: 12px; font-weight: bold;
+  }
+  #stl-mode .stl-mode-buttons {
+    display: flex; gap: 4px;
+  }
+  #stl-mode .stl-mode-buttons button {
+    flex: 1; width: auto; padding: 5px 0; margin: 0;
+    font-size: 11px; text-align: center;
+  }
+  #collision-info {
+    margin-top: 6px; padding-top: 6px; border-top: 1px solid #334;
+    font-size: 11px; color: #889;
+  }
+  #collision-info.hit { color: #f66; }
+  #collision-info .collision-pair {
+    color: #fa8; font-size: 10px; display: block;
+    padding-left: 8px; margin-top: 2px;
+  }
   #ws-status {
     position: absolute; top: 10px; left: 10px;
     font-size: 11px; font-family: monospace; color: #889;
@@ -109,6 +154,20 @@
   <button id="demoBtn">Demo Pose</button>
   <button id="ikBtn">IK Mode: OFF</button>
   <button id="labelBtn">Labels: OFF</button>
+  <button id="collisionBtn">Collision: OFF</button>
+  <button id="stlBtn">Import STL</button>
+  <input type="file" id="stlFile" accept=".stl" multiple style="display:none">
+  <div id="stl-list"></div>
+  <div id="stl-mode">
+    <span id="stl-sel-name" class="stl-mode-name"></span>
+    <div class="stl-mode-buttons">
+      <button id="stlModeT" class="active">Move</button>
+      <button id="stlModeR">Rotate</button>
+      <button id="stlModeS">Scale</button>
+      <button id="stlDeselect">Deselect</button>
+    </div>
+  </div>
+  <div id="collision-info" style="display:none;">Collisions: <span id="collision-text">none</span></div>
   <div id="ik-panel" style="display:none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #334;">
     <h2 style="color:#5b5;">IK Target (mm)</h2>
     <div class="slider-row">
@@ -143,13 +202,14 @@
     Error: <span id="ikErr">-</span>
   </div>
 </div>
-<div id="info">Scroll to zoom | Drag to orbit | Right-drag to pan | IK: drag the green sphere</div>
+<div id="info">Scroll to zoom | Drag to orbit | Right-drag to pan | IK: drag the green sphere | Click STL to select, T=move R=rotate S=scale Esc=deselect</div>
 
 <script type="importmap">
 {
   "imports": {
     "three": "https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/"
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/",
+    "three-mesh-bvh": "https://esm.sh/three-mesh-bvh@0.7.8?external=three"
   }
 }
 </script>
@@ -158,8 +218,13 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
+
+// Patch Three.js Mesh to use BVH-accelerated raycasting
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 // ============================================================
 // Scene
@@ -340,10 +405,20 @@ transformControls.addEventListener('dragging-changed', (e) => {
 });
 scene.add(transformControls);
 
+// TransformControls for STL object manipulation
+const stlTransformControls = new TransformControls(camera, renderer.domElement);
+stlTransformControls.setSize(0.4);
+stlTransformControls.setMode('translate');
+stlTransformControls.addEventListener('dragging-changed', (e) => {
+  orbitControls.enabled = !e.value;
+});
+scene.add(stlTransformControls);
+
 // ============================================================
 // Load glTF and attach meshes
 // ============================================================
 const meshLabels = [];
+const robotLinkMeshes = []; // { name, meshes: [Mesh], jointIdx }
 
 const loader = new GLTFLoader();
 loader.load('robot_scene.glb', (gltf) => {
@@ -428,9 +503,20 @@ loader.load('robot_scene.glb', (gltf) => {
     meshLabels.push(label);
   }
 
-  for (const [linkName] of Object.entries(linkToJoint)) {
+  for (const [linkName, jointIdx] of Object.entries(linkToJoint)) {
     const node = allNodes[linkName];
-    if (node) createLabel(linkName, node);
+    if (node) {
+      createLabel(linkName, node);
+      // Collect all meshes in this link for collision detection + build BVH
+      const meshes = [];
+      node.traverse((c) => {
+        if (c.isMesh) {
+          meshes.push(c);
+          c.geometry.boundsTree = new MeshBVH(c.geometry);
+        }
+      });
+      if (meshes.length > 0) robotLinkMeshes.push({ name: linkName, meshes, jointIdx });
+    }
   }
   for (const mesh of statics) {
     if (mesh.name) createLabel(mesh.name, mesh);
@@ -809,6 +895,383 @@ for (let i = 1; i <= 6; i++) {
 });
 
 // ============================================================
+// STL Import
+// ============================================================
+const stlLoader = new STLLoader();
+const importedSTLs = []; // { mesh, label, name, color }
+const stlColors = [0x44aaff, 0xff6644, 0x44ff88, 0xffaa22, 0xcc44ff, 0xff4488, 0x22ddcc, 0xaadd22];
+let stlColorIdx = 0;
+
+document.getElementById('stlBtn').addEventListener('click', () => {
+  document.getElementById('stlFile').click();
+});
+
+document.getElementById('stlFile').addEventListener('change', (e) => {
+  for (const file of e.target.files) {
+    loadSTLFile(file);
+  }
+  e.target.value = '';
+});
+
+function loadSTLFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const geometry = stlLoader.parse(e.target.result);
+    geometry.computeVertexNormals();
+    geometry.boundsTree = new MeshBVH(geometry);
+
+    const color = stlColors[stlColorIdx++ % stlColors.length];
+    const material = new THREE.MeshStandardMaterial({
+      color, metalness: 0.3, roughness: 0.6,
+      transparent: true, opacity: 0.85,
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+
+    // STL files often use mm — scale to meters if bounding box > 1m
+    const box = new THREE.Box3().setFromObject(mesh);
+    const size = box.getSize(new THREE.Vector3());
+    if (size.length() > 1) {
+      mesh.scale.setScalar(0.001);
+      box.setFromObject(mesh);
+    }
+
+    scene.add(mesh);
+
+    // Label — default to filename without extension
+    const baseName = file.name.replace(/\.stl$/i, '');
+    const div = document.createElement('div');
+    div.className = 'mesh-label';
+    div.textContent = baseName;
+    const label = new CSS2DObject(div);
+    label.visible = labelsOn;
+    const center = box.getCenter(new THREE.Vector3());
+    mesh.worldToLocal(center);
+    label.position.copy(center);
+    mesh.add(label);
+    meshLabels.push(label);
+
+    const entry = { mesh, label, name: baseName, color };
+    importedSTLs.push(entry);
+    addSTLListItem(entry);
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function addSTLListItem(entry) {
+  const list = document.getElementById('stl-list');
+  const item = document.createElement('div');
+  item.className = 'stl-item';
+
+  const colorSwatch = document.createElement('input');
+  colorSwatch.type = 'color';
+  colorSwatch.className = 'stl-color';
+  colorSwatch.value = '#' + new THREE.Color(entry.color).getHexString();
+  colorSwatch.title = 'Change color';
+  colorSwatch.addEventListener('input', () => {
+    entry.mesh.material.color.set(colorSwatch.value);
+    entry.color = entry.mesh.material.color.getHex();
+  });
+
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'stl-name';
+  nameSpan.textContent = entry.name;
+  nameSpan.title = 'Click to select, double-click to rename';
+  nameSpan.addEventListener('click', (e) => {
+    e.stopPropagation();
+    selectSTL(entry, item);
+  });
+  nameSpan.addEventListener('dblclick', () => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'val-input';
+    input.style.width = '100px';
+    input.value = entry.name;
+    nameSpan.style.display = 'none';
+    nameSpan.parentNode.insertBefore(input, nameSpan.nextSibling);
+    input.focus();
+    input.select();
+    const finish = (apply) => {
+      if (apply && input.value.trim()) {
+        entry.name = input.value.trim();
+        nameSpan.textContent = entry.name;
+        entry.label.element.textContent = entry.name;
+      }
+      input.remove();
+      nameSpan.style.display = '';
+    };
+    input.addEventListener('blur', () => finish(true));
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      if (e.key === 'Escape') finish(false);
+    });
+  });
+
+  const visBtn = document.createElement('button');
+  visBtn.className = 'stl-vis';
+  visBtn.textContent = '👁';
+  visBtn.title = 'Toggle visibility';
+  visBtn.addEventListener('click', () => {
+    entry.mesh.visible = !entry.mesh.visible;
+    visBtn.style.opacity = entry.mesh.visible ? 1 : 0.3;
+  });
+
+  const rmBtn = document.createElement('button');
+  rmBtn.className = 'stl-rm';
+  rmBtn.textContent = '✕';
+  rmBtn.title = 'Remove';
+  rmBtn.addEventListener('click', () => {
+    if (selectedSTL === entry) deselectSTL();
+    scene.remove(entry.mesh);
+    entry.mesh.geometry.dispose();
+    entry.mesh.material.dispose();
+    const li = meshLabels.indexOf(entry.label);
+    if (li >= 0) meshLabels.splice(li, 1);
+    const si = importedSTLs.indexOf(entry);
+    if (si >= 0) importedSTLs.splice(si, 1);
+    item.remove();
+  });
+
+  item.appendChild(colorSwatch);
+  item.appendChild(nameSpan);
+  item.appendChild(visBtn);
+  item.appendChild(rmBtn);
+  list.appendChild(item);
+}
+
+// ============================================================
+// STL Selection & Transform
+// ============================================================
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+let selectedSTL = null; // currently selected importedSTLs entry
+let selectedListItem = null; // corresponding DOM element
+
+const stlModePanel = document.getElementById('stl-mode');
+const stlSelName = document.getElementById('stl-sel-name');
+
+function selectSTL(entry, listItem) {
+  deselectSTL();
+  selectedSTL = entry;
+  selectedListItem = listItem || null;
+
+  stlTransformControls.attach(entry.mesh);
+  stlModePanel.style.display = 'block';
+  stlSelName.textContent = entry.name;
+
+  if (listItem) listItem.classList.add('selected');
+}
+
+function deselectSTL() {
+  if (selectedSTL) {
+    stlTransformControls.detach();
+    if (selectedListItem) selectedListItem.classList.remove('selected');
+    selectedSTL = null;
+    selectedListItem = null;
+    stlModePanel.style.display = 'none';
+    stlSelName.textContent = '';
+  }
+}
+
+function setSTLTransformMode(mode) {
+  stlTransformControls.setMode(mode);
+  document.getElementById('stlModeT').classList.toggle('active', mode === 'translate');
+  document.getElementById('stlModeR').classList.toggle('active', mode === 'rotate');
+  document.getElementById('stlModeS').classList.toggle('active', mode === 'scale');
+}
+
+document.getElementById('stlModeT').addEventListener('click', () => setSTLTransformMode('translate'));
+document.getElementById('stlModeR').addEventListener('click', () => setSTLTransformMode('rotate'));
+document.getElementById('stlModeS').addEventListener('click', () => setSTLTransformMode('scale'));
+document.getElementById('stlDeselect').addEventListener('click', deselectSTL);
+
+// Click to select STL meshes
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  // Ignore if dragging a gizmo
+  if (stlTransformControls.dragging || transformControls.dragging) return;
+  // Only left-click
+  if (e.button !== 0) return;
+
+  mouse.x = (e.clientX / innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+
+  // Test against all imported STL meshes
+  const stlMeshes = importedSTLs.filter(s => s.mesh.visible).map(s => s.mesh);
+  const hits = raycaster.intersectObjects(stlMeshes, false);
+
+  if (hits.length > 0) {
+    const hitMesh = hits[0].object;
+    const entry = importedSTLs.find(s => s.mesh === hitMesh);
+    if (entry) {
+      // Find the corresponding list item
+      const listItems = document.querySelectorAll('.stl-item');
+      const idx = importedSTLs.indexOf(entry);
+      selectSTL(entry, listItems[idx] || null);
+    }
+  }
+});
+
+// Click on empty space to deselect (only if not dragging)
+renderer.domElement.addEventListener('click', (e) => {
+  if (stlTransformControls.dragging || transformControls.dragging) return;
+  if (!selectedSTL) return;
+
+  mouse.x = (e.clientX / innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+
+  // Check if we hit any STL or the gizmo
+  const stlMeshes = importedSTLs.filter(s => s.mesh.visible).map(s => s.mesh);
+  const hits = raycaster.intersectObjects(stlMeshes, false);
+  if (hits.length === 0) {
+    // Also check gizmo — don't deselect if clicking on it
+    const gizmoHits = raycaster.intersectObjects(stlTransformControls.children, true);
+    if (gizmoHits.length === 0) deselectSTL();
+  }
+});
+
+// Keyboard shortcuts for STL transform
+window.addEventListener('keydown', (e) => {
+  // Ignore when typing in inputs
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+  if (selectedSTL) {
+    if (e.key === 't' || e.key === 'T') {
+      setSTLTransformMode('translate');
+    } else if (e.key === 'r' || e.key === 'R') {
+      setSTLTransformMode('rotate');
+    } else if (e.key === 's' || e.key === 'S') {
+      setSTLTransformMode('scale');
+    } else if (e.key === 'Escape') {
+      deselectSTL();
+    }
+  }
+});
+
+// ============================================================
+// Collision Detection
+// ============================================================
+let collisionEnabled = false;
+let lastCollisions = []; // persisted for API access: [{ linkName, stlName }]
+const collisionInfoEl = document.getElementById('collision-info');
+const collisionTextEl = document.getElementById('collision-text');
+const collisionBtn = document.getElementById('collisionBtn');
+
+// Persistent map: saves each material's original emissive exactly once
+const materialOriginalEmissive = new WeakMap();
+// Set of materials currently highlighted red (cleared each frame)
+const highlightedMaterials = new Set();
+
+function saveOriginalEmissive(material) {
+  if (!materialOriginalEmissive.has(material)) {
+    materialOriginalEmissive.set(material, material.emissive.clone());
+  }
+}
+
+collisionBtn.addEventListener('click', () => {
+  collisionEnabled = !collisionEnabled;
+  collisionBtn.textContent = `Collision: ${collisionEnabled ? 'ON' : 'OFF'}`;
+  collisionBtn.classList.toggle('active', collisionEnabled);
+  collisionInfoEl.style.display = collisionEnabled ? 'block' : 'none';
+  if (!collisionEnabled) clearCollisionHighlights();
+});
+
+function clearCollisionHighlights() {
+  for (const material of highlightedMaterials) {
+    const original = materialOriginalEmissive.get(material);
+    if (original) material.emissive.copy(original);
+  }
+  highlightedMaterials.clear();
+  collisionInfoEl.classList.remove('hit');
+  collisionTextEl.textContent = 'none';
+  // Remove child spans
+  while (collisionTextEl.nextSibling) collisionTextEl.nextSibling.remove();
+}
+
+const _collBox1 = new THREE.Box3();
+const _collBox2 = new THREE.Box3();
+const _collMatrix = new THREE.Matrix4();
+
+function checkCollisions() {
+  if (!collisionEnabled || importedSTLs.length === 0 || robotLinkMeshes.length === 0) {
+    if (collisionEnabled && importedSTLs.length === 0) {
+      collisionTextEl.textContent = 'no STL meshes';
+      collisionInfoEl.classList.remove('hit');
+    }
+    return;
+  }
+
+  // Clear previous highlights
+  clearCollisionHighlights();
+
+  const collisions = [];
+
+  for (const stlEntry of importedSTLs) {
+    if (!stlEntry.mesh.visible) continue;
+    const stlBVH = stlEntry.mesh.geometry.boundsTree;
+    _collBox1.setFromObject(stlEntry.mesh);
+
+    for (const link of robotLinkMeshes) {
+      let linkHit = false;
+      for (const robotMesh of link.meshes) {
+        // Broad phase: AABB
+        _collBox2.setFromObject(robotMesh);
+        if (!_collBox1.intersectsBox(_collBox2)) continue;
+
+        // Narrow phase: BVH triangle-level intersection
+        const robotBVH = robotMesh.geometry.boundsTree;
+        if (stlBVH && robotBVH) {
+          // Matrix transforms from robot mesh local space to STL mesh local space
+          _collMatrix.copy(stlEntry.mesh.matrixWorld).invert().multiply(robotMesh.matrixWorld);
+          if (!stlBVH.intersectsGeometry(robotMesh.geometry, _collMatrix)) continue;
+        }
+
+        collisions.push({ linkName: link.name, stlName: stlEntry.name });
+
+        // Highlight the STL mesh red
+        saveOriginalEmissive(stlEntry.mesh.material);
+        stlEntry.mesh.material.emissive.set(0xff2200);
+        highlightedMaterials.add(stlEntry.mesh.material);
+
+        // Highlight the robot mesh red
+        saveOriginalEmissive(robotMesh.material);
+        robotMesh.material.emissive.set(0xff2200);
+        highlightedMaterials.add(robotMesh.material);
+
+        linkHit = true;
+        break; // One collision per link-stl pair is enough
+      }
+    }
+  }
+
+  // Update UI
+  // Remove old pair spans
+  const parent = collisionInfoEl;
+  while (parent.children.length > 0 && parent.lastChild !== collisionTextEl &&
+         parent.lastChild.classList && parent.lastChild.classList.contains('collision-pair')) {
+    parent.lastChild.remove();
+  }
+
+  lastCollisions = collisions;
+
+  if (collisions.length > 0) {
+    collisionInfoEl.classList.add('hit');
+    collisionTextEl.textContent = `${collisions.length} collision${collisions.length > 1 ? 's' : ''}`;
+    for (const c of collisions) {
+      const span = document.createElement('span');
+      span.className = 'collision-pair';
+      span.textContent = `${c.linkName} \u2194 ${c.stlName}`;
+      parent.appendChild(span);
+    }
+  } else {
+    collisionInfoEl.classList.remove('hit');
+    collisionTextEl.textContent = 'none';
+  }
+}
+
+// ============================================================
 // Render loop
 // ============================================================
 const eePosEl = document.getElementById('eePos');
@@ -847,6 +1310,8 @@ function animate() {
     tgtPosEl.textContent = '-';
     ikErrEl.textContent = '-';
   }
+
+  checkCollisions();
 
   orbitControls.update();
   renderer.render(scene, camera);
@@ -888,6 +1353,9 @@ function buildState() {
     eeOrientation: [+(euler.y * rad2deg).toFixed(2), +(euler.z * rad2deg).toFixed(2), +(euler.x * rad2deg).toFixed(2)],
     mode: ikMode ? 'IK' : 'FK',
     ikError: ikMode ? +((getEEWorldPosition().distanceTo(ikTarget.position)) * 1000).toFixed(3) : null,
+    collisionEnabled,
+    collision: collisionEnabled && lastCollisions.length > 0,
+    collisions: collisionEnabled ? lastCollisions.map(c => ({ link: c.linkName, object: c.stlName })) : [],
   };
 }
 
@@ -948,7 +1416,106 @@ function handleCommand(data) {
     if (!ikMode) setIKMode(true);
     applyIKTarget(data);
     wsSend(buildState());
+
+  } else if (cmd === 'setCollision') {
+    const on = data.enabled !== undefined ? !!data.enabled : !collisionEnabled;
+    if (on !== collisionEnabled) {
+      collisionEnabled = on;
+      collisionBtn.textContent = `Collision: ${on ? 'ON' : 'OFF'}`;
+      collisionBtn.classList.toggle('active', on);
+      collisionInfoEl.style.display = on ? 'block' : 'none';
+      if (!on) clearCollisionHighlights();
+    }
+    wsSend(buildState());
+
+  } else if (cmd === 'getCollisions') {
+    wsSend({
+      type: 'collisions',
+      enabled: collisionEnabled,
+      collision: collisionEnabled && lastCollisions.length > 0,
+      pairs: collisionEnabled ? lastCollisions.map(c => ({ link: c.linkName, object: c.stlName })) : [],
+    });
+
+  } else if (cmd === 'listObjects') {
+    wsSend({
+      type: 'objects',
+      objects: importedSTLs.map((e, i) => buildObjectInfo(e, i)),
+    });
+
+  } else if (cmd === 'setObject') {
+    const entry = findSTLEntry(data);
+    if (!entry) {
+      wsSend({ type: 'error', error: 'Object not found. Use listObjects to see available objects.' });
+      return;
+    }
+    const m = entry.mesh;
+    if (Array.isArray(data.position) && data.position.length === 3) {
+      // Z-up: [x, y, z] → Three.js: x=x, y=z, z=y (mm → meters)
+      m.position.set(data.position[0] / 1000, data.position[2] / 1000, data.position[1] / 1000);
+    }
+    if (Array.isArray(data.rotation) && data.rotation.length === 3) {
+      // Z-up Euler [rx, ry, rz] degrees → Three.js: x=rx, y=rz, z=ry
+      m.rotation.set(
+        data.rotation[0] * deg2rad,
+        data.rotation[2] * deg2rad,
+        data.rotation[1] * deg2rad
+      );
+    }
+    if (data.scale !== undefined) {
+      if (Array.isArray(data.scale) && data.scale.length === 3) {
+        m.scale.set(data.scale[0], data.scale[1], data.scale[2]);
+      } else if (typeof data.scale === 'number') {
+        m.scale.setScalar(data.scale);
+      }
+    }
+    if (typeof data.name === 'string' && data.name.trim()) {
+      entry.name = data.name.trim();
+      entry.label.element.textContent = entry.name;
+    }
+    if (data.visible !== undefined) {
+      m.visible = !!data.visible;
+    }
+    const idx = importedSTLs.indexOf(entry);
+    wsSend({ type: 'object', ...buildObjectInfo(entry, idx) });
+
+  } else if (cmd === 'getObject') {
+    const entry = findSTLEntry(data);
+    if (!entry) {
+      wsSend({ type: 'error', error: 'Object not found. Use listObjects to see available objects.' });
+      return;
+    }
+    const idx = importedSTLs.indexOf(entry);
+    wsSend({ type: 'object', ...buildObjectInfo(entry, idx) });
   }
+}
+
+function findSTLEntry(data) {
+  if (typeof data.index === 'number') {
+    return importedSTLs[data.index] || null;
+  }
+  if (typeof data.name === 'string') {
+    return importedSTLs.find(e => e.name === data.name) || null;
+  }
+  if (typeof data.object === 'string') {
+    return importedSTLs.find(e => e.name === data.object) || null;
+  }
+  return null;
+}
+
+function buildObjectInfo(entry, index) {
+  const p = entry.mesh.position;
+  const r = entry.mesh.rotation;
+  const s = entry.mesh.scale;
+  return {
+    index,
+    name: entry.name,
+    // Z-up: X=three.x, Y=three.z, Z=three.y (meters → mm)
+    position: [+(p.x * 1000).toFixed(2), +(p.z * 1000).toFixed(2), +(p.y * 1000).toFixed(2)],
+    // Z-up Euler: rx=three.x, ry=three.z, rz=three.y (rad → deg)
+    rotation: [+(r.x * rad2deg).toFixed(2), +(r.z * rad2deg).toFixed(2), +(r.y * rad2deg).toFixed(2)],
+    scale: [+s.x.toFixed(4), +s.y.toFixed(4), +s.z.toFixed(4)],
+    visible: entry.mesh.visible,
+  };
 }
 
 function applyIKTarget(data) {
