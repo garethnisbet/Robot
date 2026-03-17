@@ -411,6 +411,10 @@ stlTransformControls.setSize(0.4);
 stlTransformControls.setMode('translate');
 stlTransformControls.addEventListener('dragging-changed', (e) => {
   orbitControls.enabled = !e.value;
+  // Save transform when drag ends
+  if (!e.value && selectedSTL) {
+    saveSTLDebounced(selectedSTL);
+  }
 });
 scene.add(stlTransformControls);
 
@@ -895,12 +899,146 @@ for (let i = 1; i <= 6; i++) {
 });
 
 // ============================================================
-// STL Import
+// STL Import + IndexedDB Persistence
 // ============================================================
 const stlLoader = new STLLoader();
-const importedSTLs = []; // { mesh, label, name, color }
+const importedSTLs = []; // { mesh, label, name, color, stlId }
 const stlColors = [0x44aaff, 0xff6644, 0x44ff88, 0xffaa22, 0xcc44ff, 0xff4488, 0x22ddcc, 0xaadd22];
 let stlColorIdx = 0;
+
+// --- IndexedDB helpers ---
+const STL_DB_NAME = 'RobotViewerSTLs';
+const STL_DB_VERSION = 1;
+const STL_STORE = 'stls';
+
+function openSTLDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(STL_DB_NAME, STL_DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STL_STORE)) {
+        db.createObjectStore(STL_STORE, { keyPath: 'id' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveSTLToDB(entry) {
+  const db = await openSTLDB();
+  const tx = db.transaction(STL_STORE, 'readwrite');
+  const store = tx.objectStore(STL_STORE);
+  const m = entry.mesh;
+  store.put({
+    id: entry.stlId,
+    name: entry.name,
+    color: entry.color,
+    buffer: entry._buffer,
+    position: [m.position.x, m.position.y, m.position.z],
+    rotation: [m.rotation.x, m.rotation.y, m.rotation.z],
+    scale: [m.scale.x, m.scale.y, m.scale.z],
+    visible: m.visible,
+  });
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function deleteSTLFromDB(stlId) {
+  const db = await openSTLDB();
+  const tx = db.transaction(STL_STORE, 'readwrite');
+  tx.objectStore(STL_STORE).delete(stlId);
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function loadAllSTLsFromDB() {
+  const db = await openSTLDB();
+  const tx = db.transaction(STL_STORE, 'readonly');
+  const store = tx.objectStore(STL_STORE);
+  return new Promise((resolve, reject) => {
+    const req = store.getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function saveSTLDebounced(entry) {
+  saveSTLToDB(entry).catch(e => console.warn('STL save failed:', e));
+}
+
+// --- Restore persisted STLs on load ---
+async function restorePersistedSTLs() {
+  try {
+    const records = await loadAllSTLsFromDB();
+    for (const rec of records) {
+      createSTLFromBuffer(rec.buffer, rec.name, rec.color, rec.id, {
+        position: rec.position,
+        rotation: rec.rotation,
+        scale: rec.scale,
+        visible: rec.visible,
+      });
+    }
+  } catch (e) {
+    console.warn('Failed to restore STLs:', e);
+  }
+}
+
+// --- Core STL creation from ArrayBuffer ---
+function createSTLFromBuffer(buffer, name, color, stlId, transforms) {
+  const geometry = stlLoader.parse(buffer);
+  geometry.computeVertexNormals();
+  geometry.boundsTree = new MeshBVH(geometry);
+
+  const material = new THREE.MeshStandardMaterial({
+    color, metalness: 0.3, roughness: 0.6,
+    transparent: true, opacity: 0.85,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+
+  if (transforms) {
+    // Apply saved transforms
+    mesh.position.set(...transforms.position);
+    mesh.rotation.set(...transforms.rotation);
+    mesh.scale.set(...transforms.scale);
+    mesh.visible = transforms.visible;
+  } else {
+    // STL files often use mm — scale to meters if bounding box > 1m
+    const box = new THREE.Box3().setFromObject(mesh);
+    const size = box.getSize(new THREE.Vector3());
+    if (size.length() > 1) {
+      mesh.scale.setScalar(0.001);
+    }
+  }
+
+  scene.add(mesh);
+
+  // Label
+  const box = new THREE.Box3().setFromObject(mesh);
+  const div = document.createElement('div');
+  div.className = 'mesh-label';
+  div.textContent = name;
+  const label = new CSS2DObject(div);
+  label.visible = labelsOn;
+  const center = box.getCenter(new THREE.Vector3());
+  mesh.worldToLocal(center);
+  label.position.copy(center);
+  mesh.add(label);
+  meshLabels.push(label);
+
+  const entry = { mesh, label, name, color, stlId, _buffer: buffer };
+  importedSTLs.push(entry);
+  stlColorIdx = Math.max(stlColorIdx, stlColors.indexOf(color) + 1);
+  addSTLListItem(entry);
+
+  return entry;
+}
 
 document.getElementById('stlBtn').addEventListener('click', () => {
   document.getElementById('stlFile').click();
@@ -916,48 +1054,18 @@ document.getElementById('stlFile').addEventListener('change', (e) => {
 function loadSTLFile(file) {
   const reader = new FileReader();
   reader.onload = (e) => {
-    const geometry = stlLoader.parse(e.target.result);
-    geometry.computeVertexNormals();
-    geometry.boundsTree = new MeshBVH(geometry);
-
-    const color = stlColors[stlColorIdx++ % stlColors.length];
-    const material = new THREE.MeshStandardMaterial({
-      color, metalness: 0.3, roughness: 0.6,
-      transparent: true, opacity: 0.85,
-    });
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-
-    // STL files often use mm — scale to meters if bounding box > 1m
-    const box = new THREE.Box3().setFromObject(mesh);
-    const size = box.getSize(new THREE.Vector3());
-    if (size.length() > 1) {
-      mesh.scale.setScalar(0.001);
-      box.setFromObject(mesh);
-    }
-
-    scene.add(mesh);
-
-    // Label — default to filename without extension
+    const buffer = e.target.result;
     const baseName = file.name.replace(/\.stl$/i, '');
-    const div = document.createElement('div');
-    div.className = 'mesh-label';
-    div.textContent = baseName;
-    const label = new CSS2DObject(div);
-    label.visible = labelsOn;
-    const center = box.getCenter(new THREE.Vector3());
-    mesh.worldToLocal(center);
-    label.position.copy(center);
-    mesh.add(label);
-    meshLabels.push(label);
-
-    const entry = { mesh, label, name: baseName, color };
-    importedSTLs.push(entry);
-    addSTLListItem(entry);
+    const color = stlColors[stlColorIdx++ % stlColors.length];
+    const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    const entry = createSTLFromBuffer(buffer, baseName, color, stlId, null);
+    saveSTLDebounced(entry);
   };
   reader.readAsArrayBuffer(file);
 }
+
+// Restore persisted STLs
+restorePersistedSTLs();
 
 function addSTLListItem(entry) {
   const list = document.getElementById('stl-list');
@@ -972,6 +1080,7 @@ function addSTLListItem(entry) {
   colorSwatch.addEventListener('input', () => {
     entry.mesh.material.color.set(colorSwatch.value);
     entry.color = entry.mesh.material.color.getHex();
+    saveSTLDebounced(entry);
   });
 
   const nameSpan = document.createElement('span');
@@ -997,6 +1106,7 @@ function addSTLListItem(entry) {
         entry.name = input.value.trim();
         nameSpan.textContent = entry.name;
         entry.label.element.textContent = entry.name;
+        saveSTLDebounced(entry);
       }
       input.remove();
       nameSpan.style.display = '';
@@ -1012,9 +1122,11 @@ function addSTLListItem(entry) {
   visBtn.className = 'stl-vis';
   visBtn.textContent = '👁';
   visBtn.title = 'Toggle visibility';
+  visBtn.style.opacity = entry.mesh.visible ? 1 : 0.3;
   visBtn.addEventListener('click', () => {
     entry.mesh.visible = !entry.mesh.visible;
     visBtn.style.opacity = entry.mesh.visible ? 1 : 0.3;
+    saveSTLDebounced(entry);
   });
 
   const rmBtn = document.createElement('button');
@@ -1031,6 +1143,7 @@ function addSTLListItem(entry) {
     const si = importedSTLs.indexOf(entry);
     if (si >= 0) importedSTLs.splice(si, 1);
     item.remove();
+    deleteSTLFromDB(entry.stlId).catch(e => console.warn('STL delete failed:', e));
   });
 
   item.appendChild(colorSwatch);
@@ -1477,6 +1590,7 @@ function handleCommand(data) {
     }
     const idx = importedSTLs.indexOf(entry);
     wsSend({ type: 'object', ...buildObjectInfo(entry, idx) });
+    saveSTLDebounced(entry);
 
   } else if (cmd === 'getObject') {
     const entry = findSTLEntry(data);
