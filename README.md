@@ -11,6 +11,7 @@ Interactive 3D visualisation and control of a Meca500 R3 6-DOF serial manipulato
 - **Mesh labels toggle** — show/hide object name labels on all meshes
 - **STL mesh rendering** — CAD meshes (A0–A6) attached to the FK chain via Blender armature bone transforms
 - **STL import** — load external STL files into the scene with auto-scaling, labels, and per-object colour
+- **Persistent STL objects** — imported objects are automatically saved to IndexedDB and restored on page reload, including geometry, transforms, colour, and visibility
 - **Object manipulation** — click imported STL objects to select, then move, rotate, or scale with transform gizmos (keyboard: T/R/S, Escape to deselect)
 - **Collision detection** — BVH-accelerated triangle-level intersection testing between robot links and imported objects, with red highlight on colliding meshes
 - **Remote control API** — two-way WebSocket API for controlling the robot, imported objects, and collision detection from Python, scripts, or any WebSocket client
@@ -49,6 +50,17 @@ When an object is selected, a transform gizmo appears. Use the mode buttons or k
 | `Esc` | Deselect |
 
 STL files in mm are auto-scaled to meters if the bounding box exceeds 1m.
+
+### Persistence
+
+Imported STL objects are automatically persisted in the browser's IndexedDB. All object data is saved and restored across page reloads:
+
+- Raw STL geometry (binary data)
+- Position, rotation, and scale transforms
+- Colour and visibility state
+- Object name
+
+Changes are saved automatically whenever you import, move, rotate, scale, rename, recolour, hide/show, or delete an object. Objects modified via the remote control API (`setObject`) are also persisted. To clear all saved objects, remove them from the panel list or clear site data in your browser.
 
 ## Collision Detection
 
