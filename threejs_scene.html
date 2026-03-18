@@ -96,6 +96,12 @@
     flex: 1; width: auto; padding: 5px 0; margin: 0;
     font-size: 11px; text-align: center;
   }
+  #stl-parent { margin-top: 5px; display: flex; align-items: center; gap: 5px; }
+  #stl-parent label { font-size: 11px; color: #889; white-space: nowrap; }
+  #stlParentSelect {
+    flex: 1; background: #223; color: #aac; border: 1px solid #446;
+    border-radius: 3px; font-size: 11px; padding: 2px 4px; outline: none;
+  }
   #collision-info {
     margin-top: 6px; padding-top: 6px; border-top: 1px solid #334;
     font-size: 11px; color: #889;
@@ -173,6 +179,18 @@
       <button id="stlModeR">Rotate</button>
       <button id="stlModeS">Scale</button>
       <button id="stlDeselect">Deselect</button>
+    </div>
+    <div id="stl-parent">
+      <label>Parent:</label>
+      <select id="stlParentSelect">
+        <option value="">World</option>
+        <option value="L0">L0 – Base</option>
+        <option value="L1">L1 – Shoulder</option>
+        <option value="L2">L2 – Upper Arm</option>
+        <option value="L3">L3 – Forearm</option>
+        <option value="L4">L4 – Wrist 1</option>
+        <option value="L5">L5 – Wrist 2</option>
+      </select>
     </div>
   </div>
   <div id="collision-info" style="display:none;">Collisions: <span id="collision-text">none</span></div>
@@ -1196,6 +1214,7 @@ async function saveSTLToDB(entry) {
     rotation: [m.rotation.x, m.rotation.y, m.rotation.z],
     scale: [m.scale.x, m.scale.y, m.scale.z],
     visible: m.visible,
+    parentLink: entry.parentLink || null,
   });
   return new Promise((resolve, reject) => {
     tx.oncomplete = resolve;
@@ -1238,6 +1257,7 @@ async function restorePersistedSTLs() {
         rotation: rec.rotation,
         scale: rec.scale,
         visible: rec.visible,
+        parentLink: rec.parentLink || null,
       });
     }
   } catch (e) {
@@ -1275,8 +1295,6 @@ function createSTLFromBuffer(buffer, name, color, stlId, transforms) {
   }
 
   scene.add(mesh);
-
-  // Label
   const box = new THREE.Box3().setFromObject(mesh);
   const div = document.createElement('div');
   div.className = 'mesh-label';
@@ -1289,10 +1307,15 @@ function createSTLFromBuffer(buffer, name, color, stlId, transforms) {
   mesh.add(label);
   meshLabels.push(label);
 
-  const entry = { mesh, label, name, color, stlId, _buffer: buffer };
+  const entry = { mesh, label, name, color, stlId, _buffer: buffer, parentLink: null };
   importedSTLs.push(entry);
   stlColorIdx = Math.max(stlColorIdx, stlColors.indexOf(color) + 1);
   addSTLListItem(entry);
+
+  // Restore parent link if present (saved transforms are already in link-local space)
+  if (transforms && transforms.parentLink) {
+    setSTLParent(entry, transforms.parentLink, true);
+  }
 
   return entry;
 }
@@ -1392,7 +1415,7 @@ function addSTLListItem(entry) {
   rmBtn.title = 'Remove';
   rmBtn.addEventListener('click', () => {
     if (selectedSTL === entry) deselectSTL();
-    scene.remove(entry.mesh);
+    entry.mesh.removeFromParent();
     entry.mesh.geometry.dispose();
     entry.mesh.material.dispose();
     const li = meshLabels.indexOf(entry.label);
@@ -1421,6 +1444,49 @@ let selectedListItem = null; // corresponding DOM element
 const stlModePanel = document.getElementById('stl-mode');
 const stlSelName = document.getElementById('stl-sel-name');
 
+// ============================================================
+// STL parent-link assignment
+// ============================================================
+const _reparentMat = new THREE.Matrix4();
+
+// setSTLParent(entry, linkName, preserveLocal)
+//   linkName: 'L0'-'L5' or '' / null for world
+//   preserveLocal: if true, keep current local transform (use when restoring from DB)
+//                  if false, recompute local transform from current world matrix
+function setSTLParent(entry, linkName, preserveLocal = false) {
+  const mesh = entry.mesh;
+
+  if (!preserveLocal) {
+    mesh.updateWorldMatrix(true, false);
+    _reparentMat.copy(mesh.matrixWorld);
+  }
+
+  // Detach from current parent
+  mesh.removeFromParent();
+
+  const jointIdx = linkName ? linkToJoint[linkName] : undefined;
+  if (linkName && jointIdx !== undefined) {
+    const linkGroup = jointRotGroups[jointIdx];
+    if (!preserveLocal) {
+      linkGroup.updateWorldMatrix(true, false);
+      const localMat = linkGroup.matrixWorld.clone().invert().multiply(_reparentMat);
+      localMat.decompose(mesh.position, mesh.quaternion, mesh.scale);
+      mesh.rotation.setFromQuaternion(mesh.quaternion);
+    }
+    linkGroup.add(mesh);
+    entry.parentLink = linkName;
+  } else {
+    if (!preserveLocal) {
+      _reparentMat.decompose(mesh.position, mesh.quaternion, mesh.scale);
+      mesh.rotation.setFromQuaternion(mesh.quaternion);
+    }
+    scene.add(mesh);
+    entry.parentLink = null;
+  }
+
+  saveSTLDebounced(entry);
+}
+
 function selectSTL(entry, listItem) {
   deselectSTL();
   selectedSTL = entry;
@@ -1429,6 +1495,7 @@ function selectSTL(entry, listItem) {
   stlTransformControls.attach(entry.mesh);
   stlModePanel.style.display = 'block';
   stlSelName.textContent = entry.name;
+  document.getElementById('stlParentSelect').value = entry.parentLink || '';
 
   if (listItem) listItem.classList.add('selected');
 }
@@ -1455,6 +1522,10 @@ document.getElementById('stlModeT').addEventListener('click', () => setSTLTransf
 document.getElementById('stlModeR').addEventListener('click', () => setSTLTransformMode('rotate'));
 document.getElementById('stlModeS').addEventListener('click', () => setSTLTransformMode('scale'));
 document.getElementById('stlDeselect').addEventListener('click', deselectSTL);
+
+document.getElementById('stlParentSelect').addEventListener('change', (e) => {
+  if (selectedSTL) setSTLParent(selectedSTL, e.target.value, false);
+});
 
 // Click to select STL meshes
 renderer.domElement.addEventListener('pointerdown', (e) => {
