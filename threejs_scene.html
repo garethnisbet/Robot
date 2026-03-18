@@ -119,10 +119,16 @@
   #ws-status .dot.off { background: #555; }
   #ws-status .dot.on { background: #4f4; box-shadow: 0 0 4px #4f4; }
   #ws-status .dot.err { background: #f44; box-shadow: 0 0 4px #f44; }
+  #nav-gizmo {
+    position: absolute; bottom: 20px; right: 20px;
+    width: 110px; height: 110px; cursor: default;
+    border-radius: 50%;
+  }
 </style>
 </head>
 <body>
 <div id="loading">Loading robot model...</div>
+<canvas id="nav-gizmo"></canvas>
 <div id="ws-status"><span class="dot off" id="ws-dot"></span><span id="ws-text">API: not connected</span></div>
 <div id="panel">
   <h2>Joint Angles (deg)</h2>
@@ -154,6 +160,8 @@
   <button id="demoBtn">Demo Pose</button>
   <button id="ikBtn">IK Mode: OFF</button>
   <button id="labelBtn">Labels: OFF</button>
+  <button id="chainBtn">Chain: OFF</button>
+  <button id="orthoBtn">Ortho: OFF</button>
   <button id="collisionBtn">Collision: OFF</button>
   <button id="stlBtn">Import STL</button>
   <input type="file" id="stlFile" accept=".stl" multiple style="display:none">
@@ -256,6 +264,194 @@ orbitControls.target.set(0, 0.15, 0);
 orbitControls.enableDamping = true;
 orbitControls.dampingFactor = 0.08;
 orbitControls.update();
+
+// Orthographic camera (created once, activated on toggle)
+const orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.001, 50);
+let activeCamera = camera;
+let orthoOn = false;
+
+function updateOrthoFrustum() {
+  const dist = orthoCamera.position.distanceTo(orbitControls.target);
+  const halfH = Math.tan(camera.fov * Math.PI / 360) * dist;
+  const aspect = innerWidth / innerHeight;
+  orthoCamera.left = -halfH * aspect; orthoCamera.right = halfH * aspect;
+  orthoCamera.top  =  halfH;          orthoCamera.bottom = -halfH;
+  orthoCamera.updateProjectionMatrix();
+}
+
+function setOrtho(on) {
+  orthoOn = on;
+  document.getElementById('orthoBtn').textContent = `Ortho: ${on ? 'ON' : 'OFF'}`;
+  document.getElementById('orthoBtn').classList.toggle('active', on);
+  if (on) {
+    orthoCamera.position.copy(camera.position);
+    orthoCamera.quaternion.copy(camera.quaternion);
+    orthoCamera.up.copy(camera.up);
+    updateOrthoFrustum();
+    activeCamera = orthoCamera;
+  } else {
+    camera.position.copy(orthoCamera.position);
+    camera.quaternion.copy(orthoCamera.quaternion);
+    camera.up.copy(orthoCamera.up);
+    activeCamera = camera;
+  }
+  orbitControls.object = activeCamera;
+  transformControls.camera = activeCamera;
+  stlTransformControls.camera = activeCamera;
+  orbitControls.update();
+}
+
+// ============================================================
+// Navigation gizmo (Blender-style, Canvas 2D)
+// ============================================================
+const navCanvas = document.getElementById('nav-gizmo');
+const NAV_SIZE = 110;
+navCanvas.width  = Math.round(NAV_SIZE * devicePixelRatio);
+navCanvas.height = Math.round(NAV_SIZE * devicePixelRatio);
+const navCtx = navCanvas.getContext('2d');
+navCtx.scale(devicePixelRatio, devicePixelRatio);
+
+// Axis definitions  [id, world-dir, sphere-color, label, snap-up-vector]
+const NAV_AXES = [
+  { id:'x+', dir:new THREE.Vector3( 1, 0, 0), color:'#ff4455', label:'X', r:11, up:new THREE.Vector3(0,1,0) },
+  { id:'y+', dir:new THREE.Vector3( 0, 1, 0), color:'#4499ff', label:'Z', r:11, up:new THREE.Vector3(0,0,-1) },
+  { id:'z+', dir:new THREE.Vector3( 0, 0, 1), color:'#55dd55', label:'Y', r:11, up:new THREE.Vector3(0,1,0) },
+  { id:'x-', dir:new THREE.Vector3(-1, 0, 0), color:'#882233', label:'',  r: 8, up:new THREE.Vector3(0,1,0) },
+  { id:'y-', dir:new THREE.Vector3( 0,-1, 0), color:'#224488', label:'',  r: 8, up:new THREE.Vector3(0,0,1)  },
+  { id:'z-', dir:new THREE.Vector3( 0, 0,-1), color:'#226622', label:'',  r: 8, up:new THREE.Vector3(0,1,0) },
+];
+
+// Project a world-space unit direction into 2D gizmo coords.
+// We apply the INVERSE of the main camera quaternion so the dots
+// move as the camera orbits.
+const _navQ = new THREE.Quaternion();
+const _navV = new THREE.Vector3();
+function navProject(dir) {
+  _navQ.copy(activeCamera.quaternion).invert();
+  _navV.copy(dir).applyQuaternion(_navQ);
+  const cx = NAV_SIZE / 2, cy = NAV_SIZE / 2;
+  const scale = NAV_SIZE / 2 - 16;
+  return { x: cx + _navV.x * scale, y: cy - _navV.y * scale, z: _navV.z };
+}
+
+let navHovered = null;
+
+function renderNavGizmo() {
+  const ctx = navCtx;
+  const S = NAV_SIZE;
+  ctx.clearRect(0, 0, S, S);
+
+  // Background circle
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(S/2, S/2, S/2 - 1, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(20,20,40,0.55)';
+  ctx.fill();
+  ctx.restore();
+
+  // Compute projected positions and sort back-to-front
+  const items = NAV_AXES.map(ax => ({ ax, ...navProject(ax.dir) }));
+  items.sort((a, b) => a.z - b.z);
+
+  // Draw axis lines (behind dots)
+  for (const item of items) {
+    if (!item.ax.id.endsWith('+')) continue;
+    const neg = items.find(i => i.ax.id === item.ax.id.replace('+','-'));
+    if (!neg) continue;
+    ctx.beginPath();
+    ctx.moveTo(neg.x, neg.y);
+    ctx.lineTo(item.x, item.y);
+    ctx.strokeStyle = 'rgba(180,180,180,0.25)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+
+  // Draw dots
+  for (const item of items) {
+    const { ax, x, y, z } = item;
+    // Depth-based alpha: 0.45 at back, 1.0 at front
+    const alpha = 0.45 + 0.55 * ((z + 1) / 2);
+    const hovered = navHovered === ax.id;
+    const r = ax.r + (hovered ? 2 : 0);
+
+    // Sphere fill
+    const grad = ctx.createRadialGradient(x - r*0.3, y - r*0.3, r*0.1, x, y, r);
+    const base = hexAlpha(ax.color, alpha);
+    const bright = hexAlpha(ax.color, Math.min(1, alpha + 0.3));
+    grad.addColorStop(0, bright);
+    grad.addColorStop(1, base);
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI*2);
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // Hover ring
+    if (hovered) {
+      ctx.beginPath();
+      ctx.arc(x, y, r + 1, 0, Math.PI*2);
+      ctx.strokeStyle = `rgba(255,255,255,0.7)`;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    // Label
+    if (ax.label) {
+      ctx.fillStyle = `rgba(255,255,255,${Math.min(1, alpha + 0.1)})`;
+      ctx.font = `bold ${r - 1}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(ax.label, x, y + 0.5);
+    }
+  }
+}
+
+function hexAlpha(hex, alpha) {
+  const r = parseInt(hex.slice(1,3),16);
+  const g = parseInt(hex.slice(3,5),16);
+  const b = parseInt(hex.slice(5,7),16);
+  return `rgba(${r},${g},${b},${alpha.toFixed(2)})`;
+}
+
+// Hit-test: returns axis id under (mx,my) in CSS pixels, or null
+function navHitTest(mx, my) {
+  const items = NAV_AXES.map(ax => ({ ax, ...navProject(ax.dir) }));
+  items.sort((a, b) => b.z - a.z); // front-to-back for click priority
+  for (const item of items) {
+    const dx = mx - item.x, dy = my - item.y;
+    if (Math.sqrt(dx*dx + dy*dy) <= item.ax.r + 3) return item.ax.id;
+  }
+  return null;
+}
+
+navCanvas.addEventListener('mousemove', (e) => {
+  const rect = navCanvas.getBoundingClientRect();
+  const id = navHitTest(e.clientX - rect.left, e.clientY - rect.top);
+  if (id !== navHovered) { navHovered = id; navCanvas.style.cursor = id ? 'pointer' : 'default'; }
+});
+navCanvas.addEventListener('mouseleave', () => { navHovered = null; navCanvas.style.cursor = 'default'; });
+
+// Snap camera to a principal view
+const _snapVec = new THREE.Vector3();
+let snapAnim = null;
+const snapClock = new THREE.Clock();
+
+navCanvas.addEventListener('click', (e) => {
+  const rect = navCanvas.getBoundingClientRect();
+  const id = navHitTest(e.clientX - rect.left, e.clientY - rect.top);
+  if (!id) return;
+  const ax = NAV_AXES.find(a => a.id === id);
+  const dist = activeCamera.position.distanceTo(orbitControls.target);
+  snapAnim = {
+    sp: activeCamera.position.clone(),
+    ep: orbitControls.target.clone().addScaledVector(ax.dir, dist),
+    su: activeCamera.up.clone(),
+    eu: ax.up.clone(),
+    t: 0,
+  };
+  orbitControls.enabled = false;
+});
+
+function easeNavSnap(t) { return t*t*(3-2*t); } // smoothstep
 
 // ============================================================
 // Lighting
@@ -370,6 +566,56 @@ function makeAxis(dir, color) {
 eeMarker.add(makeAxis(new THREE.Vector3(1, 0, 0), 0x0000ff));  // Blue  → Robot +X
 eeMarker.add(makeAxis(new THREE.Vector3(0, -1, 0), 0x00ff00)); // Green → Robot +Y
 eeMarker.add(makeAxis(new THREE.Vector3(0, 0, 1), 0xff0000));  // Red   → Down
+
+// ============================================================
+// Kinematics chain visualisation
+// ============================================================
+let chainVisible = false;
+
+// 7 points: 6 joints + EE (updated each frame when visible)
+const chainPts = new Float32Array(7 * 3);
+const chainLineGeo = new THREE.BufferGeometry();
+chainLineGeo.setAttribute('position', new THREE.BufferAttribute(chainPts, 3));
+
+// Line segments: j0→j1, j1→j2, … j5→EE  (6 segments = 12 indices)
+const chainLineIndices = [];
+for (let i = 0; i < 6; i++) { chainLineIndices.push(i, i + 1); }
+chainLineGeo.setIndex(chainLineIndices);
+
+const chainLine = new THREE.LineSegments(
+  chainLineGeo,
+  new THREE.LineBasicMaterial({ color: 0xffdd44, linewidth: 2, depthTest: false, transparent: true, opacity: 0.85 })
+);
+chainLine.renderOrder = 1;
+chainLine.visible = false;
+scene.add(chainLine);
+
+// Small spheres at each joint + EE
+const chainSphereMat = new THREE.MeshStandardMaterial({ color: 0xffdd44, emissive: 0x554400, depthTest: false });
+const chainSpheres = [];
+for (let i = 0; i < 7; i++) {
+  const r = i === 0 ? 0.009 : i === 6 ? 0.007 : 0.006;
+  const s = new THREE.Mesh(new THREE.SphereGeometry(r, 10, 10), chainSphereMat);
+  s.renderOrder = 1;
+  s.visible = false;
+  scene.add(s);
+  chainSpheres.push(s);
+}
+
+function updateChain() {
+  scene.updateMatrixWorld(true);
+  for (let i = 0; i < 6; i++) {
+    const p = getJointWorldPosition(i);
+    chainPts[i * 3]     = p.x;
+    chainPts[i * 3 + 1] = p.y;
+    chainPts[i * 3 + 2] = p.z;
+    chainSpheres[i].position.copy(p);
+  }
+  const ee = getEEWorldPosition();
+  chainPts[18] = ee.x; chainPts[19] = ee.y; chainPts[20] = ee.z;
+  chainSpheres[6].position.copy(ee);
+  chainLineGeo.attributes.position.needsUpdate = true;
+}
 
 // ============================================================
 // IK target
@@ -821,6 +1067,17 @@ document.getElementById('ikBtn').addEventListener('click', () => {
   setIKMode(!ikMode);
 });
 
+document.getElementById('chainBtn').addEventListener('click', () => {
+  chainVisible = !chainVisible;
+  document.getElementById('chainBtn').textContent = `Chain: ${chainVisible ? 'ON' : 'OFF'}`;
+  document.getElementById('chainBtn').classList.toggle('active', chainVisible);
+  chainLine.visible = chainVisible;
+  chainSpheres.forEach(s => s.visible = chainVisible);
+  if (chainVisible) updateChain();
+});
+
+document.getElementById('orthoBtn').addEventListener('click', () => setOrtho(!orthoOn));
+
 let labelsOn = false;
 document.getElementById('labelBtn').addEventListener('click', () => {
   labelsOn = !labelsOn;
@@ -1208,7 +1465,7 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
 
   mouse.x = (e.clientX / innerWidth) * 2 - 1;
   mouse.y = -(e.clientY / innerHeight) * 2 + 1;
-  raycaster.setFromCamera(mouse, camera);
+  raycaster.setFromCamera(mouse, activeCamera);
 
   // Test against all imported STL meshes
   const stlMeshes = importedSTLs.filter(s => s.mesh.visible).map(s => s.mesh);
@@ -1233,7 +1490,7 @@ renderer.domElement.addEventListener('click', (e) => {
 
   mouse.x = (e.clientX / innerWidth) * 2 - 1;
   mouse.y = -(e.clientY / innerHeight) * 2 + 1;
-  raycaster.setFromCamera(mouse, camera);
+  raycaster.setFromCamera(mouse, activeCamera);
 
   // Check if we hit any STL or the gizmo
   const stlMeshes = importedSTLs.filter(s => s.mesh.visible).map(s => s.mesh);
@@ -1424,17 +1681,35 @@ function animate() {
     ikErrEl.textContent = '-';
   }
 
+  if (chainVisible) updateChain();
+
   checkCollisions();
 
+  // Camera snap animation
+  if (snapAnim) {
+    snapAnim.t = Math.min(1, snapAnim.t + snapClock.getDelta() / 0.4);
+    const t = easeNavSnap(snapAnim.t);
+    activeCamera.position.lerpVectors(snapAnim.sp, snapAnim.ep, t);
+    activeCamera.up.lerpVectors(snapAnim.su, snapAnim.eu, t).normalize();
+    if (snapAnim.t >= 1) {
+      snapAnim = null; orbitControls.enabled = true;
+      if (orthoOn) updateOrthoFrustum();
+    }
+  } else {
+    snapClock.getDelta(); // keep clock ticking
+  }
+
   orbitControls.update();
-  renderer.render(scene, camera);
-  labelRenderer.render(scene, camera);
+  renderer.render(scene, activeCamera);
+  labelRenderer.render(scene, activeCamera);
+  renderNavGizmo();
 }
 animate();
 
 window.addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
+  if (orthoOn) updateOrthoFrustum();
   renderer.setSize(innerWidth, innerHeight);
   labelRenderer.setSize(innerWidth, innerHeight);
 });

@@ -529,6 +529,7 @@ def main():
     parser.add_argument("--url", default="ws://localhost:8080/ws",
                         help="WebSocket URL (default: ws://localhost:8080/ws)")
     args = parser.parse_args()
+    print(args.url)
     asyncio.run(interactive(args.url))
 
 
