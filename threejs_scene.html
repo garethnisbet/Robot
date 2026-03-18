@@ -171,6 +171,11 @@
   <button id="collisionBtn">Collision: OFF</button>
   <button id="stlBtn">Import STL</button>
   <input type="file" id="stlFile" accept=".stl" multiple style="display:none">
+  <div style="display:flex; gap:4px; margin-top:4px;">
+    <button id="addCubeBtn" style="flex:1; margin:0;">Cube</button>
+    <button id="addSphereBtn" style="flex:1; margin:0;">Sphere</button>
+    <button id="addCylinderBtn" style="flex:1; margin:0;">Cylinder</button>
+  </div>
   <div id="stl-list"></div>
   <div id="stl-mode">
     <span id="stl-sel-name" class="stl-mode-name"></span>
@@ -1344,6 +1349,73 @@ function loadSTLFile(file) {
   reader.readAsArrayBuffer(file);
 }
 
+// --- Primitive creation (cube / sphere) ---
+function geometryToSTLBuffer(geometry) {
+  const pos = geometry.getAttribute('position');
+  const idx = geometry.getIndex();
+  const triCount = idx ? idx.count / 3 : pos.count / 3;
+  const bufLen = 84 + triCount * 50;
+  const buf = new ArrayBuffer(bufLen);
+  const view = new DataView(buf);
+  // 80-byte header (zeros) + triangle count
+  view.setUint32(80, triCount, true);
+  let offset = 84;
+  const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
+  const cb = new THREE.Vector3(), ab = new THREE.Vector3();
+  for (let i = 0; i < triCount; i++) {
+    const a = idx ? idx.getX(i * 3)     : i * 3;
+    const b = idx ? idx.getX(i * 3 + 1) : i * 3 + 1;
+    const c = idx ? idx.getX(i * 3 + 2) : i * 3 + 2;
+    vA.fromBufferAttribute(pos, a);
+    vB.fromBufferAttribute(pos, b);
+    vC.fromBufferAttribute(pos, c);
+    cb.subVectors(vC, vB); ab.subVectors(vA, vB); cb.cross(ab).normalize();
+    // normal
+    view.setFloat32(offset, cb.x, true); offset += 4;
+    view.setFloat32(offset, cb.y, true); offset += 4;
+    view.setFloat32(offset, cb.z, true); offset += 4;
+    // vertices
+    for (const v of [vA, vB, vC]) {
+      view.setFloat32(offset, v.x, true); offset += 4;
+      view.setFloat32(offset, v.y, true); offset += 4;
+      view.setFloat32(offset, v.z, true); offset += 4;
+    }
+    // attribute byte count
+    view.setUint16(offset, 0, true); offset += 2;
+  }
+  return buf;
+}
+
+function addPrimitive(type) {
+  const size = 0.05; // 50mm in meters
+  let geometry;
+  let name;
+  if (type === 'cube') {
+    geometry = new THREE.BoxGeometry(size, size, size);
+    name = 'Cube';
+  } else if (type === 'sphere') {
+    geometry = new THREE.SphereGeometry(size / 2, 24, 16);
+    name = 'Sphere';
+  } else {
+    geometry = new THREE.CylinderGeometry(size / 2, size / 2, size, 24);
+    name = 'Cylinder';
+  }
+  // Convert indexed geometry to non-indexed for STL compatibility
+  const nonIndexed = geometry.index ? geometry.toNonIndexed() : geometry;
+  const buffer = geometryToSTLBuffer(nonIndexed);
+  geometry.dispose();
+  nonIndexed.dispose();
+
+  const color = stlColors[stlColorIdx++ % stlColors.length];
+  const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  const entry = createSTLFromBuffer(buffer, name, color, stlId, null);
+  saveSTLDebounced(entry);
+}
+
+document.getElementById('addCubeBtn').addEventListener('click', () => addPrimitive('cube'));
+document.getElementById('addSphereBtn').addEventListener('click', () => addPrimitive('sphere'));
+document.getElementById('addCylinderBtn').addEventListener('click', () => addPrimitive('cylinder'));
+
 // Restore persisted STLs
 restorePersistedSTLs();
 
@@ -1635,60 +1707,111 @@ const _collBox1 = new THREE.Box3();
 const _collBox2 = new THREE.Box3();
 const _collMatrix = new THREE.Matrix4();
 
-function checkCollisions() {
-  if (!collisionEnabled || importedSTLs.length === 0 || robotLinkMeshes.length === 0) {
-    if (collisionEnabled && importedSTLs.length === 0) {
-      collisionTextEl.textContent = 'no STL meshes';
-      collisionInfoEl.classList.remove('hit');
-    }
-    return;
-  }
+function highlightCollisionMeshes(meshA, meshB) {
+  saveOriginalEmissive(meshA.material);
+  meshA.material.emissive.set(0xff2200);
+  highlightedMaterials.add(meshA.material);
+  saveOriginalEmissive(meshB.material);
+  meshB.material.emissive.set(0xff2200);
+  highlightedMaterials.add(meshB.material);
+}
 
-  // Clear previous highlights
+function testMeshPairCollision(meshA, meshB) {
+  _collBox1.setFromObject(meshA);
+  _collBox2.setFromObject(meshB);
+  if (!_collBox1.intersectsBox(_collBox2)) return false;
+  const bvhA = meshA.geometry.boundsTree;
+  const bvhB = meshB.geometry.boundsTree;
+  if (bvhA && bvhB) {
+    _collMatrix.copy(meshA.matrixWorld).invert().multiply(meshB.matrixWorld);
+    if (!bvhA.intersectsGeometry(meshB.geometry, _collMatrix)) return false;
+  }
+  return true;
+}
+
+function checkCollisions() {
+  const visibleSTLs = importedSTLs.filter(e => e.mesh.visible);
+  if (!collisionEnabled || (visibleSTLs.length === 0 && robotLinkMeshes.length === 0)) return;
+
   clearCollisionHighlights();
 
+  // Separate parented (attached to robot) vs unparented (world) STLs
+  const worldSTLs = visibleSTLs.filter(e => !e.parentLink);
+  const parentedSTLs = visibleSTLs.filter(e => e.parentLink);
+
+  // Build extended robot link data: original meshes + any parented STLs
+  const extendedLinks = robotLinkMeshes.map(link => ({
+    name: link.name,
+    meshes: [...link.meshes],
+    stlEntries: [],
+  }));
+  for (const stl of parentedSTLs) {
+    const linkIdx = linkToJoint[stl.parentLink];
+    if (linkIdx !== undefined) {
+      const extLink = extendedLinks.find(l => l.name === stl.parentLink);
+      if (extLink) {
+        extLink.meshes.push(stl.mesh);
+        extLink.stlEntries.push(stl);
+      }
+    }
+  }
+
   const collisions = [];
+  const hitPairs = new Set(); // avoid duplicate reports
 
-  for (const stlEntry of importedSTLs) {
-    if (!stlEntry.mesh.visible) continue;
-    const stlBVH = stlEntry.mesh.geometry.boundsTree;
-    _collBox1.setFromObject(stlEntry.mesh);
+  function addCollision(nameA, nameB, meshA, meshB) {
+    const key = [nameA, nameB].sort().join('|');
+    if (hitPairs.has(key)) return;
+    hitPairs.add(key);
+    collisions.push({ linkName: nameA, stlName: nameB });
+    highlightCollisionMeshes(meshA, meshB);
+  }
 
-    for (const link of robotLinkMeshes) {
-      let linkHit = false;
+  // 1) World STLs vs all extended robot links (original robot meshes + parented STLs)
+  for (const stlEntry of worldSTLs) {
+    for (const link of extendedLinks) {
       for (const robotMesh of link.meshes) {
-        // Broad phase: AABB
-        _collBox2.setFromObject(robotMesh);
-        if (!_collBox1.intersectsBox(_collBox2)) continue;
-
-        // Narrow phase: BVH triangle-level intersection
-        const robotBVH = robotMesh.geometry.boundsTree;
-        if (stlBVH && robotBVH) {
-          // Matrix transforms from robot mesh local space to STL mesh local space
-          _collMatrix.copy(stlEntry.mesh.matrixWorld).invert().multiply(robotMesh.matrixWorld);
-          if (!stlBVH.intersectsGeometry(robotMesh.geometry, _collMatrix)) continue;
+        if (testMeshPairCollision(stlEntry.mesh, robotMesh)) {
+          addCollision(link.name, stlEntry.name, stlEntry.mesh, robotMesh);
+          break;
         }
+      }
+    }
+  }
 
-        collisions.push({ linkName: link.name, stlName: stlEntry.name });
+  // 2) Parented STLs vs other robot links (not their own parent link)
+  for (const stl of parentedSTLs) {
+    for (const link of extendedLinks) {
+      if (link.name === stl.parentLink) continue; // skip own link
+      for (const robotMesh of link.meshes) {
+        if (testMeshPairCollision(stl.mesh, robotMesh)) {
+          addCollision(link.name, stl.name, stl.mesh, robotMesh);
+          break;
+        }
+      }
+    }
+  }
 
-        // Highlight the STL mesh red
-        saveOriginalEmissive(stlEntry.mesh.material);
-        stlEntry.mesh.material.emissive.set(0xff2200);
-        highlightedMaterials.add(stlEntry.mesh.material);
-
-        // Highlight the robot mesh red
-        saveOriginalEmissive(robotMesh.material);
-        robotMesh.material.emissive.set(0xff2200);
-        highlightedMaterials.add(robotMesh.material);
-
-        linkHit = true;
-        break; // One collision per link-stl pair is enough
+  // 3) Robot link vs robot link (including parented STLs extending each link)
+  for (let i = 0; i < extendedLinks.length; i++) {
+    for (let j = i + 2; j < extendedLinks.length; j++) { // skip adjacent links
+      const linkA = extendedLinks[i];
+      const linkB = extendedLinks[j];
+      let found = false;
+      for (const meshA of linkA.meshes) {
+        for (const meshB of linkB.meshes) {
+          if (testMeshPairCollision(meshA, meshB)) {
+            addCollision(linkA.name, linkB.name, meshA, meshB);
+            found = true;
+            break;
+          }
+        }
+        if (found) break;
       }
     }
   }
 
   // Update UI
-  // Remove old pair spans
   const parent = collisionInfoEl;
   while (parent.children.length > 0 && parent.lastChild !== collisionTextEl &&
          parent.lastChild.classList && parent.lastChild.classList.contains('collision-pair')) {
