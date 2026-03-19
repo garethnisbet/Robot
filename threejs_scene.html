@@ -169,8 +169,8 @@
   <button id="chainBtn">Chain: OFF</button>
   <button id="orthoBtn">Ortho: OFF</button>
   <button id="collisionBtn">Collision: OFF</button>
-  <button id="stlBtn">Import STL</button>
-  <input type="file" id="stlFile" accept=".stl" multiple style="display:none">
+  <button id="stlBtn">Import Mesh (STL / OBJ / GLB)</button>
+  <input type="file" id="stlFile" accept=".stl,.obj,.glb,.gltf" multiple style="display:none">
   <div style="display:flex; gap:4px; margin-top:4px;">
     <button id="addCubeBtn" style="flex:1; margin:0;">Cube</button>
     <button id="addSphereBtn" style="flex:1; margin:0;">Sphere</button>
@@ -184,6 +184,14 @@
       <button id="stlModeR">Rotate</button>
       <button id="stlModeS">Scale</button>
       <button id="stlDeselect">Deselect</button>
+    </div>
+    <div style="display:flex; gap:4px; margin-top:5px;">
+      <button id="stlResetRot" style="flex:1; width:auto; padding:4px 0; margin:0; font-size:11px;">Reset Rotation</button>
+      <button id="stlResetScale" style="flex:1; width:auto; padding:4px 0; margin:0; font-size:11px;">Reset Scale</button>
+    </div>
+    <div id="stl-lock-aspect" style="display:flex; align-items:center; gap:5px; margin-top:5px;">
+      <input type="checkbox" id="lockAspectCb" style="width:auto; margin:0;">
+      <label for="lockAspectCb" style="font-size:11px; color:#889; cursor:pointer; white-space:nowrap;">Lock aspect ratio</label>
     </div>
     <div id="stl-parent">
       <label>Parent:</label>
@@ -250,6 +258,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
@@ -678,6 +688,26 @@ scene.add(transformControls);
 const stlTransformControls = new TransformControls(camera, renderer.domElement);
 stlTransformControls.setSize(0.4);
 stlTransformControls.setMode('translate');
+let lockAspect = false;
+const _scaleOnDragStart = new THREE.Vector3();
+
+stlTransformControls.addEventListener('mouseDown', () => {
+  if (selectedSTL) _scaleOnDragStart.copy(selectedSTL.mesh.scale);
+});
+
+stlTransformControls.addEventListener('objectChange', () => {
+  if (!lockAspect || !selectedSTL || stlTransformControls.getMode() !== 'scale') return;
+  const s = selectedSTL.mesh.scale;
+  const s0 = _scaleOnDragStart;
+  // Find which axis changed most relative to its starting value
+  const rx = s0.x !== 0 ? s.x / s0.x : 1;
+  const ry = s0.y !== 0 ? s.y / s0.y : 1;
+  const rz = s0.z !== 0 ? s.z / s0.z : 1;
+  const dx = Math.abs(rx - 1), dy = Math.abs(ry - 1), dz = Math.abs(rz - 1);
+  const ratio = dx >= dy && dx >= dz ? rx : (dy >= dz ? ry : rz);
+  s.set(s0.x * ratio, s0.y * ratio, s0.z * ratio);
+});
+
 stlTransformControls.addEventListener('dragging-changed', (e) => {
   orbitControls.enabled = !e.value;
   // Save transform when drag ends
@@ -1182,7 +1212,9 @@ for (let i = 1; i <= 6; i++) {
 // STL Import + IndexedDB Persistence
 // ============================================================
 const stlLoader = new STLLoader();
-const importedSTLs = []; // { mesh, label, name, color, stlId }
+const objLoader = new OBJLoader();
+const gltfImportLoader = new GLTFLoader();
+const importedSTLs = []; // { mesh, label, name, color, stlId, fileType }
 const stlColors = [0x44aaff, 0xff6644, 0x44ff88, 0xffaa22, 0xcc44ff, 0xff4488, 0x22ddcc, 0xaadd22];
 let stlColorIdx = 0;
 
@@ -1215,6 +1247,7 @@ async function saveSTLToDB(entry) {
     name: entry.name,
     color: entry.color,
     buffer: entry._buffer,
+    fileType: entry.fileType || 'stl',
     position: [m.position.x, m.position.y, m.position.z],
     rotation: [m.rotation.x, m.rotation.y, m.rotation.z],
     scale: [m.scale.x, m.scale.y, m.scale.z],
@@ -1252,28 +1285,62 @@ function saveSTLDebounced(entry) {
   saveSTLToDB(entry).catch(e => console.warn('STL save failed:', e));
 }
 
-// --- Restore persisted STLs on load ---
+// --- Restore persisted meshes on load ---
 async function restorePersistedSTLs() {
   try {
     const records = await loadAllSTLsFromDB();
     for (const rec of records) {
-      createSTLFromBuffer(rec.buffer, rec.name, rec.color, rec.id, {
+      const transforms = {
         position: rec.position,
         rotation: rec.rotation,
         scale: rec.scale,
         visible: rec.visible,
         parentLink: rec.parentLink || null,
-      });
+      };
+      const fileType = rec.fileType || 'stl';
+      if (fileType === 'stl') {
+        createSTLFromBuffer(rec.buffer, rec.name, rec.color, rec.id, transforms);
+      } else if (fileType === 'obj') {
+        const text = new TextDecoder().decode(rec.buffer);
+        const group = objLoader.parse(text);
+        const geometry = _mergeObject3D(group);
+        _addMeshToScene(geometry, rec.buffer, 'obj', rec.name, rec.color, rec.id, transforms);
+      } else if (fileType === 'glb') {
+        try {
+          const gltf = await new Promise((resolve, reject) =>
+            gltfImportLoader.parse(rec.buffer, '', resolve, reject));
+          const geometry = _mergeObject3D(gltf.scene);
+          _addMeshToScene(geometry, rec.buffer, 'glb', rec.name, rec.color, rec.id, transforms);
+        } catch (e) {
+          console.warn('Failed to restore GLB mesh:', rec.name, e);
+        }
+      }
     }
   } catch (e) {
-    console.warn('Failed to restore STLs:', e);
+    console.warn('Failed to restore meshes:', e);
   }
 }
 
-// --- Core STL creation from ArrayBuffer ---
-function createSTLFromBuffer(buffer, name, color, stlId, transforms) {
-  const geometry = stlLoader.parse(buffer);
-  geometry.computeVertexNormals();
+// --- Merge all sub-meshes of an Object3D into one BufferGeometry ---
+function _mergeObject3D(object3D) {
+  const geos = [];
+  object3D.updateWorldMatrix(true, true);
+  object3D.traverse(child => {
+    if (child.isMesh && child.geometry) {
+      const geo = child.geometry.clone();
+      child.updateWorldMatrix(true, false);
+      geo.applyMatrix4(child.matrixWorld);
+      if (geo.getAttribute('position')) geos.push(geo);
+    }
+  });
+  if (geos.length === 0) return new THREE.BufferGeometry();
+  const merged = geos.length > 1 ? mergeGeometries(geos, false) : geos[0];
+  merged.computeVertexNormals();
+  return merged;
+}
+
+// --- Shared mesh-entry creator (used by all format loaders) ---
+function _addMeshToScene(geometry, buffer, fileType, name, color, stlId, transforms) {
   geometry.boundsTree = new MeshBVH(geometry);
 
   const material = new THREE.MeshStandardMaterial({
@@ -1285,18 +1352,15 @@ function createSTLFromBuffer(buffer, name, color, stlId, transforms) {
   mesh.receiveShadow = true;
 
   if (transforms) {
-    // Apply saved transforms
     mesh.position.set(...transforms.position);
     mesh.rotation.set(...transforms.rotation);
     mesh.scale.set(...transforms.scale);
     mesh.visible = transforms.visible;
   } else {
-    // STL files often use mm — scale to meters if bounding box > 1m
+    // Files in mm — auto-scale if bounding box > 1 m
     const box = new THREE.Box3().setFromObject(mesh);
     const size = box.getSize(new THREE.Vector3());
-    if (size.length() > 1) {
-      mesh.scale.setScalar(0.001);
-    }
+    if (size.length() > 1) mesh.scale.setScalar(0.001);
   }
 
   scene.add(mesh);
@@ -1312,17 +1376,22 @@ function createSTLFromBuffer(buffer, name, color, stlId, transforms) {
   mesh.add(label);
   meshLabels.push(label);
 
-  const entry = { mesh, label, name, color, stlId, _buffer: buffer, parentLink: null };
+  const entry = { mesh, label, name, color, stlId, _buffer: buffer, fileType, parentLink: null };
   importedSTLs.push(entry);
   stlColorIdx = Math.max(stlColorIdx, stlColors.indexOf(color) + 1);
   addSTLListItem(entry);
 
-  // Restore parent link if present (saved transforms are already in link-local space)
   if (transforms && transforms.parentLink) {
     setSTLParent(entry, transforms.parentLink, true);
   }
-
   return entry;
+}
+
+// --- Core STL creation from ArrayBuffer ---
+function createSTLFromBuffer(buffer, name, color, stlId, transforms) {
+  const geometry = stlLoader.parse(buffer);
+  geometry.computeVertexNormals();
+  return _addMeshToScene(geometry, buffer, 'stl', name, color, stlId, transforms);
 }
 
 document.getElementById('stlBtn').addEventListener('click', () => {
@@ -1331,7 +1400,10 @@ document.getElementById('stlBtn').addEventListener('click', () => {
 
 document.getElementById('stlFile').addEventListener('change', (e) => {
   for (const file of e.target.files) {
-    loadSTLFile(file);
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (ext === 'stl')       loadSTLFile(file);
+    else if (ext === 'obj')  loadOBJFile(file);
+    else if (ext === 'glb' || ext === 'gltf') loadGLBFile(file);
   }
   e.target.value = '';
 });
@@ -1347,6 +1419,39 @@ function loadSTLFile(file) {
     saveSTLDebounced(entry);
   };
   reader.readAsArrayBuffer(file);
+}
+
+function loadOBJFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const text = e.target.result;
+    const group = objLoader.parse(text);
+    const geometry = _mergeObject3D(group);
+    const buffer = new TextEncoder().encode(text).buffer;
+    const baseName = file.name.replace(/\.obj$/i, '');
+    const color = stlColors[stlColorIdx++ % stlColors.length];
+    const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    const entry = _addMeshToScene(geometry, buffer, 'obj', baseName, color, stlId, null);
+    saveSTLDebounced(entry);
+  };
+  reader.readAsText(file);
+}
+
+async function loadGLBFile(file) {
+  const buffer = await file.arrayBuffer();
+  const baseName = file.name.replace(/\.(glb|gltf)$/i, '');
+  const color = stlColors[stlColorIdx++ % stlColors.length];
+  const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  try {
+    const gltf = await new Promise((resolve, reject) =>
+      gltfImportLoader.parse(buffer, '', resolve, reject));
+    const geometry = _mergeObject3D(gltf.scene);
+    const entry = _addMeshToScene(geometry, buffer, 'glb', baseName, color, stlId, null);
+    saveSTLDebounced(entry);
+  } catch (err) {
+    console.error('GLB load error:', err);
+    alert(`Failed to load GLB/GLTF file: ${err.message}`);
+  }
 }
 
 // --- Primitive creation (cube / sphere) ---
@@ -1594,6 +1699,22 @@ document.getElementById('stlModeT').addEventListener('click', () => setSTLTransf
 document.getElementById('stlModeR').addEventListener('click', () => setSTLTransformMode('rotate'));
 document.getElementById('stlModeS').addEventListener('click', () => setSTLTransformMode('scale'));
 document.getElementById('stlDeselect').addEventListener('click', deselectSTL);
+
+document.getElementById('lockAspectCb').addEventListener('change', (e) => {
+  lockAspect = e.target.checked;
+});
+
+document.getElementById('stlResetRot').addEventListener('click', () => {
+  if (!selectedSTL) return;
+  selectedSTL.mesh.rotation.set(0, 0, 0);
+  saveSTLDebounced(selectedSTL);
+});
+
+document.getElementById('stlResetScale').addEventListener('click', () => {
+  if (!selectedSTL) return;
+  selectedSTL.mesh.scale.set(1, 1, 1);
+  saveSTLDebounced(selectedSTL);
+});
 
 document.getElementById('stlParentSelect').addEventListener('change', (e) => {
   if (selectedSTL) setSTLParent(selectedSTL, e.target.value, false);

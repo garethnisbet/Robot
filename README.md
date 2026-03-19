@@ -7,14 +7,19 @@ Interactive 3D visualisation and control of a Meca500 R3 6-DOF serial manipulato
 - **Forward Kinematics** — joint angle sliders drive the robot pose in real time
 - **Inverse Kinematics** — 6-DOF damped least-squares solver (position + ZYX Euler orientation)
 - **Draggable IK target** — move the green sphere with the gizmo or use XYZ / alpha-beta-gamma sliders
+- **Orientation gizmo** — visual end-effector orientation indicator showing the current tool frame axes
 - **Double-click to type** — double-click any slider value label to enter a number directly
 - **Mesh labels toggle** — show/hide object name labels on all meshes
 - **STL mesh rendering** — CAD meshes (A0–A6) attached to the FK chain via Blender armature bone transforms
-- **STL import** — load external STL files into the scene with auto-scaling, labels, and per-object colour
-- **Persistent STL objects** — imported objects are automatically saved to IndexedDB and restored on page reload, including geometry, transforms, colour, and visibility
-- **Object manipulation** — click imported STL objects to select, then move, rotate, or scale with transform gizmos (keyboard: T/R/S, Escape to deselect)
-- **Collision detection** — BVH-accelerated triangle-level intersection testing between robot links and imported objects, with red highlight on colliding meshes
-- **Remote control API** — two-way WebSocket API for controlling the robot, imported objects, and collision detection from Python, scripts, or any WebSocket client
+- **Mesh import** — load external STL, OBJ, and GLB/GLTF files into the scene with auto-scaling, labels, and per-object colour
+- **Primitive objects** — add cube, sphere, and cylinder primitives directly from the toolbar
+- **Persistent objects** — imported and primitive objects are automatically saved to IndexedDB and restored on page reload, including geometry, transforms, colour, and visibility
+- **Object manipulation** — click objects to select, then move, rotate, or scale with transform gizmos (keyboard: T/R/S, Escape to deselect)
+- **Lock aspect ratio** — toggle to constrain scaling to uniform across all axes
+- **Reset transforms** — reset an object's rotation or scale back to default with one click
+- **Parent-child linking** — attach objects to robot links so they follow the kinematic chain
+- **Collision detection** — BVH-accelerated triangle-level intersection testing between robot links and scene objects, with red highlight on colliding meshes
+- **Remote control API** — two-way WebSocket API for controlling the robot, objects, and collision detection from Python, scripts, or any WebSocket client
 
 ## Quick Start
 
@@ -31,14 +36,34 @@ python3 server.py
 ```
 Open `http://localhost:8000` in a browser. The green dot in the top-left corner shows WebSocket connection status.
 
-## STL Import & Object Manipulation
+## Objects
 
-Click **Import STL** to load `.stl` files into the scene. Imported objects appear in the panel list with:
+### Mesh Import
+
+Click **Import Mesh** to load files into the scene. Supported formats:
+
+| Format | Extension | Notes |
+|--------|-----------|-------|
+| STL | `.stl` | Binary or ASCII; auto-scaled if bounding box > 1 m |
+| OBJ | `.obj` | Geometry only; no MTL material files |
+| GLB / GLTF | `.glb`, `.gltf` | Full scene hierarchy, materials, and textures (GLB self-contained; external GLTF loads geometry only) |
+
+All formats are auto-scaled to meters if the bounding box exceeds 1 m, and are persisted in IndexedDB across reloads.
+
+### Primitives
+
+Click **Cube**, **Sphere**, or **Cylinder** to add a primitive shape to the scene. Primitives behave identically to imported STL objects — they can be moved, coloured, parented, and are persisted across reloads.
+
+### Object Panel
+
+All scene objects appear in the panel list with:
 
 - **Colour swatch** — click to change the object colour
 - **Name** — click to select the object, double-click to rename
 - **Visibility toggle** — show/hide individual objects
 - **Remove button** — delete from scene
+
+### Transform Gizmos
 
 When an object is selected, a transform gizmo appears. Use the mode buttons or keyboard shortcuts:
 
@@ -49,18 +74,26 @@ When an object is selected, a transform gizmo appears. Use the mode buttons or k
 | `S` | Scale |
 | `Esc` | Deselect |
 
-STL files in mm are auto-scaled to meters if the bounding box exceeds 1m.
+Additional controls in the selection panel:
+
+- **Lock aspect ratio** — when checked, dragging any scale axis applies the same scale factor to all three axes, preserving the object's proportions
+- **Reset Rotation** — returns the object to zero rotation (Euler 0, 0, 0)
+- **Reset Scale** — returns the object to unit scale (1, 1, 1)
+
+### Parent-Child Linking
+
+Use the **Parent** dropdown to attach an object to a robot link (L0–L5: Base through Wrist 2). Parented objects follow the kinematic chain — when the robot moves, the attached object moves with its parent link. Local transforms are preserved when reparenting.
 
 ### Persistence
 
-Imported STL objects are automatically persisted in the browser's IndexedDB. All object data is saved and restored across page reloads:
+All scene objects (imported STL and primitives) are automatically persisted in the browser's IndexedDB. Saved data includes:
 
-- Raw STL geometry (binary data)
+- Raw geometry (binary buffer for STL/GLB, text for OBJ, type identifier for primitives)
 - Position, rotation, and scale transforms
 - Colour and visibility state
-- Object name
+- Object name and parent link
 
-Changes are saved automatically whenever you import, move, rotate, scale, rename, recolour, hide/show, or delete an object. Objects modified via the remote control API (`setObject`) are also persisted. To clear all saved objects, remove them from the panel list or clear site data in your browser.
+Changes are saved automatically whenever you import, create, move, rotate, scale, rename, recolour, reparent, hide/show, or delete an object. Objects modified via the remote control API (`setObject`) are also persisted. To clear all saved objects, remove them from the panel list or clear site data in your browser.
 
 ## Collision Detection
 
@@ -192,6 +225,25 @@ async def main():
 asyncio.run(main())
 ```
 
+## Deployment
+
+### Docker
+
+```bash
+docker build -t robot-visualisation .
+docker run -p 8080:8080 robot-visualisation
+```
+
+The image uses a multi-stage build on Python 3.12-slim, runs as a non-root user, and exposes port 8080.
+
+### Kubernetes (Helm)
+
+```bash
+helm install robot-vis ./helm
+```
+
+Deploys with ClusterIP service, nginx ingress, and TLS. See `helm/values.yaml` for configuration.
+
 ## Project Structure
 
 ```
@@ -199,6 +251,8 @@ threejs_scene.html       Three.js FK/IK viewer (standalone, loads robot_scene.gl
 server.py                WebSocket + HTTP server for remote control API
 remote_control.py        Interactive command-line remote control client
 robot_scene.glb          glTF binary exported from Blender (armature + meshes)
+Dockerfile               Multi-stage container build
+helm/                    Kubernetes Helm chart
 
 stl_files/
   A0.stl – A7.stl        Meca500 component meshes (source CAD assets)
