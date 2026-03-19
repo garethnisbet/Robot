@@ -64,7 +64,7 @@ def _save_history():
 COMMANDS = [
     "state", "home", "fk", "ik", "joints", "move", "target",
     "collision", "collisions", "objects", "obj", "objpos", "objrot",
-    "objscale", "objvis", "demo", "clear", "history", "help",
+    "objscale", "objvis", "objresetrot", "objresetscale", "demo", "clear", "history", "help",
     "quit", "exit",
 ]
 
@@ -178,7 +178,13 @@ def _print_help():
         Set uniform or per-axis scale.
 
     {_bold('objvis') if _COLORS else 'objvis'} {_cyan('<name|#idx>') if _COLORS else '<name|#idx>'} {_cyan('on') if _COLORS else 'on'}|{_cyan('off') if _COLORS else 'off'}
-        Show or hide an object."""),
+        Show or hide an object.
+
+    {_bold('objresetrot') if _COLORS else 'objresetrot'} {_cyan('<name|#idx>') if _COLORS else '<name|#idx>'}
+        Reset object rotation to (0, 0, 0).
+
+    {_bold('objresetscale') if _COLORS else 'objresetscale'} {_cyan('<name|#idx>') if _COLORS else '<name|#idx>'}
+        Reset object scale to (1, 1, 1)."""),
         ("TERMINAL COMMANDS", f"""\
     {_bold('demo') if _COLORS else 'demo'}
         Run an automated demo sequence through several poses.
@@ -495,6 +501,20 @@ async def interactive(url):
                         ref = _parse_obj_ref(parts[1])
                         visible = parts[2].lower() == "on"
                         await ws.send(json.dumps({"cmd": "setObject", **ref, "visible": visible}))
+
+                elif cmd == "objresetrot":
+                    if len(parts) < 2:
+                        print(f"  {_yellow('Usage')}: objresetrot {_cyan('<name|#idx>')}")
+                    else:
+                        ref = _parse_obj_ref(parts[1])
+                        await ws.send(json.dumps({"cmd": "resetObjectRotation", **ref}))
+
+                elif cmd == "objresetscale":
+                    if len(parts) < 2:
+                        print(f"  {_yellow('Usage')}: objresetscale {_cyan('<name|#idx>')}")
+                    else:
+                        ref = _parse_obj_ref(parts[1])
+                        await ws.send(json.dumps({"cmd": "resetObjectScale", **ref}))
 
                 elif cmd == "demo":
                     await demo_sequence(ws)

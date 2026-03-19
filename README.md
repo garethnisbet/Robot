@@ -11,7 +11,7 @@ Interactive 3D visualisation and control of a Meca500 R3 6-DOF serial manipulato
 - **Double-click to type** — double-click any slider value label to enter a number directly
 - **Mesh labels toggle** — show/hide object name labels on all meshes
 - **STL mesh rendering** — CAD meshes (A0–A6) attached to the FK chain via Blender armature bone transforms
-- **Mesh import** — load external STL, OBJ, and GLB/GLTF files into the scene with auto-scaling, labels, and per-object colour
+- **Mesh import** — load external STL, OBJ, PLY, and GLB/GLTF files into the scene with auto-scaling, labels, and per-object colour
 - **Primitive objects** — add cube, sphere, and cylinder primitives directly from the toolbar
 - **Persistent objects** — imported and primitive objects are automatically saved to IndexedDB and restored on page reload, including geometry, transforms, colour, and visibility
 - **Object manipulation** — click objects to select, then move, rotate, or scale with transform gizmos (keyboard: T/R/S, Escape to deselect)
@@ -46,6 +46,7 @@ Click **Import Mesh** to load files into the scene. Supported formats:
 |--------|-----------|-------|
 | STL | `.stl` | Binary or ASCII; auto-scaled if bounding box > 1 m |
 | OBJ | `.obj` | Geometry only; no MTL material files |
+| PLY | `.ply` | Binary and ASCII; vertex colours preserved if present |
 | GLB / GLTF | `.glb`, `.gltf` | Full scene hierarchy, materials, and textures (GLB self-contained; external GLTF loads geometry only) |
 
 All formats are auto-scaled to meters if the bounding box exceeds 1 m, and are persisted in IndexedDB across reloads.
@@ -137,6 +138,8 @@ python3 remote_control.py
 | `objrot` | `objrot #0 0 0 45` | Set object rotation (degrees) |
 | `objscale` | `objscale MyPart 2` | Set uniform scale |
 | `objscale` | `objscale #0 1 1 2` | Set per-axis scale (sx sy sz) |
+| `objresetrot` | `objresetrot MyPart` | Reset rotation to (0, 0, 0) |
+| `objresetscale` | `objresetscale #0` | Reset scale to (1, 1, 1) |
 
 **Collision commands:**
 
@@ -165,6 +168,8 @@ python3 remote_control.py
 {"cmd": "setObject", "object": "MyPart", "position": [100, 50, 0]}
 {"cmd": "setObject", "index": 0, "rotation": [0, 0, 45], "scale": 2}
 {"cmd": "setObject", "object": "MyPart", "position": [100, 50, 0], "rotation": [0, 0, 45], "scale": [1, 1, 2], "visible": true}
+{"cmd": "resetObjectRotation", "object": "MyPart"}
+{"cmd": "resetObjectScale", "index": 0}
 ```
 
 **Collision commands:**

@@ -169,8 +169,8 @@
   <button id="chainBtn">Chain: OFF</button>
   <button id="orthoBtn">Ortho: OFF</button>
   <button id="collisionBtn">Collision: OFF</button>
-  <button id="stlBtn">Import Mesh (STL / OBJ / GLB)</button>
-  <input type="file" id="stlFile" accept=".stl,.obj,.glb,.gltf" multiple style="display:none">
+  <button id="stlBtn">Import Mesh (STL / OBJ / PLY / GLB)</button>
+  <input type="file" id="stlFile" accept=".stl,.obj,.ply,.glb,.gltf" multiple style="display:none">
   <div style="display:flex; gap:4px; margin-top:4px;">
     <button id="addCubeBtn" style="flex:1; margin:0;">Cube</button>
     <button id="addSphereBtn" style="flex:1; margin:0;">Sphere</button>
@@ -259,7 +259,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
@@ -1213,6 +1213,7 @@ for (let i = 1; i <= 6; i++) {
 // ============================================================
 const stlLoader = new STLLoader();
 const objLoader = new OBJLoader();
+const plyLoader = new PLYLoader();
 const gltfImportLoader = new GLTFLoader();
 const importedSTLs = []; // { mesh, label, name, color, stlId, fileType }
 const stlColors = [0x44aaff, 0xff6644, 0x44ff88, 0xffaa22, 0xcc44ff, 0xff4488, 0x22ddcc, 0xaadd22];
@@ -1300,6 +1301,14 @@ async function restorePersistedSTLs() {
       const fileType = rec.fileType || 'stl';
       if (fileType === 'stl') {
         createSTLFromBuffer(rec.buffer, rec.name, rec.color, rec.id, transforms);
+      } else if (fileType === 'ply') {
+        const geometry = plyLoader.parse(rec.buffer);
+        if (_isPLYPointCloud(rec.buffer)) {
+          _addPointsToScene(geometry, rec.buffer, rec.name, rec.color, rec.id, transforms);
+        } else {
+          geometry.computeVertexNormals();
+          _addMeshToScene(geometry, rec.buffer, 'ply', rec.name, rec.color, rec.id, transforms);
+        }
       } else if (fileType === 'obj') {
         const text = new TextDecoder().decode(rec.buffer);
         const group = objLoader.parse(text);
@@ -1322,21 +1331,95 @@ async function restorePersistedSTLs() {
 }
 
 // --- Merge all sub-meshes of an Object3D into one BufferGeometry ---
+// Manually concatenates position arrays to avoid mergeGeometries attribute
+// compatibility requirements (mixed UVs, normals, indices, etc.).
 function _mergeObject3D(object3D) {
-  const geos = [];
+  const chunks = [];
+  let totalVerts = 0;
+
   object3D.updateWorldMatrix(true, true);
   object3D.traverse(child => {
-    if (child.isMesh && child.geometry) {
-      const geo = child.geometry.clone();
-      child.updateWorldMatrix(true, false);
-      geo.applyMatrix4(child.matrixWorld);
-      if (geo.getAttribute('position')) geos.push(geo);
+    if (!child.isMesh || !child.geometry) return;
+    let geo = child.geometry.clone();
+    child.updateWorldMatrix(true, false);
+    geo.applyMatrix4(child.matrixWorld);
+    if (geo.index) geo = geo.toNonIndexed();
+    const pos = geo.getAttribute('position');
+    if (!pos || pos.count === 0) return;
+    // Copy via accessor so any underlying typed array works
+    const arr = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) {
+      arr[i * 3]     = pos.getX(i);
+      arr[i * 3 + 1] = pos.getY(i);
+      arr[i * 3 + 2] = pos.getZ(i);
     }
+    chunks.push(arr);
+    totalVerts += pos.count;
   });
-  if (geos.length === 0) return new THREE.BufferGeometry();
-  const merged = geos.length > 1 ? mergeGeometries(geos, false) : geos[0];
+
+  const merged = new THREE.BufferGeometry();
+  if (totalVerts > 0) {
+    const positions = new Float32Array(totalVerts * 3);
+    let offset = 0;
+    for (const chunk of chunks) {
+      positions.set(chunk, offset);
+      offset += chunk.length;
+    }
+    merged.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  }
   merged.computeVertexNormals();
   return merged;
+}
+
+// --- Detect whether a PLY buffer is a point cloud (no face element) ---
+function _isPLYPointCloud(buffer) {
+  // PLY header is always ASCII; read first 2 KB to find it
+  const header = new TextDecoder().decode(new Uint8Array(buffer, 0, Math.min(2048, buffer.byteLength)));
+  return !header.includes('element face');
+}
+
+// --- Point cloud entry creator (THREE.Points, no BVH) ---
+function _addPointsToScene(geometry, buffer, name, color, stlId, transforms) {
+  const hasVertexColors = geometry.hasAttribute('color');
+  // If the PLY has per-point colours, start with white so the swatch acts as
+  // a tint multiplier rather than overriding the original colours.
+  const matColor = hasVertexColors ? 0xffffff : color;
+  const material = new THREE.PointsMaterial({
+    color: matColor, size: 0.003, sizeAttenuation: true,
+    vertexColors: hasVertexColors,
+    transparent: true, opacity: 0.9,
+  });
+  const points = new THREE.Points(geometry, material);
+
+  if (transforms) {
+    points.position.set(...transforms.position);
+    points.rotation.set(...transforms.rotation);
+    points.scale.set(...transforms.scale);
+    points.visible = transforms.visible;
+  } else {
+    const box = new THREE.Box3().setFromObject(points);
+    const size = box.getSize(new THREE.Vector3());
+    if (size.length() > 1) points.scale.setScalar(0.001);
+  }
+
+  scene.add(points);
+  const box = new THREE.Box3().setFromObject(points);
+  const div = document.createElement('div');
+  div.className = 'mesh-label';
+  div.textContent = name;
+  const label = new CSS2DObject(div);
+  label.visible = labelsOn;
+  const center = box.getCenter(new THREE.Vector3());
+  points.worldToLocal(center);
+  label.position.copy(center);
+  points.add(label);
+  meshLabels.push(label);
+
+  const entry = { mesh: points, label, name, color: matColor, stlId, _buffer: buffer, fileType: 'ply', isPointCloud: true, parentLink: null };
+  importedSTLs.push(entry);
+  stlColorIdx = Math.max(stlColorIdx, stlColors.indexOf(color) + 1);
+  addSTLListItem(entry);
+  return entry;
 }
 
 // --- Shared mesh-entry creator (used by all format loaders) ---
@@ -1403,6 +1486,7 @@ document.getElementById('stlFile').addEventListener('change', (e) => {
     const ext = file.name.split('.').pop().toLowerCase();
     if (ext === 'stl')       loadSTLFile(file);
     else if (ext === 'obj')  loadOBJFile(file);
+    else if (ext === 'ply')              loadPLYFile(file);
     else if (ext === 'glb' || ext === 'gltf') loadGLBFile(file);
   }
   e.target.value = '';
@@ -1435,6 +1519,26 @@ function loadOBJFile(file) {
     saveSTLDebounced(entry);
   };
   reader.readAsText(file);
+}
+
+function loadPLYFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const buffer = e.target.result;
+    const geometry = plyLoader.parse(buffer);
+    const baseName = file.name.replace(/\.ply$/i, '');
+    const color = stlColors[stlColorIdx++ % stlColors.length];
+    const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    let entry;
+    if (_isPLYPointCloud(buffer)) {
+      entry = _addPointsToScene(geometry, buffer, baseName, color, stlId, null);
+    } else {
+      geometry.computeVertexNormals();
+      entry = _addMeshToScene(geometry, buffer, 'ply', baseName, color, stlId, null);
+    }
+    saveSTLDebounced(entry);
+  };
+  reader.readAsArrayBuffer(file);
 }
 
 async function loadGLBFile(file) {
@@ -1614,6 +1718,7 @@ function addSTLListItem(entry) {
 // STL Selection & Transform
 // ============================================================
 const raycaster = new THREE.Raycaster();
+raycaster.params.Points = { threshold: 0.005 }; // 5 mm — avoids accidental point cloud hits
 const mouse = new THREE.Vector2();
 let selectedSTL = null; // currently selected importedSTLs entry
 let selectedListItem = null; // corresponding DOM element
@@ -1798,6 +1903,10 @@ const materialOriginalEmissive = new WeakMap();
 // Set of materials currently highlighted red (cleared each frame)
 const highlightedMaterials = new Set();
 
+// Separate tracking for PointsMaterial (no emissive — use colour instead)
+const materialOriginalColor = new WeakMap();
+const highlightedPointMaterials = new Set();
+
 function saveOriginalEmissive(material) {
   if (!materialOriginalEmissive.has(material)) {
     materialOriginalEmissive.set(material, material.emissive.clone());
@@ -1813,11 +1922,17 @@ collisionBtn.addEventListener('click', () => {
 });
 
 function clearCollisionHighlights() {
+  if (highlightedMaterials.size === 0 && highlightedPointMaterials.size === 0) return;
   for (const material of highlightedMaterials) {
     const original = materialOriginalEmissive.get(material);
     if (original) material.emissive.copy(original);
   }
   highlightedMaterials.clear();
+  for (const material of highlightedPointMaterials) {
+    const original = materialOriginalColor.get(material);
+    if (original) material.color.copy(original);
+  }
+  highlightedPointMaterials.clear();
   collisionInfoEl.classList.remove('hit');
   collisionTextEl.textContent = 'none';
   // Remove child spans
@@ -1827,14 +1942,86 @@ function clearCollisionHighlights() {
 const _collBox1 = new THREE.Box3();
 const _collBox2 = new THREE.Box3();
 const _collMatrix = new THREE.Matrix4();
+const _collPoint = new THREE.Vector3();
+const _collToLocal = new THREE.Matrix4();
+const POINT_CLOUD_COLLISION_THRESHOLD = 0.04; // 40 mm
+
+function testPointCloudCollision(pointsObj, meshObj) {
+  // Broad phase
+  _collBox1.setFromObject(pointsObj);
+  _collBox2.setFromObject(meshObj);
+  if (!_collBox1.intersectsBox(_collBox2)) return false;
+
+  const bvh = meshObj.geometry.boundsTree;
+  if (!bvh) return false;
+
+  // --- Build sample array once (local space Float32Array, avoids per-frame
+  //     BufferAttribute accessor overhead) ---
+  if (!pointsObj._collSamples) {
+    const pos = pointsObj.geometry.getAttribute('position');
+    if (!pos || pos.count === 0) return false;
+    const stride = Math.max(1, Math.floor(pos.count / 20000));
+    const arr = new Float32Array(Math.ceil(pos.count / stride) * 3);
+    let j = 0;
+    for (let i = 0; i < pos.count; i += stride) {
+      arr[j++] = pos.getX(i);
+      arr[j++] = pos.getY(i);
+      arr[j++] = pos.getZ(i);
+    }
+    pointsObj._collSamples = arr;
+    pointsObj._collSampleCount = j / 3 | 0;
+  }
+
+  // --- Cache world-space positions (rebuilt only if point cloud moves) ---
+  const matKey = pointsObj.matrixWorld.elements.join(',');
+  if (!pointsObj._collWorld || pointsObj._collWorldKey !== matKey) {
+    const src = pointsObj._collSamples;
+    const n   = pointsObj._collSampleCount;
+    const dst = pointsObj._collWorld = new Float32Array(n * 3);
+    const m   = pointsObj.matrixWorld.elements;
+    for (let i = 0; i < n; i++) {
+      const x = src[i*3], y = src[i*3+1], z = src[i*3+2];
+      dst[i*3]   = m[0]*x + m[4]*y + m[8]*z  + m[12];
+      dst[i*3+1] = m[1]*x + m[5]*y + m[9]*z  + m[13];
+      dst[i*3+2] = m[2]*x + m[6]*y + m[10]*z + m[14];
+    }
+    pointsObj._collWorldKey = matKey;
+  }
+
+  // --- Narrow phase: transform world → mesh local (inlined) and query BVH ---
+  _collToLocal.copy(meshObj.matrixWorld).invert();
+  const m   = _collToLocal.elements;
+  const src = pointsObj._collWorld;
+  const n   = pointsObj._collSampleCount;
+  for (let i = 0; i < n; i++) {
+    const x = src[i*3], y = src[i*3+1], z = src[i*3+2];
+    _collPoint.set(
+      m[0]*x + m[4]*y + m[8]*z  + m[12],
+      m[1]*x + m[5]*y + m[9]*z  + m[13],
+      m[2]*x + m[6]*y + m[10]*z + m[14],
+    );
+    if (bvh.closestPointToPoint(_collPoint, {}, 0, POINT_CLOUD_COLLISION_THRESHOLD)) return true;
+  }
+  return false;
+}
+
+function _highlightObject(obj) {
+  const mat = obj.material;
+  if (mat.emissive) {
+    saveOriginalEmissive(mat);
+    mat.emissive.set(0xff2200);
+    highlightedMaterials.add(mat);
+  } else {
+    // PointsMaterial — no emissive, tint colour red instead
+    if (!materialOriginalColor.has(mat)) materialOriginalColor.set(mat, mat.color.clone());
+    mat.color.set(0xff2200);
+    highlightedPointMaterials.add(mat);
+  }
+}
 
 function highlightCollisionMeshes(meshA, meshB) {
-  saveOriginalEmissive(meshA.material);
-  meshA.material.emissive.set(0xff2200);
-  highlightedMaterials.add(meshA.material);
-  saveOriginalEmissive(meshB.material);
-  meshB.material.emissive.set(0xff2200);
-  highlightedMaterials.add(meshB.material);
+  _highlightObject(meshA);
+  _highlightObject(meshB);
 }
 
 function testMeshPairCollision(meshA, meshB) {
@@ -1850,9 +2037,19 @@ function testMeshPairCollision(meshA, meshB) {
   return true;
 }
 
+let _collisionFrame = 0;
+const COLLISION_THROTTLE = 3; // run every Nth frame
+
 function checkCollisions() {
-  const visibleSTLs = importedSTLs.filter(e => e.mesh.visible);
-  if (!collisionEnabled || (visibleSTLs.length === 0 && robotLinkMeshes.length === 0)) return;
+  if (!collisionEnabled) return;
+  if (++_collisionFrame % COLLISION_THROTTLE !== 0) return;
+
+  const visibleSTLs = importedSTLs.filter(e => e.mesh.visible && !e.isPointCloud);
+  const visiblePointClouds = importedSTLs.filter(e => e.mesh.visible && e.isPointCloud);
+  if (visibleSTLs.length === 0 && visiblePointClouds.length === 0) {
+    if (highlightedMaterials.size > 0 || highlightedPointMaterials.size > 0) clearCollisionHighlights();
+    return;
+  }
 
   clearCollisionHighlights();
 
@@ -1913,7 +2110,19 @@ function checkCollisions() {
     }
   }
 
-  // 3) Robot link vs robot link (including parented STLs extending each link)
+  // 3) Point clouds vs all robot link meshes
+  for (const pc of visiblePointClouds) {
+    for (const link of extendedLinks) {
+      for (const robotMesh of link.meshes) {
+        if (testPointCloudCollision(pc.mesh, robotMesh)) {
+          addCollision(link.name, pc.name, pc.mesh, robotMesh);
+          break;
+        }
+      }
+    }
+  }
+
+  // 4) Robot link vs robot link (including parented STLs extending each link)
   for (let i = 0; i < extendedLinks.length; i++) {
     for (let j = i + 2; j < extendedLinks.length; j++) { // skip adjacent links
       const linkA = extendedLinks[i];
@@ -2190,6 +2399,28 @@ function handleCommand(data) {
     }
     const idx = importedSTLs.indexOf(entry);
     wsSend({ type: 'object', ...buildObjectInfo(entry, idx) });
+
+  } else if (cmd === 'resetObjectRotation') {
+    const entry = findSTLEntry(data);
+    if (!entry) {
+      wsSend({ type: 'error', error: 'Object not found. Use listObjects to see available objects.' });
+      return;
+    }
+    entry.mesh.rotation.set(0, 0, 0);
+    const idx = importedSTLs.indexOf(entry);
+    wsSend({ type: 'object', ...buildObjectInfo(entry, idx) });
+    saveSTLDebounced(entry);
+
+  } else if (cmd === 'resetObjectScale') {
+    const entry = findSTLEntry(data);
+    if (!entry) {
+      wsSend({ type: 'error', error: 'Object not found. Use listObjects to see available objects.' });
+      return;
+    }
+    entry.mesh.scale.set(1, 1, 1);
+    const idx = importedSTLs.indexOf(entry);
+    wsSend({ type: 'object', ...buildObjectInfo(entry, idx) });
+    saveSTLDebounced(entry);
   }
 }
 
