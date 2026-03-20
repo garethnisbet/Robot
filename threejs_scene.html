@@ -137,31 +137,12 @@
 <canvas id="nav-gizmo"></canvas>
 <div id="ws-status"><span class="dot off" id="ws-dot"></span><span id="ws-text">API: not connected</span></div>
 <div id="panel">
+  <div id="model-selector" style="margin-bottom:10px;">
+    <select id="modelSelect" style="width:100%;background:#223;color:#aac;border:1px solid #446;border-radius:4px;font-size:12px;padding:4px 6px;outline:none;cursor:pointer;">
+    </select>
+  </div>
   <h2>Joint Angles (deg)</h2>
-  <div class="slider-row">
-    <label>J1 Base <span id="v1">0</span></label>
-    <input type="range" id="j1" min="-175" max="175" value="0" step="0.5">
-  </div>
-  <div class="slider-row">
-    <label>J2 Shoulder <span id="v2">0</span></label>
-    <input type="range" id="j2" min="-70" max="90" value="0" step="0.5">
-  </div>
-  <div class="slider-row">
-    <label>J3 Elbow <span id="v3">0</span></label>
-    <input type="range" id="j3" min="-135" max="70" value="0" step="0.5">
-  </div>
-  <div class="slider-row">
-    <label>J4 Wrist Roll <span id="v4">0</span></label>
-    <input type="range" id="j4" min="-170" max="170" value="0" step="0.5">
-  </div>
-  <div class="slider-row">
-    <label>J5 Wrist Pitch <span id="v5">0</span></label>
-    <input type="range" id="j5" min="-115" max="115" value="0" step="0.5">
-  </div>
-  <div class="slider-row">
-    <label>J6 Flange <span id="v6">0</span></label>
-    <input type="range" id="j6" min="-360" max="360" value="0" step="0.5">
-  </div>
+  <div id="joint-sliders"></div>
   <button id="resetBtn">Reset to Home</button>
   <button id="demoBtn">Demo Pose</button>
   <button id="ikBtn">IK Mode: OFF</button>
@@ -197,12 +178,6 @@
       <label>Parent:</label>
       <select id="stlParentSelect">
         <option value="">World</option>
-        <option value="L0">L0 – Base</option>
-        <option value="L1">L1 – Shoulder</option>
-        <option value="L2">L2 – Upper Arm</option>
-        <option value="L3">L3 – Forearm</option>
-        <option value="L4">L4 – Wrist 1</option>
-        <option value="L5">L5 – Wrist 2</option>
       </select>
     </div>
   </div>
@@ -266,6 +241,59 @@ import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
 
 // Patch Three.js Mesh to use BVH-accelerated raycasting
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
+
+// ============================================================
+// Load robot configuration
+// ============================================================
+const configParam = new URLSearchParams(window.location.search).get('config') || 'robot_config.json';
+const config = await fetch(configParam).then(r => r.json());
+const numJoints = config.joints.length;
+document.title = config.name + ' - FK/IK Viewer';
+
+// Populate model selector
+{
+  const select = document.getElementById('modelSelect');
+  const configFiles = ['robot_config.json', 'i16_config.json'];
+  const configs = await Promise.all(configFiles.map(async f => {
+    try { const c = await fetch(f).then(r => r.ok ? r.json() : null); return c ? { file: f, name: c.name } : null; }
+    catch { return null; }
+  }));
+  for (const c of configs.filter(Boolean)) {
+    const opt = document.createElement('option');
+    opt.value = c.file;
+    opt.textContent = c.name;
+    if (c.file === configParam) opt.selected = true;
+    select.appendChild(opt);
+  }
+  select.addEventListener('change', () => {
+    window.location.search = '?config=' + encodeURIComponent(select.value);
+  });
+}
+
+// Generate joint sliders from config (skip fixed joints)
+const sliderContainer = document.getElementById('joint-sliders');
+const sliderJointMap = []; // maps slider index (1-based) to joint index
+for (let i = 0; i < numJoints; i++) {
+  const j = config.joints[i];
+  if (j.fixed) continue;
+  sliderJointMap.push(i);
+  const si = sliderJointMap.length; // 1-based slider index
+  const div = document.createElement('div');
+  div.className = 'slider-row';
+  div.innerHTML = `<label>${j.name} <span id="v${si}">0</span></label>` +
+    `<input type="range" id="j${si}" min="${j.limits[0]}" max="${j.limits[1]}" value="0" step="0.5">`;
+  sliderContainer.appendChild(div);
+}
+const numSliders = sliderJointMap.length;
+
+// Populate parent link dropdown from config
+const parentSelect = document.getElementById('stlParentSelect');
+for (const link of config.links) {
+  const opt = document.createElement('option');
+  opt.value = link.name;
+  opt.textContent = `${link.name} \u2013 ${link.label}`;
+  parentSelect.appendChild(opt);
+}
 
 // ============================================================
 // Scene
@@ -489,12 +517,12 @@ function easeNavSnap(t) { return t*t*(3-2*t); } // smoothstep
 // ============================================================
 // Lighting
 // ============================================================
-const sun = new THREE.DirectionalLight(0xffffff, 3);
-sun.position.set(-0.53, 0.72, 0.41);
+const sun = new THREE.DirectionalLight(0xffffff, 6);
+sun.position.set(3, 5, 2);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.near = 0.01;
-sun.shadow.camera.far = 3;
+sun.shadow.camera.far = 8;
 sun.shadow.camera.left = sun.shadow.camera.bottom = -0.5;
 sun.shadow.camera.right = sun.shadow.camera.top = 0.5;
 scene.add(sun);
@@ -504,7 +532,7 @@ fill.position.set(-0.886, 1.022, 0.668);
 scene.add(fill);
 
 const spot = new THREE.SpotLight(0x0058ff, 40, 3, Math.PI / 4, 0.5);
-spot.position.set(-0.068, 0.586, 0.830);
+spot.position.set(-0.134, 1.043, 1.665);
 scene.add(spot);
 
 scene.add(new THREE.AmbientLight(0x404060, 0.7));
@@ -515,66 +543,36 @@ scene.add(new THREE.HemisphereLight(0x8888bb, 0x333344, 0.4));
 // (converted to Three.js Y-up coords)
 // ============================================================
 
-const jointData = [
-  { // J1 (Bone) - base rotation
-    restPos: [0, 0.09498, 0],
-    restQuat: [0.70711, 0.70711, 0, 0],  // w,x,y,z
-    axis: [0, 0, 1],  // local Z
-  },
-  { // J2 (Bone.001) - shoulder pitch
-    restPos: [0, 0, -0.04002],
-    restQuat: [0.99999, 0, 0.00401, 0.00015],
-    axis: [0, -1, 0],  // local -Y
-  },
-  { // J3 (Bone.002) - elbow pitch
-    restPos: [0, 0, -0.135],
-    restQuat: [0.87216, 0.00338, -0.48916, -0.00629],
-    axis: [0, -1, 0],  // local -Y
-  },
-  { // J4 (Bone.003) - forearm roll
-    restPos: [0, 0, -0.07194],
-    restQuat: [0.96152, 0.00229, -0.27466, 0.00558],
-    axis: [0, 0, 1],  // local Z
-  },
-  { // J5 (Bone.004) - wrist pitch
-    restPos: [0, 0, -0.06],
-    restQuat: [1, 0, -0.00001, 0.00278],
-    axis: [0, -1, 0],  // local -Y
-  },
-  { // J6 (Bone.006) - flange roll around forearm/approach axis
-    restPos: [0, 0, -0.07],
-    restQuat: [0.70711, 0.00215, 0.7071, 0],
-    axis: [1, 0, 0],  // local X
-  },
-];
+const jointData = config.joints;
 
 // Joint limits in radians [min, max]
-const jointLimits = [
-  [-175 * Math.PI/180, 175 * Math.PI/180],   // J1
-  [-70 * Math.PI/180,  90 * Math.PI/180],    // J2
-  [-135 * Math.PI/180, 70 * Math.PI/180],    // J3
-  [-170 * Math.PI/180, 170 * Math.PI/180],   // J4
-  [-115 * Math.PI/180, 115 * Math.PI/180],   // J5
-  [-360 * Math.PI/180, 360 * Math.PI/180],   // J6
-];
+const jointLimits = config.joints.map(j => [j.limits[0] * Math.PI/180, j.limits[1] * Math.PI/180]);
 
 // Link name -> joint index
-const linkToJoint = { 'L0': 0, 'L1': 1, 'L2': 2, 'L3': 3, 'L4': 4, 'L5': 5 };
+const linkToJoint = {};
+for (const link of config.links) linkToJoint[link.name] = link.joint;
 
 // Build the FK chain
 const jointRestGroups = [];
 const jointRotGroups = [];
 const jointAxes = [];
 
-let parent = scene;
-for (let i = 0; i < 6; i++) {
+// Detect branching: if any joint has parent != i-1 or parent == -1 (for i > 0)
+const isBranching = config.joints.some((j, i) => {
+  const p = j.parent !== undefined ? j.parent : i - 1;
+  return i > 0 && p === -1;
+});
+
+for (let i = 0; i < numJoints; i++) {
   const d = jointData[i];
+  const parentIdx = d.parent !== undefined ? d.parent : i - 1;
+  const parentGroup = parentIdx < 0 ? scene : jointRotGroups[parentIdx];
 
   const restGrp = new THREE.Group();
   restGrp.name = `J${i+1}_rest`;
   restGrp.position.set(d.restPos[0], d.restPos[1], d.restPos[2]);
   restGrp.quaternion.set(d.restQuat[1], d.restQuat[2], d.restQuat[3], d.restQuat[0]);
-  parent.add(restGrp);
+  parentGroup.add(restGrp);
   jointRestGroups.push(restGrp);
 
   const rotGrp = new THREE.Group();
@@ -583,14 +581,14 @@ for (let i = 0; i < 6; i++) {
   jointRotGroups.push(rotGrp);
 
   jointAxes.push(new THREE.Vector3(d.axis[0], d.axis[1], d.axis[2]).normalize());
-
-  parent = rotGrp;
 }
 
 // End-effector frame marker (custom colors to match robot convention)
 // Local +X = Robot +X (Blue), Local +Y = Robot +Y (Green), Local +Z = Down (Red)
 const eeMarker = new THREE.Group();
-parent.add(eeMarker);
+// For serial chains, attach to last joint; for branching, attach to last joint of first chain
+const eeParentGroup = isBranching ? jointRotGroups[jointRotGroups.length - 1] : jointRotGroups[numJoints - 1];
+eeParentGroup.add(eeMarker);
 const axLen = 0.03;
 function makeAxis(dir, color) {
   const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), dir.clone().multiplyScalar(axLen)]);
@@ -605,14 +603,14 @@ eeMarker.add(makeAxis(new THREE.Vector3(0, 0, 1), 0xff0000));  // Red   → Down
 // ============================================================
 let chainVisible = false;
 
-// 7 points: 6 joints + EE (updated each frame when visible)
-const chainPts = new Float32Array(7 * 3);
+// N+1 points: N joints + EE (updated each frame when visible)
+const chainPts = new Float32Array((numJoints + 1) * 3);
 const chainLineGeo = new THREE.BufferGeometry();
 chainLineGeo.setAttribute('position', new THREE.BufferAttribute(chainPts, 3));
 
-// Line segments: j0→j1, j1→j2, … j5→EE  (6 segments = 12 indices)
+// Line segments: j0→j1, j1→j2, … jN-1→EE  (N segments = 2N indices)
 const chainLineIndices = [];
-for (let i = 0; i < 6; i++) { chainLineIndices.push(i, i + 1); }
+for (let i = 0; i < numJoints; i++) { chainLineIndices.push(i, i + 1); }
 chainLineGeo.setIndex(chainLineIndices);
 
 const chainLine = new THREE.LineSegments(
@@ -626,8 +624,8 @@ scene.add(chainLine);
 // Small spheres at each joint + EE
 const chainSphereMat = new THREE.MeshStandardMaterial({ color: 0xffdd44, emissive: 0x554400, depthTest: false });
 const chainSpheres = [];
-for (let i = 0; i < 7; i++) {
-  const r = i === 0 ? 0.009 : i === 6 ? 0.007 : 0.006;
+for (let i = 0; i < numJoints + 1; i++) {
+  const r = i === 0 ? 0.009 : i === numJoints ? 0.007 : 0.006;
   const s = new THREE.Mesh(new THREE.SphereGeometry(r, 10, 10), chainSphereMat);
   s.renderOrder = 1;
   s.visible = false;
@@ -637,7 +635,7 @@ for (let i = 0; i < 7; i++) {
 
 function updateChain() {
   scene.updateMatrixWorld(true);
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < numJoints; i++) {
     const p = getJointWorldPosition(i);
     chainPts[i * 3]     = p.x;
     chainPts[i * 3 + 1] = p.y;
@@ -645,8 +643,9 @@ function updateChain() {
     chainSpheres[i].position.copy(p);
   }
   const ee = getEEWorldPosition();
-  chainPts[18] = ee.x; chainPts[19] = ee.y; chainPts[20] = ee.z;
-  chainSpheres[6].position.copy(ee);
+  const eeIdx = numJoints * 3;
+  chainPts[eeIdx] = ee.x; chainPts[eeIdx + 1] = ee.y; chainPts[eeIdx + 2] = ee.z;
+  chainSpheres[numJoints].position.copy(ee);
   chainLineGeo.attributes.position.needsUpdate = true;
 }
 
@@ -724,7 +723,7 @@ const meshLabels = [];
 const robotLinkMeshes = []; // { name, meshes: [Mesh], jointIdx }
 
 const loader = new GLTFLoader();
-loader.load('robot_scene.glb', (gltf) => {
+loader.load(config.model, (gltf) => {
   document.getElementById('loading').style.display = 'none';
   const model = gltf.scene;
 
@@ -825,6 +824,32 @@ loader.load('robot_scene.glb', (gltf) => {
     if (mesh.name) createLabel(mesh.name, mesh);
   }
 
+  // Auto-fit camera to scene contents
+  updateFK();
+  const fitBox = new THREE.Box3();
+  for (const grp of jointRotGroups) {
+    grp.updateWorldMatrix(true, true);
+    grp.traverse((child) => {
+      if (child.isMesh) fitBox.expandByObject(child);
+    });
+  }
+  for (const mesh of statics) {
+    mesh.updateWorldMatrix(true, false);
+    fitBox.expandByObject(mesh);
+  }
+  if (!fitBox.isEmpty()) {
+    const fitCenter = fitBox.getCenter(new THREE.Vector3());
+    const fitSize = fitBox.getSize(new THREE.Vector3());
+    const maxDim = Math.max(fitSize.x, fitSize.y, fitSize.z);
+    const fov = camera.fov * (Math.PI / 180);
+    const fitDist = maxDim / (2 * Math.tan(fov / 2)) * 1.2;
+    const direction = new THREE.Vector3(1, 0.6, 1).normalize();
+    camera.position.copy(fitCenter).addScaledVector(direction, fitDist);
+    orbitControls.target.copy(fitCenter);
+    camera.updateProjectionMatrix();
+    orbitControls.update();
+  }
+
 }, (progress) => {
   const pct = progress.total ? Math.round(progress.loaded / progress.total * 100) : '?';
   document.getElementById('loading').textContent = `Loading... ${pct}%`;
@@ -853,19 +878,20 @@ scene.add(new THREE.GridHelper(2, 40, 0x333355, 0x222244).translateY(-0.062));
 // ============================================================
 const deg2rad = Math.PI / 180;
 const rad2deg = 180 / Math.PI;
-const jointAngles = [0, 0, 0, 0, 0, 0];
+const jointAngles = Array(numJoints).fill(0);
 
 function updateFK() {
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < numJoints; i++) {
     jointRotGroups[i].quaternion.setFromAxisAngle(jointAxes[i], jointAngles[i]);
   }
 }
 
 function updateSliders() {
-  for (let i = 0; i < 6; i++) {
-    const deg = jointAngles[i] * rad2deg;
-    document.getElementById(`j${i+1}`).value = deg;
-    document.getElementById(`v${i+1}`).textContent = deg.toFixed(1);
+  for (let si = 0; si < numSliders; si++) {
+    const ji = sliderJointMap[si];
+    const deg = jointAngles[ji] * rad2deg;
+    document.getElementById(`j${si+1}`).value = deg;
+    document.getElementById(`v${si+1}`).textContent = deg.toFixed(1);
   }
 }
 
@@ -875,7 +901,7 @@ function getEEWorldPosition() {
 }
 
 function clampJoints() {
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < numJoints; i++) {
     jointAngles[i] = Math.max(jointLimits[i][0], Math.min(jointLimits[i][1], jointAngles[i]));
   }
 }
@@ -925,10 +951,10 @@ function solveIK(targetPos, targetQuat, maxIter = 20, tolerance = 0.0005) {
 
     if (posNorm < tolerance && oriErr.length() < 0.01) return posNorm;
 
-    // Build 6×6 Jacobian: J[taskDOF][joint]
+    // Build 6×N Jacobian: J[taskDOF][joint]
     // Rows 0-2: linear (axis × lever), Rows 3-5: angular (axis, scaled)
-    const J = Array.from({length: 6}, () => Array(6).fill(0));
-    for (let j = 0; j < 6; j++) {
+    const J = Array.from({length: 6}, () => Array(numJoints).fill(0));
+    for (let j = 0; j < numJoints; j++) {
       const axis = getJointWorldAxis(j);
       const jPos = getJointWorldPosition(j);
       const r = new THREE.Vector3().subVectors(eePos, jPos);
@@ -951,7 +977,7 @@ function solveIK(targetPos, targetQuat, maxIter = 20, tolerance = 0.0005) {
     for (let r = 0; r < n; r++) {
       for (let c = 0; c < n; c++) {
         let sum = 0;
-        for (let k = 0; k < 6; k++) sum += J[r][k] * J[c][k];
+        for (let k = 0; k < numJoints; k++) sum += J[r][k] * J[c][k];
         JJT[r][c] = sum;
       }
     }
@@ -971,7 +997,7 @@ function solveIK(targetPos, targetQuat, maxIter = 20, tolerance = 0.0005) {
         v[i] += inv[i][j] * e[j];
 
     // Δq = J^T * v
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < numJoints; i++) {
       let dq = 0;
       for (let j = 0; j < n; j++) dq += J[j][i] * v[j];
       jointAngles[i] += dq;
@@ -1070,13 +1096,14 @@ function syncIKSliders() {
 // ============================================================
 // Joint slider controls
 // ============================================================
-for (let i = 1; i <= 6; i++) {
-  const slider = document.getElementById(`j${i}`);
-  const label = document.getElementById(`v${i}`);
+for (let si = 1; si <= numSliders; si++) {
+  const slider = document.getElementById(`j${si}`);
+  const label = document.getElementById(`v${si}`);
+  const ji = sliderJointMap[si - 1];
   slider.addEventListener('input', () => {
     const deg = parseFloat(slider.value);
     label.textContent = deg.toFixed(1);
-    jointAngles[i-1] = deg * deg2rad;
+    jointAngles[ji] = deg * deg2rad;
     updateFK();
     // If in IK mode, move target to new EE pose
     if (ikMode) {
@@ -1090,7 +1117,7 @@ for (let i = 1; i <= 6; i++) {
 }
 
 document.getElementById('resetBtn').addEventListener('click', () => {
-  for (let i = 0; i < 6; i++) jointAngles[i] = 0;
+  for (let i = 0; i < numJoints; i++) jointAngles[i] = 0;
   updateFK();
   updateSliders();
   if (ikMode) {
@@ -1103,8 +1130,8 @@ document.getElementById('resetBtn').addEventListener('click', () => {
 });
 
 document.getElementById('demoBtn').addEventListener('click', () => {
-  const demo = [0, -30, 60, 0, 45, 90];
-  for (let i = 0; i < 6; i++) jointAngles[i] = demo[i] * deg2rad;
+  const demo = config.demoPose;
+  for (let i = 0; i < numJoints; i++) jointAngles[i] = (demo[i] || 0) * deg2rad;
   updateFK();
   updateSliders();
   if (ikMode) {
@@ -1117,8 +1144,13 @@ document.getElementById('demoBtn').addEventListener('click', () => {
 });
 
 document.getElementById('ikBtn').addEventListener('click', () => {
+  if (isBranching) return; // IK not supported for branching kinematic chains
   setIKMode(!ikMode);
 });
+if (isBranching) {
+  document.getElementById('ikBtn').style.display = 'none';
+  document.getElementById('chainBtn').style.display = 'none';
+}
 
 document.getElementById('chainBtn').addEventListener('click', () => {
   chainVisible = !chainVisible;
@@ -1193,7 +1225,7 @@ function makeSpanEditable(spanId, onCommit) {
   });
 }
 
-for (let i = 1; i <= 6; i++) {
+for (let i = 1; i <= numSliders; i++) {
   makeSpanEditable(`v${i}`, (val) => {
     const s = document.getElementById(`j${i}`);
     s.value = Math.max(s.min, Math.min(s.max, val));
@@ -1894,6 +1926,50 @@ window.addEventListener('keydown', (e) => {
 // ============================================================
 let collisionEnabled = false;
 let lastCollisions = []; // persisted for API access: [{ linkName, stlName }]
+
+// Build kinematic adjacency set for self-collision skipping
+// Two links are adjacent if their joints share a direct parent-child path (through fixed joints)
+const _adjPairs = new Set();
+{
+  // For each joint, find the nearest movable ancestor joint index
+  function movableAncestor(jointIdx) {
+    let idx = config.joints[jointIdx].parent;
+    while (idx >= 0) {
+      if (!config.joints[idx].fixed) return idx;
+      idx = config.joints[idx].parent;
+    }
+    return -1;
+  }
+  // Group links by joint index
+  const linksByJoint = {};
+  for (const link of config.links) {
+    if (!linksByJoint[link.joint]) linksByJoint[link.joint] = [];
+    linksByJoint[link.joint].push(link.name);
+  }
+  // Links on the same joint are adjacent
+  for (const names of Object.values(linksByJoint)) {
+    for (let a = 0; a < names.length; a++)
+      for (let b = a + 1; b < names.length; b++)
+        _adjPairs.add([names[a], names[b]].sort().join('|'));
+  }
+  // Links whose movable joints are parent-child are adjacent
+  for (const linkA of config.links) {
+    const ancA = movableAncestor(linkA.joint);
+    for (const linkB of config.links) {
+      if (linkA.name >= linkB.name) continue;
+      // Check if linkB's joint is the movable ancestor of linkA or vice versa
+      const ancB = movableAncestor(linkB.joint);
+      const jA = config.joints[linkA.joint].fixed ? movableAncestor(linkA.joint) : linkA.joint;
+      const jB = config.joints[linkB.joint].fixed ? movableAncestor(linkB.joint) : linkB.joint;
+      if (jA === jB || jA === ancB || jB === ancA) {
+        _adjPairs.add([linkA.name, linkB.name].sort().join('|'));
+      }
+    }
+  }
+}
+function areLinksAdjacent(nameA, nameB) {
+  return _adjPairs.has([nameA, nameB].sort().join('|'));
+}
 const collisionInfoEl = document.getElementById('collision-info');
 const collisionTextEl = document.getElementById('collision-text');
 const collisionBtn = document.getElementById('collisionBtn');
@@ -2046,10 +2122,6 @@ function checkCollisions() {
 
   const visibleSTLs = importedSTLs.filter(e => e.mesh.visible && !e.isPointCloud);
   const visiblePointClouds = importedSTLs.filter(e => e.mesh.visible && e.isPointCloud);
-  if (visibleSTLs.length === 0 && visiblePointClouds.length === 0) {
-    if (highlightedMaterials.size > 0 || highlightedPointMaterials.size > 0) clearCollisionHighlights();
-    return;
-  }
 
   clearCollisionHighlights();
 
@@ -2124,9 +2196,10 @@ function checkCollisions() {
 
   // 4) Robot link vs robot link (including parented STLs extending each link)
   for (let i = 0; i < extendedLinks.length; i++) {
-    for (let j = i + 2; j < extendedLinks.length; j++) { // skip adjacent links
+    for (let j = i + 1; j < extendedLinks.length; j++) {
       const linkA = extendedLinks[i];
       const linkB = extendedLinks[j];
+      if (areLinksAdjacent(linkA.name, linkB.name)) continue; // skip kinematically adjacent
       let found = false;
       for (const meshA of linkA.meshes) {
         for (const meshB of linkB.meshes) {
@@ -2286,8 +2359,8 @@ function handleCommand(data) {
 
   } else if (cmd === 'setJoints') {
     const angles = data.angles;
-    if (Array.isArray(angles) && angles.length === 6) {
-      for (let i = 0; i < 6; i++) jointAngles[i] = angles[i] * deg2rad;
+    if (Array.isArray(angles) && angles.length === numJoints) {
+      for (let i = 0; i < numJoints; i++) jointAngles[i] = angles[i] * deg2rad;
       clampJoints();
       updateFK();
       updateSliders();
@@ -2302,7 +2375,7 @@ function handleCommand(data) {
     }
 
   } else if (cmd === 'home') {
-    for (let i = 0; i < 6; i++) jointAngles[i] = 0;
+    for (let i = 0; i < numJoints; i++) jointAngles[i] = 0;
     updateFK();
     updateSliders();
     if (ikMode) {
@@ -2313,6 +2386,24 @@ function handleCommand(data) {
       syncIKSliders();
     }
     wsSend(buildState());
+
+  } else if (cmd === 'setSingleJoint') {
+    const idx = data.index;
+    const angle = data.angle;
+    if (idx >= 0 && idx < numJoints && typeof angle === 'number') {
+      jointAngles[idx] = angle * deg2rad;
+      clampJoints();
+      updateFK();
+      updateSliders();
+      if (ikMode) {
+        scene.updateMatrixWorld(true);
+        ikTarget.position.copy(getEEWorldPosition());
+        ikTargetQuat.copy(getEEWorldQuaternion());
+        ikTargetEuler.setFromQuaternion(ikTargetQuat, 'YZX');
+        syncIKSliders();
+      }
+      wsSend(buildState());
+    }
 
   } else if (cmd === 'setMode') {
     if (data.mode === 'FK' || data.mode === 'IK') {

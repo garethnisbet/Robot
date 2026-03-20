@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Meca500 Robot Visualisation — WebSocket + HTTP Server
+Robot Visualisation — WebSocket + HTTP Server
 
 Serves the Three.js viewer and provides a two-way WebSocket API
 for remote robot control.
 
 Usage:
     pip install aiohttp
-    python server.py [--port 8000]
+    python server.py [--port 8000] [--config robot_config.json]
 
 WebSocket endpoint: ws://localhost:8000/ws
 
@@ -15,7 +15,8 @@ API Protocol (JSON over WebSocket):
 ────────────────────────────────────
 Commands (send TO the viewer):
   {"cmd": "getState"}
-  {"cmd": "setJoints", "angles": [j1, j2, j3, j4, j5, j6]}     # degrees
+  {"cmd": "setJoints", "angles": [j1, j2, ...jN]}                # degrees (all joints)
+  {"cmd": "setSingleJoint", "index": i, "angle": deg}           # set one joint by index
   {"cmd": "home"}                                                 # all joints to 0
   {"cmd": "setMode", "mode": "FK"}                                # "FK" or "IK"
   {"cmd": "setIKTarget", "position": [x,y,z], "orientation": [a,b,g]}  # mm, deg (Z-up)
@@ -24,7 +25,7 @@ Commands (send TO the viewer):
 State (sent FROM the viewer):
   {
     "type": "state",
-    "joints": [j1..j6],          # degrees
+    "joints": [j1..jN],          # degrees (all joints)
     "eePosition": [x, y, z],    # mm, Z-up
     "eeOrientation": [a, b, g], # degrees, ZYX Euler
     "mode": "FK" | "IK",
@@ -95,34 +96,45 @@ async def ws_handler(request):
     return ws
 
 
-async def index_handler(request):
-    return web.FileResponse(ROOT / "threejs_scene.html")
-
-
 async def healthz_handler(request):
     return web.Response(text="ok")
 
 
-def create_app():
+def create_app(config_path=None):
     app = web.Application()
+
+    # Redirect / to viewer with config query parameter
+    config_name = Path(config_path).name if config_path else "robot_config.json"
+
+    async def index_handler(request):
+        # If no config param in URL, redirect with the server's --config value
+        if "config" not in request.query:
+            raise web.HTTPFound(f"/?config={config_name}")
+        return web.FileResponse(ROOT / "threejs_scene.html")
+
     app.router.add_get("/healthz", healthz_handler)
     app.router.add_get("/ws", ws_handler)
     app.router.add_get("/", index_handler)
+
     # Serve static files (GLB, images, etc.)
     app.router.add_static("/", ROOT, show_index=False)
     return app
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Meca500 Robot WebSocket Server")
+    parser = argparse.ArgumentParser(description="Robot Visualisation WebSocket Server")
     parser.add_argument("--port", type=int, default=8080, help="HTTP port (default: 8080)")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
+    parser.add_argument("--config", default="robot_config.json",
+                        help="Path to robot config JSON (default: robot_config.json)")
     args = parser.parse_args()
 
-    app = create_app()
+    app = create_app(config_path=args.config)
     log.info(f"Starting server on http://{args.host}:{args.port}")
-    log.info(f"Open http://localhost:{args.port} in your browser")
+    config_name = Path(args.config).name
+    log.info(f"Open http://localhost:{args.port}/?config={config_name} in your browser")
     log.info(f"WebSocket API at ws://localhost:{args.port}/ws")
+    log.info(f"Robot config: {args.config}")
     web.run_app(app, host=args.host, port=args.port, print=None)
 
 

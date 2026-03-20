@@ -1,11 +1,11 @@
-# Build Three.js Robot Viewer from Blender Scene
+# Build Three.js Robot/Device Viewer from Blender Scene
 
-Build an interactive Three.js FK/IK viewer from the robot armature in the current Blender scene. The viewer includes joint angle sliders, 6-DOF inverse kinematics with position and ZYX orientation control, draggable IK target, mesh labels toggle, and double-click-to-edit value labels.
+Build a config JSON and export a GLB for the interactive Three.js FK/IK viewer from an armature in the current Blender scene. The viewer (`threejs_scene.html`) is generic and config-driven — **do NOT modify it**. All you need to produce is a config JSON and a GLB file.
 
 User arguments (optional): $ARGUMENTS
 - If the user specifies an armature name, use that. Otherwise auto-detect the first armature in the scene.
-- If the user specifies an output filename, use that. Otherwise default to `threejs_scene.html`.
-- If the user specifies mesh names to exclude, hide those in the viewer.
+- If the user specifies a config filename, use that. Otherwise default to `robot_config.json`.
+- If the user specifies a GLB filename, use that. Otherwise derive from the config name.
 
 ## Step 1: Inspect the Blender Scene
 
@@ -16,7 +16,7 @@ Use `mcp__blender__get_scene_info` to get the scene overview. Identify:
 
 ## Step 2: Extract Armature Bone Data
 
-Use `mcp__blender__execute_blender_code` to run this Python code in Blender, adapted to the armature name found in Step 1:
+Use `mcp__blender__execute_blender_code` to extract bone transforms. **CRITICAL: Use the correct C matrix** — `C_gltf = [[1,0,0],[0,0,1],[0,-1,0]]`. The inverse matrix `[[1,0,0],[0,0,-1],[0,1,0]]` produces wrong transforms.
 
 ```python
 import bpy, json, mathutils
@@ -24,18 +24,18 @@ import bpy, json, mathutils
 arm_obj = bpy.data.objects['ARMATURE_NAME']  # Replace with actual name
 arm = arm_obj.data
 
-# Coordinate conversion: Blender Z-up to Three.js Y-up
+# CORRECT coordinate conversion: Blender Z-up to glTF/Three.js Y-up
+# Maps: Blender X→X, Blender Y→-Z, Blender Z→Y
 C = mathutils.Matrix((
     (1, 0, 0, 0),
-    (0, 0, -1, 0),
-    (0, 1, 0, 0),
+    (0, 0, 1, 0),
+    (0, -1, 0, 0),
     (0, 0, 0, 1),
 ))
 C_inv = C.inverted()
 
 bones_data = []
 for bone in arm.bones:
-    # Get parent-relative rest transform in Three.js Y-up coords
     if bone.parent:
         local_mat = C @ bone.parent.matrix_local.inverted() @ bone.matrix_local @ C_inv
     else:
@@ -49,90 +49,84 @@ for bone in arm.bones:
         'parent': bone.parent.name if bone.parent else None,
         'pos': [round(pos.x, 5), round(pos.y, 5), round(pos.z, 5)],
         'quat_wxyz': [round(quat.w, 5), round(quat.x, 5), round(quat.y, 5), round(quat.z, 5)],
-        'length': round(bone.length, 5),
     })
 
 print(json.dumps(bones_data, indent=2))
 ```
 
-## Step 3: Determine Joint Rotation Axes
+## Step 3: Determine Joint Rotation Axes and Fixed Joints
 
-Use `mcp__blender__execute_blender_code` to determine the rotation axis for each bone. For serial robot arms, common conventions are:
-- Revolute joints about the bone's local Y or Z axis in Blender (which becomes local Z or -Y in Three.js Y-up)
-- The axis can often be inferred from bone constraints or custom properties
-
-Run this code to check for bone constraints and determine axes:
+Use `mcp__blender__execute_blender_code` to read quaternion locks. In Blender QUATERNION rotation mode, `lock_rotation_w` and `lock_rotation[0:2]` correspond to W, X, Y, Z components. The **free** (unlocked) component determines the rotation axis.
 
 ```python
-import bpy, json
+import bpy
 
 arm_obj = bpy.data.objects['ARMATURE_NAME']
 pose = arm_obj.pose
 
 for pb in pose.bones:
-    constraints = []
-    for c in pb.constraints:
-        constraints.append({'type': c.type, 'name': c.name})
-
-    # Check bone's principal axis (the direction it points)
-    bone = pb.bone
-    axis_vec = bone.matrix_local.to_3x3() @ mathutils.Vector((0, 1, 0))  # bone Y = along bone
-
-    print(f"{pb.name}: constraints={constraints}, bone_y_world={[round(v,3) for v in axis_vec]}")
+    lock_w = pb.lock_rotation_w
+    lock_xyz = list(pb.lock_rotation)
+    free = []
+    if not lock_w: free.append('W')
+    if not lock_xyz[0]: free.append('X')
+    if not lock_xyz[1]: free.append('Y')
+    if not lock_xyz[2]: free.append('Z')
+    print(f"{pb.name}: locks W={lock_w} X={lock_xyz[0]} Y={lock_xyz[1]} Z={lock_xyz[2]}  free={free}")
 ```
 
-If constraints don't reveal the axes, ask the user which axis each joint rotates about. Common patterns for serial manipulators:
-- Base rotation (J1): about world Z (Blender) = local Z in Three.js Y-up after rest transform
-- Shoulder/elbow pitch joints: about bone's local Z (Blender) = local -Y in Three.js Y-up
-- Wrist roll joints: about bone's local Y (Blender) = local Z in Three.js Y-up
-- Flange roll: may be about bone's local X = local X in Three.js Y-up
+### Interpreting the results:
 
-The converted axes in Three.js local frame are typically one of:
-- `[0, 0, 1]` — local Z (for yaw/roll joints that rotate about the bone direction after conversion)
-- `[0, -1, 0]` — local -Y (for pitch joints)
-- `[1, 0, 0]` — local X (for roll joints aligned with the approach axis)
-- `[0, 1, 0]` — local Y
+**Fixed joints:** All WXYZ locked (free=[]) → set `"fixed": true` in config. These are kinematic links that don't rotate.
 
-Ask the user to confirm the rotation axis for each joint if you cannot determine it automatically.
+**Movable joints:** Exactly one component free (plus W which is always free for unit quaternions). The free component after C_gltf conversion gives the Three.js rotation axis:
+
+| Blender free component | Three.js axis |
+|----------------------|---------------|
+| X free (W,X free)    | `[1, 0, 0]`  |
+| Y free (W,Y free)    | `[0, 0, -1]` |
+| Z free (W,Z free)    | `[0, 1, 0]`  |
+
+**Why Y maps to [0,0,-1]:** C_gltf @ R_y(θ) @ C_gltf_inv = R_z(-θ), so Blender Y rotation becomes negative Z in Three.js.
+
+**All components free:** This is a kinematic link (all DOF unlocked = no constraint), treat as `"fixed": true`.
+
+If the bone uses a different rotation mode or constraints don't reveal axes, ask the user.
 
 ## Step 4: Determine Mesh-to-Bone Parenting
 
-Use `mcp__blender__execute_blender_code` to find which meshes are parented to which bones:
+Use `mcp__blender__execute_blender_code` to find which meshes are parented to which bones, including mesh-to-mesh parenting chains:
 
 ```python
 import bpy, json
 
 arm_obj = bpy.data.objects['ARMATURE_NAME']
-link_map = {}
 
+# Direct bone parenting
 for obj in bpy.data.objects:
-    if obj.type == 'MESH' and obj.parent == arm_obj and obj.parent_bone:
-        link_map[obj.name] = obj.parent_bone
-    elif obj.type == 'MESH' and obj.parent == arm_obj:
-        # Check for armature modifier vertex group parenting
-        for mod in obj.modifiers:
-            if mod.type == 'ARMATURE':
-                link_map[obj.name] = 'armature_deform'
-                break
-
-print(json.dumps(link_map, indent=2))
+    if obj.type == 'MESH':
+        parent_name = obj.parent.name if obj.parent else None
+        parent_type = obj.parent_type if obj.parent else None
+        parent_bone = obj.parent_bone if obj.parent_bone else None
+        print(f"{obj.name}: parent={parent_name}, type={parent_type}, bone={parent_bone}")
 ```
 
-The mesh names and their bone assignments will be used to build the `linkToJoint` mapping in the viewer. Each bone in the chain corresponds to a joint index (0-based).
+**Important:** Meshes can be parented to bones (direct) or to other meshes (indirect). For the config `links` array:
+- Bone-parented meshes → map to the joint index of that bone
+- Mesh-parented meshes (e.g., nozzle→detector_arm→delta) → map to the same joint as their ultimate bone-parented ancestor
+- Unparented meshes → these are static scene objects, don't include in `links`
+
+**Name sanitization:** Three.js GLTFLoader sanitizes node names: spaces → underscores, dots removed. Config link names MUST use sanitized versions (e.g., `"detector_arm_back"` not `"detector arm back"`).
 
 ## Step 5: Determine Joint Limits
 
-Ask the user for joint limits (in degrees) for each joint, or use defaults:
-- Revolute joints: typically -180 to 180 degrees
-- Check if the Blender bones have rotation limits set:
+Check if Blender bones have rotation limits set:
 
 ```python
-import bpy, json
+import bpy
 
 arm_obj = bpy.data.objects['ARMATURE_NAME']
 for pb in arm_obj.pose.bones:
-    if pb.lock_ik_x or pb.lock_ik_y or pb.lock_ik_z:
-        print(f"{pb.name}: IK locks x={pb.lock_ik_x} y={pb.lock_ik_y} z={pb.lock_ik_z}")
     if hasattr(pb, 'use_ik_limit_x') and pb.use_ik_limit_x:
         print(f"{pb.name}: IK X limits [{pb.ik_min_x:.3f}, {pb.ik_max_x:.3f}] rad")
     if hasattr(pb, 'use_ik_limit_y') and pb.use_ik_limit_y:
@@ -141,16 +135,33 @@ for pb in arm_obj.pose.bones:
         print(f"{pb.name}: IK Z limits [{pb.ik_min_z:.3f}, {pb.ik_max_z:.3f}] rad")
 ```
 
-## Step 6: Export glTF from Blender
+If no limits are set, use defaults: `[-180, 180]` for most joints, `[-360, 360]` for continuous rotation joints. Fixed joints use `[0, 0]`.
 
-Use `mcp__blender__execute_blender_code` to export the scene:
+## Step 6: Export GLB from Blender (Skin-Free)
+
+**CRITICAL:** Bone-parented meshes cause Blender to add a `skins` array to the GLB. Three.js GLTFLoader handles skeleton children differently, making nested mesh nodes inaccessible via `model.traverse()`. **Always export with `export_skins=False` after temporarily unparenting bone-parented meshes.**
 
 ```python
 import bpy, os
 
-output_dir = 'OUTPUT_DIR'  # Replace with the working directory path
-output_path = os.path.join(output_dir, 'robot_scene.glb')
+arm_obj = bpy.data.objects['ARMATURE_NAME']
+output_path = 'OUTPUT_PATH'  # e.g., '/path/to/robot_scene.glb'
 
+# Backup and unparent bone-parented meshes to avoid skins in GLB
+parenting_backup = []
+for obj in bpy.data.objects:
+    if obj.type == 'MESH' and obj.parent == arm_obj and obj.parent_bone:
+        parenting_backup.append({
+            'obj': obj,
+            'parent_bone': obj.parent_bone,
+            'parent_type': obj.parent_type,
+            'matrix_world': obj.matrix_world.copy()
+        })
+        mat = obj.matrix_world.copy()
+        obj.parent = None
+        obj.matrix_world = mat
+
+# Export
 bpy.ops.export_scene.gltf(
     filepath=output_path,
     export_format='GLB',
@@ -158,96 +169,91 @@ bpy.ops.export_scene.gltf(
     use_visible=True,
     export_yup=True,
     export_animations=False,
+    export_skins=False,
 )
+
+# Restore parenting
+for info in parenting_backup:
+    obj = info['obj']
+    obj.parent = arm_obj
+    obj.parent_bone = info['parent_bone']
+    obj.parent_type = info['parent_type']
+    obj.matrix_world = info['matrix_world']
+
 print(f"Exported to {output_path}")
+print(f"Unparented/restored {len(parenting_backup)} bone-parented meshes")
 ```
 
-If the export fails due to context issues, try:
-```python
-import bpy
-# Override context for export
-for area in bpy.context.screen.areas:
-    if area.type == 'VIEW_3D':
-        with bpy.context.temp_override(area=area):
-            bpy.ops.export_scene.gltf(...)
-        break
-```
+### Browser cache busting:
+If re-exporting an updated model, change the GLB filename (e.g., `model_v2.glb`) to bypass browser cache. Update the config's `"model"` field to match.
 
-## Step 7: Generate the Three.js HTML Viewer
+## Step 7: Generate the Config JSON
 
-Create the HTML file using the data gathered in Steps 1-5. Use the existing `threejs_scene.html` in this project as a reference template. Read it with the Read tool to get the exact structure.
+Create a config JSON file. The `threejs_scene.html` viewer loads this config dynamically. **Do NOT modify threejs_scene.html.**
 
-Key data to substitute into the template:
-- `jointData` array: one entry per bone in the chain, with `restPos`, `restQuat` (w,x,y,z), and `axis` from Steps 2-3
-- `jointLimits` array: from Step 5
-- `linkToJoint` mapping: mesh name to joint index from Step 4
-- Joint slider labels: use bone names or descriptive names
-- Title: use the armature/robot name
-- `hideNames` array: any meshes the user wants hidden
-- Number of joints: adapt the slider HTML and all loops from 6 to N (the actual joint count)
-- glTF filename: match the export filename from Step 6
-
-### Important adaptations for N-DOF robots:
-
-The template is built for 6-DOF. For robots with a different number of joints:
-- Generate N slider rows (J1 through JN) in the HTML
-- Set `jointData` array length to N
-- Set `jointLimits` array length to N
-- Set `jointAngles` array length to N
-- All `for` loops iterating joints should use `jointData.length` or N instead of hardcoded 6
-- The Jacobian in `solveIK` becomes a 6xN matrix (always 6 task DOFs, N joint DOFs)
-- For N < 6: the system is underdetermined for orientation — consider using position-only IK (3xN Jacobian) or reducing orientation weight
-- For N > 6: the system is redundant — DLS handles this naturally
-- JJT is always 6x6 (or 3x3 for position-only), so `invertNxN` still works
-
-### End-effector crosshair:
-
-Do NOT use `THREE.AxesHelper` for the EE frame marker. The Y↔Z coordinate swap between robot Z-up and Three.js Y-up creates a left-handed mapping that AxesHelper (which is always right-handed) cannot represent correctly. Instead, create custom colored lines using a `THREE.Group`:
-
-```js
-const eeMarker = new THREE.Group();
-parent.add(eeMarker);
-const axLen = 0.03;
-function makeAxis(dir, color) {
-  const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), dir.clone().multiplyScalar(axLen)]);
-  return new THREE.Line(g, new THREE.LineBasicMaterial({ color }));
+### Config structure:
+```json
+{
+  "name": "Device Name",
+  "model": "device_scene.glb",
+  "joints": [
+    {
+      "name": "joint_name",
+      "restPos": [x, y, z],
+      "restQuat": [w, x, y, z],
+      "axis": [x, y, z],
+      "limits": [-180, 180],
+      "parent": 0
+    }
+  ],
+  "links": [
+    { "name": "mesh_name", "label": "Display Name", "joint": 0 }
+  ],
+  "demoPose": [0, 45, -90]
 }
 ```
 
-The directions must be computed for each robot. At home position (all joints = 0), compute the cumulative world orientation of the last joint's rotation group by multiplying all rest quaternions in the FK chain. Then determine which local directions correspond to:
-- **Blue** → Robot +X direction (typically the approach axis at home)
-- **Green** → Robot +Y direction
-- **Red** → Robot -Z direction (down)
+### Joint fields:
+- `restPos`, `restQuat`: from Step 2 (C_gltf converted). `restQuat` is [w,x,y,z]
+- `axis`: from Step 3 (quaternion lock analysis)
+- `limits`: from Step 5, in degrees. Fixed joints use `[0, 0]`
+- `parent`: index of parent joint in this array, or `-1` for root joints
+- `fixed` (optional): `true` for non-movable kinematic links
 
-Add lines in the LOCAL frame of the last joint's rotation group using the computed directions. Since the lines are children of the FK chain, they will correctly follow joint rotations.
+### Branching kinematic chains:
+For devices with multiple independent chains (e.g., i16 diffractometer has gamma and mu chains):
+- Each chain starts from a root joint with `"parent": -1`
+- If chains share a physical root bone, create separate root joint entries (one per chain) with the same transform
+- Sub-branches (e.g., merlin detector branching from stokes) use the `parent` field to point to the branch point joint
 
-The `eeMarker` Group (with no local rotation) must be preserved for `getEEWorldPosition()` and `getEEWorldQuaternion()` used by the IK solver.
+### Link fields:
+- `name`: sanitized mesh name (spaces→underscores, no dots) matching what Three.js GLTFLoader produces
+- `label`: human-readable display name
+- `joint`: index into the `joints` array that this mesh moves with
 
-### Lighting:
+### demoPose:
+Array of joint angles in degrees, one per joint. Fixed joints should be `0`. Choose angles that show the device in an interesting non-home pose.
 
-Ensure the main directional light (`sun`) and any strong spot lights are positioned to illuminate the **front** of the robot — the side facing the default camera position. The camera defaults to `(0.45, 0.30, 0.40)`, so lights should generally have positive Z in Three.js coordinates to light the front. Avoid placing high-intensity lights behind the robot (negative Z) as this creates unwanted backlighting.
+## Step 8: Add Config to Model Selector
 
-### Coordinate convention:
+The viewer has a model selector dropdown. To make the new config available, add its filename to the `configFiles` array in `threejs_scene.html`. Search for `configFiles` and add the new config filename.
 
-The viewer uses Z-up display convention with Y-up Three.js internals:
-- Position sliders: X, Y (depth), Z (vertical/up)
-- Slider to Three.js mapping: slider Y ↔ Three.js Z, slider Z ↔ Three.js Y
-- Orientation: ZYX Euler (α=Rz vertical, β=Ry depth, γ=Rx lateral)
-- Three.js Euler order: 'YZX' (because user Z maps to Three.js Y)
-
-## Step 8: Start HTTP Server and Test
+## Step 9: Start HTTP Server and Test
 
 ```bash
 python3 -m http.server 8000
 ```
 
-Tell the user to open `http://localhost:8000/FILENAME.html` and verify:
+Tell the user to open `http://localhost:8000/threejs_scene.html?config=CONFIG_FILE.json` and verify:
 1. All meshes load and appear correctly
 2. FK sliders move the correct joints
 3. Each joint rotates about the correct axis
-4. EE crosshair at home: Blue points in robot +X, Green in robot +Y, Red points down
-5. Lighting illuminates the front of the robot (not the back)
-6. IK mode works — dragging the target moves the robot
-7. Labels toggle shows correct mesh names
+4. Labels toggle shows correct mesh names
+5. Demo pose looks reasonable
 
-If the crosshair axes are wrong, adjust the local directions in the `makeAxis` calls. If something else is wrong, iterate on the joint axes or mesh parenting.
+### Troubleshooting:
+- **Meshes not found:** Check GLTFLoader name sanitization. Log `glTF nodes:` in browser console and match against config link names.
+- **Wrong rotation direction:** Flip the axis sign (e.g., `[0,0,-1]` → `[0,0,1]`).
+- **Meshes detached from kinematics:** Likely a skins/skeleton issue. Re-export with the skin-free method from Step 6.
+- **Browser shows old model:** Change GLB filename for cache busting.
+- **Dark/black materials:** Blender materials with complex node trees may export with near-black Base Color. Check the Principled BSDF Base Color values. If the actual colors are in `.001` variant materials or linked nodes, swap to the colored materials before export and restore after.

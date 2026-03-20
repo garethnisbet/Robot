@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Meca500 Robot — Remote Control Terminal
+Robot/Device — Remote Control Terminal
 
-Interactive terminal client for controlling the robot viewer via WebSocket API.
+Interactive terminal client for controlling the viewer via WebSocket API.
+Works with any device config (Meca500, i16 diffractometer, etc.).
 Provides a Linux terminal-like experience with command history, tab completion,
 and colored output.
 
 Usage:
     pip install websockets
-    python remote_control.py [--url ws://localhost:8080/ws]
+    python remote_control.py [--url ws://localhost:8080/ws] [--config robot_config.json]
 """
 
 import argparse
@@ -43,7 +44,7 @@ def _bcyan(t):    return _c("1;36", t)
 
 # ── History file ─────────────────────────────────────────────────────────────
 
-HISTORY_FILE = os.path.expanduser("~/.meca500_history")
+HISTORY_FILE = os.path.expanduser("~/.robot_viewer_history")
 HISTORY_LENGTH = 1000
 
 def _load_history():
@@ -62,7 +63,7 @@ def _save_history():
 # ── Tab completion ───────────────────────────────────────────────────────────
 
 COMMANDS = [
-    "state", "home", "fk", "ik", "joints", "move", "target",
+    "state", "home", "fk", "ik", "joints", "joint", "move", "target",
     "collision", "collisions", "objects", "obj", "objpos", "objrot",
     "objscale", "objvis", "objresetrot", "objresetscale", "demo", "clear", "history", "help",
     "quit", "exit",
@@ -72,70 +73,86 @@ COLLISION_ARGS = ["on", "off"]
 OBJVIS_ARGS = ["on", "off"]
 
 class Completer:
-    def __init__(self):
+    def __init__(self, joint_names=None):
         self.matches = []
+        self.joint_names = joint_names or []
 
     def complete(self, text, state):
         if state == 0:
             line = readline.get_line_buffer()
             parts = line.lstrip().split()
             if len(parts) <= 1:
-                # Complete command name
                 self.matches = [c + " " for c in COMMANDS if c.startswith(text)]
             elif parts[0] == "collision" and len(parts) == 2:
                 self.matches = [a + " " for a in COLLISION_ARGS if a.startswith(text)]
             elif parts[0] == "objvis" and len(parts) == 3:
                 self.matches = [a + " " for a in OBJVIS_ARGS if a.startswith(text)]
+            elif parts[0] == "joint" and len(parts) == 2:
+                self.matches = [n + " " for n in self.joint_names if n.lower().startswith(text.lower())]
             else:
                 self.matches = []
         return self.matches[state] if state < len(self.matches) else None
 
-def _setup_readline():
-    _load_history()
-    readline.set_completer(Completer().complete)
-    readline.parse_and_bind("tab: complete")
-    # Treat / # - as word characters for completion
-    readline.set_completer_delims(" \t\n")
+# ── Config loading ──────────────────────────────────────────────────────────
+
+def load_config(config_path):
+    """Load the robot/device config to get joint info."""
+    try:
+        with open(config_path) as f:
+            config = json.load(f)
+        return config
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"  {_yellow('Warning')}: Could not load config {config_path}: {e}")
+        return None
+
+def get_movable_joints(config):
+    """Return list of (index, name) for movable (non-fixed) joints."""
+    if not config:
+        return []
+    return [(i, j["name"]) for i, j in enumerate(config["joints"]) if not j.get("fixed")]
 
 # ── Prompt ───────────────────────────────────────────────────────────────────
 
-def _prompt():
+def _prompt(device_name):
+    safe = device_name.lower().replace(" ", "_")
     if _COLORS:
-        return "\001\033[1;32m\002meca500\001\033[0m\002:\001\033[1;34m\002~\001\033[0m\002$ "
-    return "meca500:~$ "
+        return f"\001\033[1;32m\002{safe}\001\033[0m\002:\001\033[1;34m\002~\001\033[0m\002$ "
+    return f"{safe}:~$ "
 
 # ── Banner ───────────────────────────────────────────────────────────────────
 
-BANNER = r"""
-  __  __                 ____   ___   ___
- |  \/  | ___  ___ __ _| ___| / _ \ / _ \
- | |\/| |/ _ \/ __/ _` |___ \| | | | | | |
- | |  | |  __/ (_| (_| |___) | |_| | |_| |
- |_|  |_|\___|\___\__,_|____/ \___/ \___/
-
-"""
-
-def _print_banner(url):
+def _print_banner(device_name, url, movable_joints):
     if _COLORS:
-        print(_cyan(BANNER))
+        print(_cyan(f"\n  ╔══════════════════════════════════════════╗"))
+        print(_cyan(f"  ║") + _bold(f"  {device_name:^38s}") + _cyan(f"  ║"))
+        print(_cyan(f"  ╚══════════════════════════════════════════╝"))
     else:
-        print(BANNER)
-    print(f"  Remote Control Terminal v1.0")
+        print(f"\n  {device_name}")
+        print(f"  {'=' * len(device_name)}")
+    print(f"\n  Remote Control Terminal v2.0")
     print(f"  Server: {_bold(url) if _COLORS else url}")
+    if movable_joints:
+        names = ", ".join(name for _, name in movable_joints)
+        print(f"  Joints ({len(movable_joints)}): {_dim(names)}")
     print()
 
 # ── Help (man-page style) ───────────────────────────────────────────────────
 
-def _print_help():
-    title = "MECA500(1)"
-    header = f"{title:<30}Robot Remote Control{title:>30}"
+def _print_help(device_name, movable_joints):
+    n_joints = len(movable_joints)
+    joint_args = " ".join(f"j{i+1}" for i in range(min(n_joints, 6)))
+    if n_joints > 6:
+        joint_args += " ..."
+
+    title = f"{device_name.upper()}(1)"
+    header = f"{title:<30}Remote Control{title:>30}"
     sections = [
         (header, None),
-        ("NAME", "    meca500 - interactive remote control terminal for Meca500 robot viewer"),
-        ("SYNOPSIS", "    python remote_control.py [--url ws://HOST:PORT/ws]"),
+        ("NAME", f"    {device_name.lower()} - interactive remote control terminal for {device_name} viewer"),
+        ("SYNOPSIS", f"    python remote_control.py [--url ws://HOST:PORT/ws] [--config CONFIG.json]"),
         ("ROBOT COMMANDS", f"""\
     {_bold('state') if _COLORS else 'state'}
-        Request current robot state (joints, end-effector pose, collisions).
+        Request current device state (joints, end-effector pose, collisions).
 
     {_bold('home') if _COLORS else 'home'}
         Move all joints to 0 degrees (home position).
@@ -146,8 +163,12 @@ def _print_help():
     {_bold('ik') if _COLORS else 'ik'}
         Switch to Inverse Kinematics mode.
 
-    {_bold('joints') if _COLORS else 'joints'} {_cyan('j1 j2 j3 j4 j5 j6') if _COLORS else 'j1 j2 j3 j4 j5 j6'}
-        Set all six joint angles in degrees.
+    {_bold('joints') if _COLORS else 'joints'} {_cyan(joint_args) if _COLORS else joint_args}
+        Set all {n_joints} movable joint angles in degrees.
+        Values are given in config order (skipping fixed joints).
+
+    {_bold('joint') if _COLORS else 'joint'} {_cyan('<name> <angle>') if _COLORS else '<name> <angle>'}
+        Set a single joint by name. Tab-completes joint names.
 
     {_bold('move') if _COLORS else 'move'} {_cyan('x y z') if _COLORS else 'x y z'} [{_cyan('a b g') if _COLORS else 'a b g'}]
         Switch to IK mode and move to position (mm) with optional ZYX
@@ -163,7 +184,7 @@ def _print_help():
         Get current collision pairs."""),
         ("OBJECT COMMANDS", f"""\
     {_bold('objects') if _COLORS else 'objects'}
-        List all imported STL objects.
+        List all imported mesh objects.
 
     {_bold('obj') if _COLORS else 'obj'} {_cyan('<name|#idx>') if _COLORS else '<name|#idx>'}
         Get details for an object by name or index (e.g. #0).
@@ -187,7 +208,7 @@ def _print_help():
         Reset object scale to (1, 1, 1)."""),
         ("TERMINAL COMMANDS", f"""\
     {_bold('demo') if _COLORS else 'demo'}
-        Run an automated demo sequence through several poses.
+        Run the demo pose from the config.
 
     {_bold('clear') if _COLORS else 'clear'}
         Clear the terminal screen.
@@ -202,7 +223,7 @@ def _print_help():
         Disconnect and exit."""),
         ("KEYBOARD SHORTCUTS", """\
     Up/Down     Navigate command history
-    Tab         Auto-complete commands
+    Tab         Auto-complete commands and joint names
     Ctrl+A      Move cursor to start of line
     Ctrl+E      Move cursor to end of line
     Ctrl+K      Delete from cursor to end of line
@@ -212,16 +233,14 @@ def _print_help():
     Ctrl+C      Cancel current input
     Ctrl+D      Exit terminal"""),
         ("EXAMPLES", f"""\
-    $ joints 0 -30 60 0 45 90
+    $ joints {' '.join(['0'] * min(n_joints, 6))}{'...' if n_joints > 6 else ''}
+    $ joint {movable_joints[0][1] if movable_joints else 'J1'} 45
     $ move 150 100 300 45 0 0
-    $ objpos MyPart 100 50 0
-    $ collision on
-    $ obj #0"""),
+    $ collision on"""),
     ]
     print()
     for heading, body in sections:
         if body is None:
-            # Title line
             print(_bold(heading) if _COLORS else heading)
         else:
             print(f"  {_byellow(heading) if _COLORS else heading}")
@@ -231,15 +250,13 @@ def _print_help():
 # ── Output formatting ────────────────────────────────────────────────────────
 
 def _clear_line():
-    """Clear the current line (remove partial prompt before printing output)."""
     print("\r\033[K", end="")
 
-def _reprint_prompt():
-    """Re-display the prompt after output."""
-    print(_prompt(), end="", flush=True)
+def _reprint_prompt(device_name):
+    print(_prompt(device_name), end="", flush=True)
 
 
-async def print_incoming(ws):
+async def print_incoming(ws, device_name, movable_joints):
     """Background task to print state messages from the viewer."""
     try:
         async for message in ws:
@@ -247,16 +264,26 @@ async def print_incoming(ws):
             _clear_line()
 
             if data.get("type") == "state":
-                joints = data["joints"]
+                all_joints = data["joints"]
                 ee = data["eePosition"]
                 ori = data.get("eeOrientation", [0, 0, 0])
                 mode = data.get("mode", "?")
                 err = data.get("ikError")
 
-                j_str = ", ".join(f"{a:7.1f}" for a in joints)
+                # Show only movable joint values with names
+                if movable_joints:
+                    j_parts = []
+                    for idx, name in movable_joints:
+                        val = all_joints[idx] if idx < len(all_joints) else 0
+                        j_parts.append(f"{name}={val:.1f}")
+                    j_str = ", ".join(j_parts)
+                else:
+                    j_str = ", ".join(f"{a:7.1f}" for a in all_joints)
+
                 mode_c = _bgreen(mode) if mode == "FK" else _bcyan(mode)
 
-                print(f"  {_bold('STATE')} | mode={mode_c}  joints=[{_white(j_str)}]")
+                print(f"  {_bold('STATE')} | mode={mode_c}")
+                print(f"         joints: {_white(j_str)}")
                 print(f"         ee=({_cyan(f'{ee[0]:.1f}')}, {_cyan(f'{ee[1]:.1f}')}, {_cyan(f'{ee[2]:.1f}')})mm  "
                       f"ori=({_magenta(f'{ori[0]:.1f}')}, {_magenta(f'{ori[1]:.1f}')}, {_magenta(f'{ori[2]:.1f}')})deg  "
                       f"err={_yellow(f'{err:.2f}mm') if err is not None else _dim('-')}")
@@ -270,7 +297,7 @@ async def print_incoming(ws):
                     else:
                         print(f"         collision: {_green('none')}")
 
-                _reprint_prompt()
+                _reprint_prompt(device_name)
 
             elif data.get("type") == "collisions":
                 enabled = data.get("enabled", False)
@@ -283,7 +310,7 @@ async def print_incoming(ws):
                             print(f"    {_red(p['link'])} <> {_red(p['object'])}")
                     else:
                         print(f"    {_green('No collisions')}")
-                _reprint_prompt()
+                _reprint_prompt(device_name)
 
             elif data.get("type") == "objects":
                 objs = data.get("objects", [])
@@ -296,7 +323,7 @@ async def print_incoming(ws):
                     print(f"        pos=({p[0]:.1f}, {p[1]:.1f}, {p[2]:.1f})mm  "
                           f"rot=({r[0]:.1f}, {r[1]:.1f}, {r[2]:.1f})deg  "
                           f"scale=({s[0]:.3f}, {s[1]:.3f}, {s[2]:.3f})")
-                _reprint_prompt()
+                _reprint_prompt(device_name)
 
             elif data.get("type") == "object":
                 o = data
@@ -307,11 +334,11 @@ async def print_incoming(ws):
                 print(f"    pos  = ({_cyan(f'{p[0]:.1f}')}, {_cyan(f'{p[1]:.1f}')}, {_cyan(f'{p[2]:.1f}')}) mm")
                 print(f"    rot  = ({_magenta(f'{r[0]:.1f}')}, {_magenta(f'{r[1]:.1f}')}, {_magenta(f'{r[2]:.1f}')}) deg")
                 print(f"    scale= ({s[0]:.3f}, {s[1]:.3f}, {s[2]:.3f})")
-                _reprint_prompt()
+                _reprint_prompt(device_name)
 
             elif data.get("type") == "error" or "error" in data:
                 print(f"  {_bred('ERROR')}: {_red(data.get('error', 'unknown error'))}")
-                _reprint_prompt()
+                _reprint_prompt(device_name)
 
     except websockets.ConnectionClosed:
         pass
@@ -319,21 +346,16 @@ async def print_incoming(ws):
 
 # ── Demo sequence ────────────────────────────────────────────────────────────
 
-async def demo_sequence(ws):
-    """Run a demo that moves the robot through several poses."""
+async def demo_sequence(ws, config, num_joints):
+    """Run the demo pose from the config, then return home."""
+    demo_pose = config.get("demoPose") if config else None
+    if not demo_pose:
+        print(f"  {_yellow('No demoPose defined in config')}")
+        return
+
     poses = [
         ("Home position", {"cmd": "home"}),
-        ("FK: shoulder up", {"cmd": "setJoints", "angles": [0, -30, 0, 0, 0, 0]}),
-        ("FK: elbow bend", {"cmd": "setJoints", "angles": [0, -30, 60, 0, 0, 0]}),
-        ("FK: demo pose", {"cmd": "setJoints", "angles": [0, -30, 60, 0, 45, 90]}),
-        ("FK: base rotate", {"cmd": "setJoints", "angles": [45, -30, 60, 0, 45, 90]}),
-        ("Switch to IK", {"cmd": "setMode", "mode": "IK"}),
-        ("IK: move up", {"cmd": "setIKTarget", "position": [150, 0, 350], "orientation": [0, 0, 0]}),
-        ("IK: move right", {"cmd": "setIKTarget", "position": [150, 100, 350], "orientation": [0, 0, 0]}),
-        ("IK: move down", {"cmd": "setIKTarget", "position": [200, 100, 200], "orientation": [0, 0, 0]}),
-        ("IK: rotate wrist", {"cmd": "setIKTarget", "position": [200, 100, 200], "orientation": [45, 0, 0]}),
-        ("Back to FK", {"cmd": "setMode", "mode": "FK"}),
-        ("Home", {"cmd": "home"}),
+        ("Demo pose", {"cmd": "setJoints", "angles": demo_pose}),
     ]
 
     for i, (desc, cmd) in enumerate(poses, 1):
@@ -347,7 +369,6 @@ async def demo_sequence(ws):
 # ── Object reference parsing ─────────────────────────────────────────────────
 
 def _parse_obj_ref(token):
-    """Parse an object reference: '#0' for index, or name string."""
     if token.startswith("#") and token[1:].isdigit():
         return {"index": int(token[1:])}
     return {"object": token}
@@ -355,25 +376,36 @@ def _parse_obj_ref(token):
 
 # ── Main interactive loop ────────────────────────────────────────────────────
 
-async def interactive(url):
-    _setup_readline()
-    _print_banner(url)
+async def interactive(url, config_path):
+    config = load_config(config_path)
+    device_name = config["name"] if config else "Robot"
+    num_joints = len(config["joints"]) if config else 6
+    movable_joints = get_movable_joints(config)
+    n_movable = len(movable_joints)
+    joint_name_to_idx = {name.lower(): idx for idx, name in movable_joints}
+
+    _load_history()
+    completer = Completer(joint_names=[name for _, name in movable_joints])
+    readline.set_completer(completer.complete)
+    readline.parse_and_bind("tab: complete")
+    readline.set_completer_delims(" \t\n")
+
+    _print_banner(device_name, url, movable_joints)
     print(f"  Connecting to {_dim(url)} ...")
 
     try:
         ws = await websockets.connect(url)
     except (ConnectionRefusedError, OSError) as e:
         print(f"  {_bred('Connection failed')}: {e}")
-        print(f"  Is the server running?  python server.py")
+        print(f"  Is the server running?  python server.py --config {config_path}")
         return
 
     print(f"  {_bgreen('Connected!')} Type {_bold('help')} for commands, {_bold('Tab')} to complete.\n")
 
-    # Start background listener
-    listener = asyncio.create_task(print_incoming(ws))
+    listener = asyncio.create_task(print_incoming(ws, device_name, movable_joints))
 
     loop = asyncio.get_event_loop()
-    prompt = _prompt()
+    prompt = _prompt(device_name)
 
     try:
         while True:
@@ -382,7 +414,7 @@ async def interactive(url):
             except EOFError:
                 break
             except KeyboardInterrupt:
-                print()  # newline after ^C
+                print()
                 continue
 
             line = line.strip()
@@ -397,14 +429,14 @@ async def interactive(url):
                     break
 
                 elif cmd == "help":
-                    _print_help()
+                    _print_help(device_name, movable_joints)
 
                 elif cmd == "clear":
                     os.system("clear" if os.name != "nt" else "cls")
 
                 elif cmd == "history":
                     n = readline.get_current_history_length()
-                    start = max(1, n - 49)  # last 50 entries
+                    start = max(1, n - 49)
                     for i in range(start, n + 1):
                         entry = readline.get_history_item(i)
                         if entry:
@@ -423,11 +455,52 @@ async def interactive(url):
                     await ws.send(json.dumps({"cmd": "setMode", "mode": "IK"}))
 
                 elif cmd == "joints":
-                    if len(parts) != 7:
-                        print(f"  {_yellow('Usage')}: joints {_cyan('j1 j2 j3 j4 j5 j6')}")
+                    if len(parts) - 1 != n_movable:
+                        names = " ".join(f"<{name}>" for _, name in movable_joints[:6])
+                        suffix = " ..." if n_movable > 6 else ""
+                        print(f"  {_yellow('Usage')}: joints {_cyan(names + suffix)}")
+                        print(f"  Expected {_bold(str(n_movable))} values (movable joints only)")
                     else:
-                        angles = [float(x) for x in parts[1:7]]
-                        await ws.send(json.dumps({"cmd": "setJoints", "angles": angles}))
+                        # Build full joint angles array (all joints, including fixed at 0)
+                        movable_vals = [float(x) for x in parts[1:]]
+                        all_angles = [0.0] * num_joints
+                        for (joint_idx, _name), val in zip(movable_joints, movable_vals):
+                            all_angles[joint_idx] = val
+                        await ws.send(json.dumps({"cmd": "setJoints", "angles": all_angles}))
+
+                elif cmd == "joint":
+                    if len(parts) < 3:
+                        print(f"  {_yellow('Usage')}: joint {_cyan('<name> <angle>')}")
+                        print(f"  Available: {', '.join(name for _, name in movable_joints)}")
+                    else:
+                        name = parts[1].lower()
+                        angle = float(parts[2])
+                        if name not in joint_name_to_idx:
+                            # Try case-insensitive partial match
+                            matches = [(n, idx) for n, idx in joint_name_to_idx.items() if n.startswith(name)]
+                            if len(matches) == 1:
+                                name = matches[0][0]
+                            else:
+                                print(f"  {_yellow('Unknown joint')}: {parts[1]}")
+                                print(f"  Available: {', '.join(n for _, n in movable_joints)}")
+                                continue
+                        # Get current state, modify one joint, send all
+                        # For simplicity, send a getState first, but we can also just
+                        # build from scratch. Send setJoints with only the target joint changed.
+                        # We need current angles — request state and set in callback.
+                        # Simpler: build array with 0s except the target joint
+                        # Actually, the viewer keeps its own state, so we should
+                        # get state, modify, and re-send. But that requires async round-trip.
+                        # Alternative: use a dedicated single-joint command if viewer supports it.
+                        # For now, just print a note and set via setJoints with all 0s except target.
+                        # Better approach: viewer accepts partial joint updates.
+                        # Let's just send a setJoint command that the viewer can handle.
+                        joint_idx = joint_name_to_idx[name]
+                        await ws.send(json.dumps({
+                            "cmd": "setSingleJoint",
+                            "index": joint_idx,
+                            "angle": angle,
+                        }))
 
                 elif cmd == "move":
                     if len(parts) < 4:
@@ -517,7 +590,7 @@ async def interactive(url):
                         await ws.send(json.dumps({"cmd": "resetObjectScale", **ref}))
 
                 elif cmd == "demo":
-                    await demo_sequence(ws)
+                    await demo_sequence(ws, config, num_joints)
 
                 else:
                     print(f"  {_yellow(cmd)}: command not found. Type {_bold('help')} for usage.")
@@ -540,17 +613,19 @@ async def interactive(url):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Meca500 Remote Control Terminal",
+        description="Robot/Device Remote Control Terminal",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
                "  python remote_control.py\n"
-               "  python remote_control.py --url ws://192.168.1.100:8080/ws\n",
+               "  python remote_control.py --config i16_config.json\n"
+               "  python remote_control.py --url ws://192.168.1.100:8080/ws --config robot_config.json\n",
     )
     parser.add_argument("--url", default="ws://localhost:8080/ws",
                         help="WebSocket URL (default: ws://localhost:8080/ws)")
+    parser.add_argument("--config", default="robot_config.json",
+                        help="Path to device config JSON (default: robot_config.json)")
     args = parser.parse_args()
-    print(args.url)
-    asyncio.run(interactive(args.url))
+    asyncio.run(interactive(args.url, args.config))
 
 
 if __name__ == "__main__":
