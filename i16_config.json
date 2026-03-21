@@ -1,210 +1,308 @@
 {
   "name": "i16 Diffractometer",
+  "armature": "Armature",
   "model": "i16_scene.glb",
   "joints": [
     {
       "name": "root_gamma",
-      "restPos": [0, 0, 0],
-      "restQuat": [0.70711, 0.70711, 0, 0],
-      "axis": [0, 0, 1],
-      "limits": [0, 0],
+      "bone": "Bone",
+      "restPos": [ 0, 0, 0 ],
+      "restQuat": [ 0.70711, 0.70711, 0, 0 ],
+      "axis": [ 0, 0, 1 ],
+      "limits": [ 0, 0 ],
       "parent": -1,
       "fixed": true
     },
     {
       "name": "gamma",
-      "restPos": [0, 0, -0.48857],
-      "restQuat": [0.70711, 0, 0.70711, 0],
-      "axis": [1, 0, 0],
-      "limits": [-180, 180],
+      "bone": "Bone.001",
+      "restPos": [ 0, 0, -0.48857 ],
+      "restQuat": [ 0.70711, 0, 0.70711, 0 ],
+      "axis": [ 1, 0, 0 ],
+      "limits": [ -180, 180 ],
       "parent": 0
     },
     {
       "name": "kgamma",
-      "restPos": [0, 0, -0.99154],
-      "restQuat": [0.70711, 0, -0.70711, 0],
-      "axis": [0, 0, 1],
-      "limits": [0, 0],
+      "bone": "Bone.002",
+      "restPos": [ 0, 0, -0.99154 ],
+      "restQuat": [ 0.70711, 0, -0.70711, 0 ],
+      "axis": [ 0, 0, 1 ],
+      "limits": [ 0, 0 ],
       "parent": 1,
       "fixed": true
     },
     {
       "name": "delta",
-      "restPos": [0, 0, -0.8976],
-      "restQuat": [0.7086, 0.70558, 0.00392, 0.00391],
-      "axis": [-1, 0, 0],
-      "limits": [-180, 180],
+      "bone": "Bone.003",
+      "restPos": [ 0, 0, -0.8976 ],
+      "restQuat": [ 0.7086, 0.70558, 0.00392, 0.00391 ],
+      "axis": [ -1, 0, 0 ],
+      "limits": [ -180, 180 ],
       "parent": 2
     },
     {
       "name": "kdelta.001",
-      "restPos": [0, 0, -0.49104],
-      "restQuat": [0.87428, 0.00131, -0.48542, 0],
-      "axis": [0, 0, 1],
-      "limits": [0, 0],
+      "bone": "Bone.004",
+      "restPos": [ 0, 0, -0.49104 ],
+      "restQuat": [ 0.87428, 0.00131, -0.48542, 0 ],
+      "axis": [ 0, 0, 1 ],
+      "limits": [ 0, 0 ],
       "parent": 3,
       "fixed": true
     },
     {
       "name": "kdelta.002",
-      "restPos": [0, 0, -0.76103],
-      "restQuat": [0.95992, -0.00065, -0.28029, 0],
-      "axis": [0, 0, 1],
-      "limits": [0, 0],
+      "bone": "Bone.005",
+      "restPos": [ 0, 0, -0.76103 ],
+      "restQuat": [ 0.95992, -0.00065, -0.28029, 0 ],
+      "axis": [ 0, 0, 1 ],
+      "limits": [ 0, 0 ],
       "parent": 4,
       "fixed": true
     },
     {
       "name": "stokes",
-      "restPos": [0, 0, -0.35697],
-      "restQuat": [0.70711, 0.00165, 0.7071, 0],
-      "axis": [0, 0, -1],
-      "limits": [-180, 180],
+      "bone": "Bone.006",
+      "restPos": [ 0.0, 0.0, -0.362 ],
+      "restQuat": [ 0.70711, 0.00165, 0.7071, 0.0 ],
+      "axis": [ 0, 0, -1 ],
+      "limits": [ -180, 180 ],
       "parent": 5
     },
     {
       "name": "detector_end",
-      "restPos": [0, 0, -0.40984],
-      "restQuat": [0.99998, 0.00551, -0.00001, 0],
-      "axis": [1, 0, 0],
-      "limits": [-180, 180],
+      "bone": "Bone.007",
+      "restPos": [ 0, 0, -0.40984 ],
+      "restQuat": [ 0.99998, 0.00551, -1e-05, 0 ],
+      "axis": [ 1, 0, 0 ],
+      "limits": [ -180, 180 ],
       "parent": 6
     },
     {
       "name": "kmerlin",
-      "restPos": [0, 0, -0.40984],
-      "restQuat": [0.70711, 0.00165, 0.7071, 0],
-      "axis": [0, 0, 1],
-      "limits": [0, 0],
+      "bone": "Bone.019",
+      "restPos": [ 0, 0, -0.40984 ],
+      "restQuat": [ 0.70711, 0.00165, 0.7071, 0 ],
+      "axis": [ 0, 0, 1 ],
+      "limits": [ 0, 0 ],
       "parent": 6,
       "fixed": true
     },
     {
       "name": "merlin_rot",
-      "restPos": [0, 0, -0.04004],
-      "restQuat": [0.70711, -0.00165, -0.7071, 0],
-      "axis": [1, 0, 0],
-      "limits": [-180, 180],
+      "bone": "Bone.021",
+      "restPos": [ 0, 0, -0.04004 ],
+      "restQuat": [ 0.70711, -0.00165, -0.7071, 0 ],
+      "axis": [ 1, 0, 0 ],
+      "limits": [ -180, 180 ],
       "parent": 8
     },
     {
       "name": "crystal_rot",
-      "restPos": [0, 0, -0.40984],
-      "restQuat": [0.70711, 0.00165, 0.7071, 0],
-      "axis": [0, 0, -1],
-      "limits": [-180, 180],
+      "bone": "Bone.022",
+      "restPos": [ 0, 0, -0.40984 ],
+      "restQuat": [ 0.70711, 0.00165, 0.7071, 0 ],
+      "axis": [ 0, 0, -1 ],
+      "limits": [ -180, 180 ],
       "parent": 6
     },
     {
       "name": "root_mu",
-      "restPos": [0, 0, 0],
-      "restQuat": [0.70711, 0.70711, 0, 0],
-      "axis": [0, 0, 1],
-      "limits": [0, 0],
+      "bone": "Bone",
+      "restPos": [ 0, 0, 0 ],
+      "restQuat": [ 0.70711, 0.70711, 0, 0 ],
+      "axis": [ 0, 0, 1 ],
+      "limits": [ 0, 0 ],
       "parent": -1,
       "fixed": true
     },
     {
       "name": "kmu.001",
-      "restPos": [0, 0, -0.48857],
-      "restQuat": [1, 0, 0, 0],
-      "axis": [0, 0, 1],
-      "limits": [0, 0],
+      "bone": "Bone.008",
+      "restPos": [ 0, 0, -0.48857 ],
+      "restQuat": [ 1, 0, 0, 0 ],
+      "axis": [ 0, 0, 1 ],
+      "limits": [ 0, 0 ],
       "parent": 11,
       "fixed": true
     },
     {
       "name": "mu",
-      "restPos": [0, 0, -0.24772],
-      "restQuat": [0.70711, 0, 0.70711, 0],
-      "axis": [1, 0, 0],
-      "limits": [-180, 180],
+      "bone": "Bone.009",
+      "restPos": [ 0, 0, -0.24772 ],
+      "restQuat": [ 0.70711, 0, 0.70711, 0 ],
+      "axis": [ 1, 0, 0 ],
+      "limits": [ -180, 180 ],
       "parent": 12
     },
     {
       "name": "kmu.002",
-      "restPos": [0, 0, -0.67625],
-      "restQuat": [0.70711, 0, -0.70711, 0],
-      "axis": [0, 0, 1],
-      "limits": [0, 0],
+      "bone": "Bone.010",
+      "restPos": [ 0, 0, -0.67625 ],
+      "restQuat": [ 0.70711, 0, -0.70711, 0 ],
+      "axis": [ 0, 0, 1 ],
+      "limits": [ 0, 0 ],
       "parent": 13,
       "fixed": true
     },
     {
       "name": "kmu.003",
-      "restPos": [0, 0, -0.64909],
-      "restQuat": [0.70711, 0, -0.70711, 0],
-      "axis": [0, 0, 1],
-      "limits": [0, 0],
+      "bone": "Bone.011",
+      "restPos": [ 0, 0, -0.64909 ],
+      "restQuat": [ 0.70711, 0, -0.70711, 0 ],
+      "axis": [ 0, 0, 1 ],
+      "limits": [ 0, 0 ],
       "parent": 14,
       "fixed": true
     },
     {
       "name": "theta",
-      "restPos": [0, 0, -0.1085],
-      "restQuat": [0.70711, 0, -0.70711, 0],
-      "axis": [1, 0, 0],
-      "limits": [-180, 180],
+      "bone": "Bone.012",
+      "restPos": [ 0, 0, -0.12074 ],
+      "restQuat": [ 0.71169, 0, -0.7025, 0 ],
+      "axis": [ 1, 0, 0 ],
+      "limits": [ -180, 180 ],
       "parent": 15
     },
     {
       "name": "ktheta.001",
-      "restPos": [0, 0, -0.18205],
-      "restQuat": [0.90201, 0, 0.43171, 0],
-      "axis": [0, 0, 1],
-      "limits": [0, 0],
+      "bone": "Bone.013",
+      "restPos": [ 0, 0, -0.17928 ],
+      "restQuat": [ 0.90941, 0, 0.41591, 0 ],
+      "axis": [ 0, 0, 1 ],
+      "limits": [ 0, 0 ],
       "parent": 16,
       "fixed": true
     },
     {
       "name": "kappa",
-      "restPos": [0, 0, -0.3123],
-      "restQuat": [0.69672, 0, 0.71734, 0],
-      "axis": [0, 0, 1],
-      "limits": [-180, 180],
+      "bone": "Bone.014",
+      "restPos": [ 0, 0, -0.31382 ],
+      "restQuat": [ 0.70162, 0.00084, 0.71255, 0.00083 ],
+      "axis": [ 0, 0, 1 ],
+      "limits": [ -180, 180 ],
       "parent": 17
     },
     {
       "name": "kkappa.001",
-      "restPos": [0, 0, -0.13618],
-      "restQuat": [0.73016, 0, 0.68328, 0],
-      "axis": [0, 0, 1],
-      "limits": [0, 0],
+      "bone": "Bone.015",
+      "restPos": [ 0, 0, -0.14344 ],
+      "restQuat": [ 0.71678, 0.00082, 0.6973, -0.00085 ],
+      "axis": [ 0, 0, 1 ],
+      "limits": [ 0, 0 ],
       "parent": 18,
       "fixed": true
     },
     {
       "name": "kkappa.002",
-      "restPos": [0, 0, -0.20545],
-      "restQuat": [0.90987, 0, -0.41489, 0],
-      "axis": [0, 0, 1],
-      "limits": [0, 0],
+      "bone": "Bone.016",
+      "restPos": [ -0.0, -0.0, -0.21061 ],
+      "restQuat": [ 0.91187, -3e-05, -0.41048, 8e-05 ],
+      "axis": [ 0, 0, 1 ],
+      "limits": [ 0, 0 ],
       "parent": 19,
       "fixed": true
     },
     {
       "name": "phi",
-      "restPos": [0, 0, -0.1369],
-      "restQuat": [0.70711, 0, -0.70711, 0],
-      "axis": [0, 0, -1],
-      "limits": [-360, 360],
+      "bone": "Bone.017",
+      "restPos": [ 0.0, -0.0, -0.137 ],
+      "restQuat": [ 0.70255, -0.00387, -0.71161, 0.00371 ],
+      "axis": [ 0, 0, -1 ],
+      "limits": [ -360, 360 ],
       "parent": 20
     }
   ],
   "links": [
-    { "name": "gamma", "label": "Gamma Ring", "joint": 1 },
-    { "name": "delta", "label": "Delta", "joint": 3 },
-    { "name": "detector_arm", "label": "Det. Arm", "joint": 3 },
-    { "name": "nozzle", "label": "Nozzle", "joint": 3 },
-    { "name": "detector_arm_back", "label": "Det. Arm Back", "joint": 6 },
-    { "name": "detector_carriage", "label": "Det. Carriage", "joint": 7 },
-    { "name": "merlin", "label": "Merlin", "joint": 9 },
-    { "name": "detector_crystal", "label": "Det. Crystal", "joint": 10 },
-    { "name": "mu", "label": "Mu Ring", "joint": 13 },
-    { "name": "theta", "label": "Theta", "joint": 16 },
-    { "name": "kappa", "label": "Kappa", "joint": 19 },
-    { "name": "phi", "label": "Phi", "joint": 21 },
-    { "name": "wedding_cake", "label": "Wedding Cake", "joint": 21 }
+    {
+      "name": "gamma",
+      "label": "Gamma Ring",
+      "joint": 1
+    },
+    {
+      "name": "delta",
+      "label": "Delta",
+      "joint": 3
+    },
+    {
+      "name": "detector_arm",
+      "label": "Det. Arm",
+      "joint": 3
+    },
+    {
+      "name": "nozzle",
+      "label": "Nozzle",
+      "joint": 3
+    },
+    {
+      "name": "detector_arm_back",
+      "label": "Det. Arm Back",
+      "joint": 6
+    },
+    {
+      "name": "detector_carriage",
+      "label": "Det. Carriage",
+      "joint": 7
+    },
+    {
+      "name": "merlin",
+      "label": "Merlin",
+      "joint": 9
+    },
+    {
+      "name": "detector_crystal",
+      "label": "Det. Crystal",
+      "joint": 10
+    },
+    {
+      "name": "mu",
+      "label": "Mu Ring",
+      "joint": 13
+    },
+    {
+      "name": "theta",
+      "label": "Theta",
+      "joint": 16
+    },
+    {
+      "name": "kappa",
+      "label": "Kappa",
+      "joint": 19
+    },
+    {
+      "name": "phi",
+      "label": "Phi",
+      "joint": 21
+    },
+    {
+      "name": "wedding_cake",
+      "label": "Wedding Cake",
+      "joint": 21
+    }
   ],
-  "demoPose": [0, 45, 0, -90, 0, 0, 0, 0, 0, 30, -45, 0, 0, 45, 0, 0, -20, 0, 60, 0, 0, -20]
+  "demoPose": [
+    0,
+    45,
+    0,
+    -90,
+    0,
+    0,
+    0,
+    0,
+    0,
+    30,
+    -45,
+    0,
+    0,
+    45,
+    0,
+    0,
+    -20,
+    0,
+    60,
+    0,
+    0,
+    -20
+  ]
 }
