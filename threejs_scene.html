@@ -144,7 +144,6 @@
   <h2>Joint Angles (deg)</h2>
   <div id="joint-sliders"></div>
   <button id="resetBtn">Reset to Home</button>
-  <button id="demoBtn">Demo Pose</button>
   <button id="ikBtn">IK Mode: OFF</button>
   <button id="labelBtn">Labels: OFF</button>
   <button id="chainBtn">Chain: OFF</button>
@@ -517,7 +516,7 @@ function easeNavSnap(t) { return t*t*(3-2*t); } // smoothstep
 // ============================================================
 // Lighting
 // ============================================================
-const sun = new THREE.DirectionalLight(0xffffff, 6);
+const sun = new THREE.DirectionalLight(0xffffff, 12);
 sun.position.set(3, 5, 2);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
@@ -531,7 +530,7 @@ const fill = new THREE.DirectionalLight(0xffffff, 0.8);
 fill.position.set(-0.886, 1.022, 0.668);
 scene.add(fill);
 
-const spot = new THREE.SpotLight(0x0058ff, 40, 3, Math.PI / 4, 0.5);
+const spot = new THREE.SpotLight(0x0058ff, 80, 3, Math.PI / 4, 0.5);
 spot.position.set(-0.134, 1.043, 1.665);
 scene.add(spot);
 
@@ -1129,19 +1128,6 @@ document.getElementById('resetBtn').addEventListener('click', () => {
   }
 });
 
-document.getElementById('demoBtn').addEventListener('click', () => {
-  const demo = config.demoPose;
-  for (let i = 0; i < numJoints; i++) jointAngles[i] = (demo[i] || 0) * deg2rad;
-  updateFK();
-  updateSliders();
-  if (ikMode) {
-    scene.updateMatrixWorld(true);
-    ikTarget.position.copy(getEEWorldPosition());
-    ikTargetQuat.copy(getEEWorldQuaternion());
-    ikTargetEuler.setFromQuaternion(ikTargetQuat, 'YZX');
-    syncIKSliders();
-  }
-});
 
 document.getElementById('ikBtn').addEventListener('click', () => {
   if (isBranching) return; // IK not supported for branching kinematic chains
@@ -2020,12 +2006,34 @@ const _collBox2 = new THREE.Box3();
 const _collMatrix = new THREE.Matrix4();
 const _collPoint = new THREE.Vector3();
 const _collToLocal = new THREE.Matrix4();
+const _collVec = new THREE.Vector3();
 const POINT_CLOUD_COLLISION_THRESHOLD = 0.04; // 40 mm
+
+// Fast world AABB from pre-computed geometry bounding box + matrixWorld
+// Transforms the 8 corners of the local AABB to world space
+const _corners = new Array(8).fill(null).map(() => new THREE.Vector3());
+function fastWorldAABB(mesh, target) {
+  if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+  const bb = mesh.geometry.boundingBox;
+  const m = mesh.matrixWorld;
+  let i = 0;
+  for (let x = 0; x <= 1; x++)
+    for (let y = 0; y <= 1; y++)
+      for (let z = 0; z <= 1; z++)
+        _corners[i++].set(
+          x ? bb.max.x : bb.min.x,
+          y ? bb.max.y : bb.min.y,
+          z ? bb.max.z : bb.min.z
+        ).applyMatrix4(m);
+  target.makeEmpty();
+  for (let j = 0; j < 8; j++) target.expandByPoint(_corners[j]);
+  return target;
+}
 
 function testPointCloudCollision(pointsObj, meshObj) {
   // Broad phase
-  _collBox1.setFromObject(pointsObj);
-  _collBox2.setFromObject(meshObj);
+  fastWorldAABB(pointsObj, _collBox1);
+  fastWorldAABB(meshObj, _collBox2);
   if (!_collBox1.intersectsBox(_collBox2)) return false;
 
   const bvh = meshObj.geometry.boundsTree;
@@ -2101,8 +2109,8 @@ function highlightCollisionMeshes(meshA, meshB) {
 }
 
 function testMeshPairCollision(meshA, meshB) {
-  _collBox1.setFromObject(meshA);
-  _collBox2.setFromObject(meshB);
+  fastWorldAABB(meshA, _collBox1);
+  fastWorldAABB(meshB, _collBox2);
   if (!_collBox1.intersectsBox(_collBox2)) return false;
   const bvhA = meshA.geometry.boundsTree;
   const bvhB = meshB.geometry.boundsTree;
@@ -2114,16 +2122,16 @@ function testMeshPairCollision(meshA, meshB) {
 }
 
 let _collisionFrame = 0;
-const COLLISION_THROTTLE = 3; // run every Nth frame
+const COLLISION_THROTTLE = 6; // run every Nth frame
 
 function checkCollisions() {
   if (!collisionEnabled) return;
   if (++_collisionFrame % COLLISION_THROTTLE !== 0) return;
 
+  clearCollisionHighlights();
+
   const visibleSTLs = importedSTLs.filter(e => e.mesh.visible && !e.isPointCloud);
   const visiblePointClouds = importedSTLs.filter(e => e.mesh.visible && e.isPointCloud);
-
-  clearCollisionHighlights();
 
   // Separate parented (attached to robot) vs unparented (world) STLs
   const worldSTLs = visibleSTLs.filter(e => !e.parentLink);
