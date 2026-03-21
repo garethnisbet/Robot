@@ -272,18 +272,124 @@ document.title = config.name + ' - FK/IK Viewer';
 // Generate joint sliders from config (skip fixed joints)
 const sliderContainer = document.getElementById('joint-sliders');
 const sliderJointMap = []; // maps slider index (1-based) to joint index
+// Rename physical theta/phi to ktheta/kphi for kappa diffractometers
+const kappaSliderNames = {};
+{
+  const ki = config.joints.findIndex(j => j.name === 'kappa');
+  const ti = config.joints.findIndex(j => j.name === 'theta');
+  const pi = config.joints.findIndex(j => j.name === 'phi');
+  if (ki >= 0 && ti >= 0 && pi >= 0) {
+    kappaSliderNames[ti] = 'ktheta';
+    kappaSliderNames[pi] = 'kphi';
+  }
+}
 for (let i = 0; i < numJoints; i++) {
   const j = config.joints[i];
   if (j.fixed) continue;
   sliderJointMap.push(i);
   const si = sliderJointMap.length; // 1-based slider index
+  const displayName = kappaSliderNames[i] || j.name;
   const div = document.createElement('div');
   div.className = 'slider-row';
-  div.innerHTML = `<label>${j.name} <span id="v${si}">0</span></label>` +
+  div.innerHTML = `<label>${displayName} <span id="v${si}">0</span></label>` +
     `<input type="range" id="j${si}" min="${j.limits[0]}" max="${j.limits[1]}" value="0" step="0.5">`;
   sliderContainer.appendChild(div);
 }
 const numSliders = sliderJointMap.length;
+const deg2rad = Math.PI / 180;
+const rad2deg = 180 / Math.PI;
+
+// ============================================================
+// Kappa geometry detection — virtual chi angle
+// ============================================================
+// Detect kappa diffractometer by looking for theta, kappa, phi joints
+const kappaJointIdx = config.joints.findIndex(j => j.name === 'kappa');
+const thetaJointIdx = config.joints.findIndex(j => j.name === 'theta');
+const phiJointIdx = config.joints.findIndex(j => j.name === 'phi');
+const isKappaGeometry = kappaJointIdx >= 0 && thetaJointIdx >= 0 && phiJointIdx >= 0;
+
+// Kappa geometry state — populated after FK chain is built
+let kappaAlpha = 0;
+// Numerically precomputed compensation lookup table: kappaDeg → { theta, phi }
+let kappaCompTable = null; // array of { kappa, chi, theta, phi }
+let kappaChiAxis = null;   // THREE.Vector3 — chi tilt axis in world frame
+let kappaHomeQuat = null;  // THREE.Quaternion — phi frame orientation at home
+
+// Kappa ↔ Euler angle conversion (depends only on alpha)
+function kappaToEuler(kappaDeg) {
+  const kappaRad = kappaDeg * deg2rad;
+  const chi = 2 * Math.asin(Math.sin(kappaRad / 2) * Math.sin(kappaAlpha));
+  return { chi: chi * rad2deg, kappa: kappaDeg };
+}
+
+function eulerToKappa(chiDeg) {
+  const chiRad = chiDeg * deg2rad;
+  const sinHalfChi = Math.sin(chiRad / 2);
+  const sinAlpha = Math.sin(kappaAlpha);
+  if (Math.abs(sinHalfChi / sinAlpha) > 1) return null;
+  const kappaRad = 2 * Math.asin(sinHalfChi / sinAlpha);
+  return { kappa: kappaRad * rad2deg, chi: chiDeg };
+}
+
+// Interpolate compensation from lookup table
+function getCompensation(kappaDeg) {
+  if (!kappaCompTable || kappaCompTable.length === 0) return { theta: 0, phi: 0 };
+  const table = kappaCompTable;
+  // Clamp to table range
+  if (kappaDeg <= table[0].kappa) return { theta: table[0].theta, phi: table[0].phi };
+  if (kappaDeg >= table[table.length-1].kappa) return { theta: table[table.length-1].theta, phi: table[table.length-1].phi };
+  // Binary search for interval
+  let lo = 0, hi = table.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (table[m].kappa <= kappaDeg) lo = m; else hi = m; }
+  const t = (kappaDeg - table[lo].kappa) / (table[hi].kappa - table[lo].kappa);
+  return {
+    theta: table[lo].theta * (1-t) + table[hi].theta * t,
+    phi: table[lo].phi * (1-t) + table[hi].phi * t,
+  };
+}
+
+// Update virtual angle sliders from current motor angles
+function updateVirtualAngles() {
+  if (!isKappaGeometry || !kappaCompTable) return;
+  const kappaDeg = jointAngles[kappaJointIdx] * rad2deg;
+  const chiDeg = kappaToEuler(kappaDeg).chi;
+  const comp = getCompensation(kappaDeg);
+  const thetaDeg = jointAngles[thetaJointIdx] * rad2deg - comp.theta;
+  const phiDeg = jointAngles[phiJointIdx] * rad2deg - comp.phi;
+
+  document.getElementById('chiSlider').value = chiDeg;
+  document.getElementById('vchi').textContent = chiDeg.toFixed(1);
+  document.getElementById('vthetaSlider').value = thetaDeg;
+  document.getElementById('vvtheta').textContent = thetaDeg.toFixed(1);
+  document.getElementById('vphiSlider').value = phiDeg;
+  document.getElementById('vvphi').textContent = phiDeg.toFixed(1);
+}
+
+if (isKappaGeometry) {
+  // Slider limits
+  const thetaLimits = config.joints[thetaJointIdx].limits;
+  const phiLimits = config.joints[phiJointIdx].limits;
+
+  // Add virtual angles section (chi limits set to placeholder, updated after FK init)
+  const virtDiv = document.createElement('div');
+  virtDiv.id = 'virtual-angles';
+  virtDiv.style.cssText = 'margin-top:8px; padding-top:8px; border-top:1px solid #534;';
+  virtDiv.innerHTML =
+    '<h2 style="color:#c95;">Virtual Angles (deg)</h2>' +
+    '<div class="slider-row">' +
+      '<label>\u03B8 (theta) <span id="vvtheta">0.0</span></label>' +
+      '<input type="range" id="vthetaSlider" min="' + thetaLimits[0] + '" max="' + thetaLimits[1] + '" value="0" step="0.5">' +
+    '</div>' +
+    '<div class="slider-row">' +
+      '<label>\u03C7 (chi) <span id="vchi">0.0</span></label>' +
+      '<input type="range" id="chiSlider" min="-180" max="180" value="0" step="0.5">' +
+    '</div>' +
+    '<div class="slider-row">' +
+      '<label>\u03C6 (phi) <span id="vvphi">0.0</span></label>' +
+      '<input type="range" id="vphiSlider" min="' + phiLimits[0] + '" max="' + phiLimits[1] + '" value="0" step="0.5">' +
+    '</div>';
+  sliderContainer.parentNode.insertBefore(virtDiv, sliderContainer.nextSibling);
+}
 
 // Populate parent link dropdown from config
 const parentSelect = document.getElementById('stlParentSelect');
@@ -875,8 +981,6 @@ scene.add(new THREE.GridHelper(2, 40, 0x333355, 0x222244).translateY(-0.062));
 // ============================================================
 // FK functions
 // ============================================================
-const deg2rad = Math.PI / 180;
-const rad2deg = 180 / Math.PI;
 const jointAngles = Array(numJoints).fill(0);
 
 function updateFK() {
@@ -892,6 +996,7 @@ function updateSliders() {
     document.getElementById(`j${si+1}`).value = deg;
     document.getElementById(`v${si+1}`).textContent = deg.toFixed(1);
   }
+  updateVirtualAngles();
 }
 
 function getEEWorldPosition() {
@@ -902,6 +1007,127 @@ function getEEWorldPosition() {
 function clampJoints() {
   for (let i = 0; i < numJoints; i++) {
     jointAngles[i] = Math.max(jointLimits[i][0], Math.min(jointLimits[i][1], jointAngles[i]));
+  }
+}
+
+// ============================================================
+// Precompute kappa compensation lookup table from actual geometry
+// ============================================================
+if (isKappaGeometry) {
+  scene.updateMatrixWorld(true);
+
+  // Get world-frame rotation axes at home (all motors = 0)
+  const thetaWorldAxis = getJointWorldAxis(thetaJointIdx);
+  const kappaWorldAxis = getJointWorldAxis(kappaJointIdx);
+  kappaAlpha = Math.acos(Math.min(1, Math.abs(thetaWorldAxis.dot(kappaWorldAxis))));
+
+  // Chi tilt axis (perpendicular to both theta and kappa axes)
+  kappaChiAxis = new THREE.Vector3().crossVectors(thetaWorldAxis, kappaWorldAxis).normalize();
+
+  // Verify chiAxis direction: positive kappa should produce positive chi
+  jointAngles[kappaJointIdx] = 0.05;
+  updateFK(); scene.updateMatrixWorld(true);
+  const testPhiAxis = getJointWorldAxis(phiJointIdx);
+  jointAngles[kappaJointIdx] = 0;
+  updateFK(); scene.updateMatrixWorld(true);
+  const homePhiAxis = getJointWorldAxis(phiJointIdx);
+  // Positive chi should tilt phi axis toward chiAxis × thetaAxis direction
+  const expectedTilt = new THREE.Vector3().crossVectors(kappaChiAxis, homePhiAxis);
+  if (testPhiAxis.dot(expectedTilt) < 0) kappaChiAxis.negate();
+
+  // Record home orientation of the phi rotation frame
+  kappaHomeQuat = new THREE.Quaternion();
+  jointRotGroups[phiJointIdx].getWorldQuaternion(kappaHomeQuat);
+
+  // Helper: measure orientation error as axis-angle vector
+  function orientError(targetQuat) {
+    const q = new THREE.Quaternion();
+    jointRotGroups[phiJointIdx].getWorldQuaternion(q);
+    const qErr = targetQuat.clone().conjugate().multiply(q);
+    if (qErr.w < 0) { qErr.x = -qErr.x; qErr.y = -qErr.y; qErr.z = -qErr.z; qErr.w = -qErr.w; }
+    const sh = Math.sqrt(qErr.x*qErr.x + qErr.y*qErr.y + qErr.z*qErr.z);
+    if (sh < 1e-10) return [0, 0, 0];
+    const a = 2 * Math.atan2(sh, qErr.w);
+    return [qErr.x/sh * a, qErr.y/sh * a, qErr.z/sh * a];
+  }
+
+  // Build compensation lookup table
+  const kappaLimits = config.joints[kappaJointIdx].limits;
+  const COMP_STEPS = 150;
+  kappaCompTable = [];
+  let prevTheta = 0, prevPhi = 0;
+
+  for (let step = 0; step <= COMP_STEPS; step++) {
+    const kappaDeg = kappaLimits[0] + (kappaLimits[1] - kappaLimits[0]) * step / COMP_STEPS;
+    const chiRad = 2 * Math.asin(Math.sin(kappaDeg * deg2rad / 2) * Math.sin(kappaAlpha));
+
+    // Target orientation: pure chi rotation from home
+    const targetQuat = new THREE.Quaternion().setFromAxisAngle(kappaChiAxis, chiRad).multiply(kappaHomeQuat);
+
+    // Solve for theta/phi compensation using Newton-Raphson (start from previous step)
+    let tc = prevTheta, pc = prevPhi;
+    for (let iter = 0; iter < 15; iter++) {
+      jointAngles[kappaJointIdx] = kappaDeg * deg2rad;
+      jointAngles[thetaJointIdx] = tc * deg2rad;
+      jointAngles[phiJointIdx] = pc * deg2rad;
+      updateFK(); scene.updateMatrixWorld(true);
+      const err = orientError(targetQuat);
+      const errNorm = Math.sqrt(err[0]*err[0] + err[1]*err[1] + err[2]*err[2]);
+      if (errNorm < 1e-6) break;
+
+      // Numerical Jacobian (3×2)
+      const eps = 0.05;
+      jointAngles[thetaJointIdx] = (tc + eps) * deg2rad;
+      jointAngles[phiJointIdx] = pc * deg2rad;
+      updateFK(); scene.updateMatrixWorld(true);
+      const eT = orientError(targetQuat);
+
+      jointAngles[thetaJointIdx] = tc * deg2rad;
+      jointAngles[phiJointIdx] = (pc + eps) * deg2rad;
+      updateFK(); scene.updateMatrixWorld(true);
+      const eP = orientError(targetQuat);
+
+      // J columns
+      const j0 = [(eT[0]-err[0])/eps, (eT[1]-err[1])/eps, (eT[2]-err[2])/eps];
+      const j1 = [(eP[0]-err[0])/eps, (eP[1]-err[1])/eps, (eP[2]-err[2])/eps];
+
+      // Pseudo-inverse: (JTJ)^-1 JT * err
+      const a = j0[0]*j0[0]+j0[1]*j0[1]+j0[2]*j0[2];
+      const b = j0[0]*j1[0]+j0[1]*j1[1]+j0[2]*j1[2];
+      const c = j1[0]*j1[0]+j1[1]*j1[1]+j1[2]*j1[2];
+      const det = a*c - b*b;
+      if (Math.abs(det) < 1e-15) break;
+
+      const jte0 = j0[0]*err[0]+j0[1]*err[1]+j0[2]*err[2];
+      const jte1 = j1[0]*err[0]+j1[1]*err[1]+j1[2]*err[2];
+
+      tc -= (c*jte0 - b*jte1) / det;
+      pc -= (-b*jte0 + a*jte1) / det;
+    }
+
+    kappaCompTable.push({ kappa: kappaDeg, chi: chiRad * rad2deg, theta: tc, phi: pc });
+    prevTheta = tc;
+    prevPhi = pc;
+  }
+
+  // Reset to home
+  jointAngles[kappaJointIdx] = 0;
+  jointAngles[thetaJointIdx] = 0;
+  jointAngles[phiJointIdx] = 0;
+  updateFK();
+
+  // Update chi slider limits
+  const chiMin = kappaCompTable[0].chi;
+  const chiMax = kappaCompTable[kappaCompTable.length-1].chi;
+  const chiSlider = document.getElementById('chiSlider');
+  chiSlider.min = Math.min(chiMin, chiMax).toFixed(1);
+  chiSlider.max = Math.max(chiMin, chiMax).toFixed(1);
+
+  // Log chi=90 compensation for verification
+  const test90 = eulerToKappa(90);
+  if (test90) {
+    const comp90 = getCompensation(test90.kappa);
+    console.log(`Kappa geometry: α=${(kappaAlpha*rad2deg).toFixed(1)}°, chi=90° → kappa=${test90.kappa.toFixed(1)}°, ktheta=${comp90.theta.toFixed(1)}°, kphi=${comp90.phi.toFixed(1)}°`);
   }
 }
 
@@ -1104,6 +1330,7 @@ for (let si = 1; si <= numSliders; si++) {
     label.textContent = deg.toFixed(1);
     jointAngles[ji] = deg * deg2rad;
     updateFK();
+    updateVirtualAngles();
     // If in IK mode, move target to new EE pose
     if (ikMode) {
       scene.updateMatrixWorld(true);
@@ -1112,6 +1339,63 @@ for (let si = 1; si <= numSliders; si++) {
       ikTargetEuler.setFromQuaternion(ikTargetQuat, 'YZX');
       syncIKSliders();
     }
+  });
+}
+
+// Virtual angle slider handlers (kappa geometry)
+if (isKappaGeometry) {
+  // Helper: given virtual theta, chi, phi → set physical ktheta, kappa, kphi
+  // motor = virtual + compensation(kappa)
+  function applyVirtualAngles(vThetaDeg, chiDeg, vPhiDeg) {
+    const result = eulerToKappa(chiDeg);
+    if (!result) return; // chi out of range
+    const comp = getCompensation(result.kappa);
+    jointAngles[kappaJointIdx] = result.kappa * deg2rad;
+    jointAngles[thetaJointIdx] = (vThetaDeg + comp.theta) * deg2rad;
+    jointAngles[phiJointIdx] = (vPhiDeg + comp.phi) * deg2rad;
+    clampJoints();
+    updateFK();
+    updateSliders();
+    if (ikMode) {
+      scene.updateMatrixWorld(true);
+      ikTarget.position.copy(getEEWorldPosition());
+      ikTargetQuat.copy(getEEWorldQuaternion());
+      ikTargetEuler.setFromQuaternion(ikTargetQuat, 'YZX');
+      syncIKSliders();
+    }
+  }
+
+  // Helper: read current virtual angles from the sliders
+  function readVirtualAngles() {
+    return {
+      theta: parseFloat(document.getElementById('vthetaSlider').value),
+      chi: parseFloat(document.getElementById('chiSlider').value),
+      phi: parseFloat(document.getElementById('vphiSlider').value),
+    };
+  }
+
+  // Chi slider
+  document.getElementById('chiSlider').addEventListener('input', (e) => {
+    const v = readVirtualAngles();
+    v.chi = parseFloat(e.target.value);
+    document.getElementById('vchi').textContent = v.chi.toFixed(1);
+    applyVirtualAngles(v.theta, v.chi, v.phi);
+  });
+
+  // Virtual theta slider
+  document.getElementById('vthetaSlider').addEventListener('input', (e) => {
+    const v = readVirtualAngles();
+    v.theta = parseFloat(e.target.value);
+    document.getElementById('vvtheta').textContent = v.theta.toFixed(1);
+    applyVirtualAngles(v.theta, v.chi, v.phi);
+  });
+
+  // Virtual phi slider
+  document.getElementById('vphiSlider').addEventListener('input', (e) => {
+    const v = readVirtualAngles();
+    v.phi = parseFloat(e.target.value);
+    document.getElementById('vvphi').textContent = v.phi.toFixed(1);
+    applyVirtualAngles(v.theta, v.chi, v.phi);
   });
 }
 
@@ -1218,6 +1502,18 @@ for (let i = 1; i <= numSliders; i++) {
     s.dispatchEvent(new Event('input'));
   });
 }
+// Virtual angle double-click editing
+if (isKappaGeometry) {
+  ['chiSlider:vchi', 'vthetaSlider:vvtheta', 'vphiSlider:vvphi'].forEach(pair => {
+    const [sliderId, spanId] = pair.split(':');
+    makeSpanEditable(spanId, (val) => {
+      const s = document.getElementById(sliderId);
+      s.value = Math.max(s.min, Math.min(s.max, val));
+      s.dispatchEvent(new Event('input'));
+    });
+  });
+}
+
 ['ikx','iky','ikz','ika','ikb','ikc'].forEach(id => {
   makeSpanEditable(id.replace('ik', 'ikv'), (val) => {
     const s = document.getElementById(id);
@@ -2349,6 +2645,7 @@ function buildState() {
     collisionEnabled,
     collision: collisionEnabled && lastCollisions.length > 0,
     collisions: collisionEnabled ? lastCollisions.map(c => ({ link: c.linkName, object: c.stlName })) : [],
+    ...(isKappaGeometry ? { chi: +kappaToEuler(jointAngles[kappaJointIdx] * rad2deg).chi.toFixed(2) } : {}),
   };
 }
 
@@ -2509,6 +2806,14 @@ function handleCommand(data) {
     const idx = importedSTLs.indexOf(entry);
     wsSend({ type: 'object', ...buildObjectInfo(entry, idx) });
     saveSTLDebounced(entry);
+
+  } else if (cmd === 'setChi') {
+    if (isKappaGeometry && typeof data.angle === 'number') {
+      const chiSlider = document.getElementById('chiSlider');
+      chiSlider.value = data.angle;
+      chiSlider.dispatchEvent(new Event('input'));
+      wsSend(buildState());
+    }
 
   } else if (cmd === 'resetObjectScale') {
     const entry = findSTLEntry(data);
