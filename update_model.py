@@ -2,8 +2,8 @@
 Update model script — runs inside Blender via MCP or Script Editor.
 
 Reads a config JSON with 'bone' fields on each joint, extracts updated
-transforms from the armature, increments the GLB version, exports skin-free,
-and writes the updated config.
+transforms from the armature, exports skin-free GLB, and writes the
+updated config.
 
 Usage from Blender Script Editor or MCP:
     exec(open('/FastDrive/Dropbox/ClaudeCodeProjects/RobotVisualisation/update_model.py').read())
@@ -15,8 +15,8 @@ To override the config file, set CONFIG_FILE before running:
 
 import bpy
 import json
-import re
 import os
+import re
 import mathutils
 
 # Config file to update — override by setting CONFIG_FILE before exec()
@@ -77,19 +77,8 @@ for joint in config['joints']:
         joint['restPos'] = bt['pos']
         joint['restQuat'] = bt['quat']
 
-# --- Increment GLB version ---
-old_model = config['model']
-match = re.search(r'_v(\d+)\.glb$', old_model)
-if match:
-    version = int(match.group(1)) + 1
-    new_model = re.sub(r'_v\d+\.glb$', f'_v{version}.glb', old_model)
-else:
-    base = old_model.replace('.glb', '')
-    version = 2
-    new_model = f'{base}_v{version}.glb'
-
-config['model'] = new_model
-glb_path = os.path.join(PROJECT_DIR, new_model)
+# --- GLB path ---
+glb_path = os.path.join(PROJECT_DIR, config['model'])
 
 # --- Export GLB (skin-free) ---
 parenting_backup = []
@@ -145,7 +134,7 @@ with open(config_path, 'w') as f:
 # --- Report ---
 print(f"\n=== Model Update Complete ===")
 print(f"Config: {config_file}")
-print(f"GLB: {old_model} -> {new_model}")
+print(f"GLB: {config['model']}")
 print(f"Unparented/restored {len(parenting_backup)} meshes")
 if changes:
     print(f"\n{len(changes)} joint(s) updated:")
