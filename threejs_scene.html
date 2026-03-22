@@ -10,6 +10,7 @@
   canvas { display: block; }
   #panel {
     position: absolute; top: 10px; right: 10px; width: 260px;
+    max-height: calc(100vh - 20px); overflow-y: auto;
     background: rgba(10,10,30,0.85); color: #ccc; padding: 14px;
     border-radius: 8px; backdrop-filter: blur(8px);
     border: 1px solid rgba(100,100,200,0.2);
@@ -633,7 +634,7 @@ function easeNavSnap(t) { return t*t*(3-2*t); } // smoothstep
 // ============================================================
 // Lighting
 // ============================================================
-const sun = new THREE.DirectionalLight(0xffffff, 12);
+const sun = new THREE.DirectionalLight(0xffffff, 19.2);
 sun.position.set(3, 5, 2);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
@@ -647,9 +648,21 @@ const fill = new THREE.DirectionalLight(0xffffff, 0.8);
 fill.position.set(-0.886, 1.022, 0.668);
 scene.add(fill);
 
-const spot = new THREE.SpotLight(0x0058ff, 80, 3, Math.PI / 4, 0.5);
+const spot = new THREE.SpotLight(0x0058ff, 10, 3, Math.PI / 4, 0.5);
 spot.position.set(-0.134, 1.043, 1.665);
 scene.add(spot);
+
+const spot2 = new THREE.SpotLight(0x0058ff, 33.75, 3, Math.PI / 4, 0.5);
+spot2.position.set(-1.665, 1.0, -0.134);
+spot2.target.position.set(0, 0.5, 0);
+scene.add(spot2);
+scene.add(spot2.target);
+
+const spot3 = new THREE.SpotLight(0x0058ff, 33.75, 3, Math.PI / 4, 0.5);
+spot3.position.set(1.665, 1.0, 0.134);
+spot3.target.position.set(0, 0.5, 0);
+scene.add(spot3);
+scene.add(spot3.target);
 
 scene.add(new THREE.AmbientLight(0x404060, 0.7));
 scene.add(new THREE.HemisphereLight(0x8888bb, 0x333344, 0.4));
@@ -2674,6 +2687,7 @@ window.addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   if (orthoOn) updateOrthoFrustum();
+  renderer.setPixelRatio(devicePixelRatio);
   renderer.setSize(innerWidth, innerHeight);
   labelRenderer.setSize(innerWidth, innerHeight);
 });

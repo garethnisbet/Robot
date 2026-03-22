@@ -1,7 +1,7 @@
 {
   "name": "i16 Diffractometer",
   "armature": "Armature",
-  "model": "i16_scene_v5.glb",
+  "model": "i16_scene_v6.glb",
   "joints": [
     {
       "name": "root_gamma",
@@ -35,17 +35,17 @@
     {
       "name": "delta",
       "bone": "Bone.003",
-      "restPos": [ 0, 0, -0.8976 ],
-      "restQuat": [ 0.7086, 0.70558, 0.00392, 0.00391 ],
-      "axis": [ -1, 0, 0 ],
+      "restPos": [ 0.0, 0.0, -0.89761 ],
+      "restQuat": [ 0.00391, -0.00391, 0.7071, -0.7071 ],
+      "axis": [ 1, 0, 0 ],
       "limits": [ -10, 150 ],
       "parent": 2
     },
     {
       "name": "kdelta.001",
       "bone": "Bone.004",
-      "restPos": [ 0, 0, -0.49104 ],
-      "restQuat": [ 0.87428, 0.00131, -0.48542, 0 ],
+      "restPos": [ 0.0, 0.0, -0.49104 ],
+      "restQuat": [ 0.00102, -0.48542, 0.00056, -0.87428 ],
       "axis": [ 0, 0, 1 ],
       "limits": [ 0, 0 ],
       "parent": 3,
@@ -66,16 +66,16 @@
       "bone": "Bone.006",
       "restPos": [ 0, 0, -0.362 ],
       "restQuat": [ 0.70711, 0.00165, 0.7071, 0 ],
-      "axis": [ 0, 0, -1 ],
+      "axis": [ 0, 0, 1 ],
       "limits": [ -180, 180 ],
       "parent": 5
     },
     {
       "name": "detector_end",
       "bone": "Bone.007",
-      "restPos": [ 0, 0, -0.40984 ],
-      "restQuat": [ 0.99998, 0.00551, -1e-05, 0 ],
-      "axis": [ -1, 0, 0 ],
+      "restPos": [ -0.0, -0.0, -0.40984 ],
+      "restQuat": [ 0.0, -0.0, -0.0, -1.0 ],
+      "axis": [ 1, 0, 0 ],
       "limits": [ -90, 90 ],
       "parent": 6
     },
@@ -102,8 +102,8 @@
     {
       "name": "crystal_rot",
       "bone": "Bone.022",
-      "restPos": [ 0, 0, -0.40984 ],
-      "restQuat": [ 0.70711, 0.00165, 0.7071, 0 ],
+      "restPos": [ -0.0, -0.0, -0.40984 ],
+      "restQuat": [ 0.70647, 0.00165, 0.7071, 0.0299 ],
       "axis": [ 0, 0, -1 ],
       "limits": [ -180, 180 ],
       "parent": 6
@@ -111,8 +111,8 @@
     {
       "name": "virtual_axis_1",
       "bone": "Bone.018",
-      "restPos": [ 0, 0, -0.362 ],
-      "restQuat": [ 0, -0.70546, 0.70875, 0 ],
+      "restPos": [ -0.0, 0.0, -0.362 ],
+      "restQuat": [ 0.01605, -0.68861, 0.72476, 0.01681 ],
       "axis": [ 0, 0, 1 ],
       "limits": [ 0, 0 ],
       "parent": 5,
@@ -121,8 +121,8 @@
     {
       "name": "virtual_axis_2",
       "bone": "Bone.020",
-      "restPos": [ 0, 0, -0.04506 ],
-      "restQuat": [ 0.74349, 0.66875, -0.00156, 0 ],
+      "restPos": [ -0.0, 0.0, -0.04511 ],
+      "restQuat": [ 0.74273, 0.66879, 0.00018, -0.03281 ],
       "axis": [ 0, 0, 1 ],
       "limits": [ 0, 0 ],
       "parent": 11,
