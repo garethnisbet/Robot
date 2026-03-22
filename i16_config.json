@@ -1,7 +1,7 @@
 {
   "name": "i16 Diffractometer",
   "armature": "Armature",
-  "model": "i16_scene_v5.glb",
+  "model": "i16_scene.glb",
   "joints": [
     {
       "name": "root_gamma",
