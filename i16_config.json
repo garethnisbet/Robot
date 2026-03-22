@@ -1,7 +1,7 @@
 {
   "name": "i16 Diffractometer",
   "armature": "Armature",
-  "model": "i16_scene.glb",
+  "model": "i16_scene_v5.glb",
   "joints": [
     {
       "name": "root_gamma",
@@ -64,8 +64,8 @@
     {
       "name": "stokes",
       "bone": "Bone.006",
-      "restPos": [ 0.0, 0.0, -0.362 ],
-      "restQuat": [ 0.70711, 0.00165, 0.7071, 0.0 ],
+      "restPos": [ 0, 0, -0.362 ],
+      "restQuat": [ 0.70711, 0.00165, 0.7071, 0 ],
       "axis": [ 0, 0, -1 ],
       "limits": [ -180, 180 ],
       "parent": 5
@@ -109,6 +109,26 @@
       "parent": 6
     },
     {
+      "name": "virtual_axis_1",
+      "bone": "Bone.018",
+      "restPos": [ 0, 0, -0.362 ],
+      "restQuat": [ 0, -0.70546, 0.70875, 0 ],
+      "axis": [ 0, 0, 1 ],
+      "limits": [ 0, 0 ],
+      "parent": 5,
+      "fixed": true
+    },
+    {
+      "name": "virtual_axis_2",
+      "bone": "Bone.020",
+      "restPos": [ 0, 0, -0.04506 ],
+      "restQuat": [ 0.74349, 0.66875, -0.00156, 0 ],
+      "axis": [ 0, 0, 1 ],
+      "limits": [ 0, 0 ],
+      "parent": 11,
+      "fixed": true
+    },
+    {
       "name": "root_mu",
       "bone": "Bone",
       "restPos": [ 0, 0, 0 ],
@@ -125,7 +145,7 @@
       "restQuat": [ 1, 0, 0, 0 ],
       "axis": [ 0, 0, 1 ],
       "limits": [ 0, 0 ],
-      "parent": 11,
+      "parent": 13,
       "fixed": true
     },
     {
@@ -135,7 +155,7 @@
       "restQuat": [ 0.70711, 0, 0.70711, 0 ],
       "axis": [ 1, 0, 0 ],
       "limits": [ -10, 220 ],
-      "parent": 12
+      "parent": 14
     },
     {
       "name": "kmu.002",
@@ -144,36 +164,36 @@
       "restQuat": [ 0.70711, 0, -0.70711, 0 ],
       "axis": [ 0, 0, 1 ],
       "limits": [ 0, 0 ],
-      "parent": 13,
+      "parent": 15,
       "fixed": true
     },
     {
       "name": "kmu.003",
       "bone": "Bone.011",
-      "restPos": [ 0, 0, -0.64909 ],
+      "restPos": [ 0, 0, -0.65341 ],
       "restQuat": [ 0.70711, 0, -0.70711, 0 ],
       "axis": [ 0, 0, 1 ],
       "limits": [ 0, 0 ],
-      "parent": 14,
+      "parent": 16,
       "fixed": true
     },
     {
       "name": "theta",
       "bone": "Bone.012",
       "restPos": [ 0, 0, -0.12074 ],
-      "restQuat": [ 0.71169, 0, -0.7025, 0 ],
+      "restQuat": [ 0.71158, -0.00011, -0.7026, 0.00011 ],
       "axis": [ 1, 0, 0 ],
       "limits": [ -200, 180 ],
-      "parent": 15
+      "parent": 17
     },
     {
       "name": "ktheta.001",
       "bone": "Bone.013",
-      "restPos": [ 0, 0, -0.17928 ],
-      "restQuat": [ 0.90941, 0, 0.41591, 0 ],
+      "restPos": [ 0, 0, -0.1836 ],
+      "restQuat": [ 0.90934, 0.00006, 0.41605, -0.00014 ],
       "axis": [ 0, 0, 1 ],
       "limits": [ 0, 0 ],
-      "parent": 16,
+      "parent": 18,
       "fixed": true
     },
     {
@@ -183,7 +203,7 @@
       "restQuat": [ 0.70162, 0.00084, 0.71255, 0.00083 ],
       "axis": [ 0, 0, 1 ],
       "limits": [ -150, 150 ],
-      "parent": 17
+      "parent": 19
     },
     {
       "name": "kkappa.001",
@@ -192,27 +212,27 @@
       "restQuat": [ 0.71678, 0.00082, 0.6973, -0.00085 ],
       "axis": [ 0, 0, 1 ],
       "limits": [ 0, 0 ],
-      "parent": 18,
+      "parent": 20,
       "fixed": true
     },
     {
       "name": "kkappa.002",
       "bone": "Bone.016",
-      "restPos": [ -0.0, -0.0, -0.21061 ],
+      "restPos": [ 0, 0, -0.21061 ],
       "restQuat": [ 0.91187, -3e-05, -0.41048, 8e-05 ],
       "axis": [ 0, 0, 1 ],
       "limits": [ 0, 0 ],
-      "parent": 19,
+      "parent": 21,
       "fixed": true
     },
     {
       "name": "phi",
       "bone": "Bone.017",
-      "restPos": [ 0.0, -0.0, -0.137 ],
+      "restPos": [ 0, 0, -0.137 ],
       "restQuat": [ 0.70255, -0.00387, -0.71161, 0.00371 ],
       "axis": [ 0, 0, -1 ],
       "limits": [ -360, 360 ],
-      "parent": 20
+      "parent": 22
     }
   ],
   "links": [
@@ -222,12 +242,7 @@
       "joint": 1
     },
     {
-      "name": "delta",
-      "label": "Delta",
-      "joint": 3
-    },
-    {
-      "name": "detector_arm",
+      "name": "detector_arm001",
       "label": "Det. Arm",
       "joint": 3
     },
@@ -237,7 +252,7 @@
       "joint": 3
     },
     {
-      "name": "detector_arm_back",
+      "name": "detector_arm002",
       "label": "Det. Arm Back",
       "joint": 6
     },
@@ -259,27 +274,28 @@
     {
       "name": "mu",
       "label": "Mu Ring",
-      "joint": 13
+      "joint": 15
     },
     {
       "name": "theta",
       "label": "Theta",
-      "joint": 16
+      "joint": 18
     },
     {
       "name": "kappa",
       "label": "Kappa",
-      "joint": 19
+      "joint": 21
     },
     {
       "name": "phi",
       "label": "Phi",
-      "joint": 21
+      "joint": 23
     },
     {
-      "name": "wedding_cake",
+      "name": "Cylinder",
       "label": "Wedding Cake",
-      "joint": 21
+      "joint": 23
     }
-  ]
+  ],
+  "demoPose": [ 0, 30, 0, 45, 0, 0, 90, 15, 0, 10, 45, 0, 0, 0, 0, 20, 0, 0, 30, 0, 50, 0, 0, -60 ]
 }
