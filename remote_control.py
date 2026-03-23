@@ -17,9 +17,15 @@ import asyncio
 import json
 import os
 import readline
+import select
 import sys
+import termios
+import tty
 
 import websockets
+
+# ── Pending async responses (used by plan_sequence to intercept listObjects) ─
+_ws_pending: dict = {}   # key → {"event": asyncio.Event, "data": any}
 
 # ── ANSI colour helpers ──────────────────────────────────────────────────────
 
@@ -63,9 +69,9 @@ def _save_history():
 # ── Tab completion ───────────────────────────────────────────────────────────
 
 COMMANDS = [
-    "state", "home", "fk", "ik", "joints", "joint", "move", "target",
+    "state", "home", "fk", "ik", "joints", "joint", "pos", "move", "target",
     "collision", "collisions", "objects", "obj", "objpos", "objrot",
-    "objscale", "objvis", "objresetrot", "objresetscale", "demo", "clear", "history", "help",
+    "objscale", "objvis", "objresetrot", "objresetscale", "demo", "plan", "scan", "clear", "history", "help",
     "quit", "exit",
 ]
 
@@ -87,7 +93,7 @@ class Completer:
                 self.matches = [a + " " for a in COLLISION_ARGS if a.startswith(text)]
             elif parts[0] == "objvis" and len(parts) == 3:
                 self.matches = [a + " " for a in OBJVIS_ARGS if a.startswith(text)]
-            elif parts[0] == "joint" and len(parts) == 2:
+            elif parts[0] in ("joint", "pos") and len(parts) == 2:
                 self.matches = [n + " " for n in self.joint_names if n.lower().startswith(text.lower())]
             else:
                 self.matches = []
@@ -175,7 +181,25 @@ def _print_help(device_name, movable_joints):
         orientation (degrees). Defaults to (0, 0, 0).
 
     {_bold('target') if _COLORS else 'target'} {_cyan('x y z') if _COLORS else 'x y z'} [{_cyan('a b g') if _COLORS else 'a b g'}]
-        Set IK target position/orientation without switching mode."""),
+        Set IK target position/orientation without switching mode.
+
+    {_bold('plan') if _COLORS else 'plan'} {_cyan('--start') if _COLORS else '--start'} {_cyan('<axes>') if _COLORS else '<axes>'} {_cyan('--end') if _COLORS else '--end'} {_cyan('<axes>') if _COLORS else '<axes>'} [{_cyan('--stepsize <deg>') if _COLORS else '--stepsize <deg>'}] [{_cyan('--steptime <ms>') if _COLORS else '--steptime <ms>'}]
+        Run RRT-Connect path planner and stream the resulting waypoints to
+        the viewer.  Scene mesh objects are automatically used as obstacles.
+        Axes can be positional ({_dim(joint_args) if _COLORS else joint_args}) or named ({_dim('mu=30 theta=45') if _COLORS else 'mu=30 theta=45'}).
+        Named mode: unspecified axes default to 0.  Names match the first
+        word of the joint name (e.g. {_dim('J1') if _COLORS else 'J1'} for {_dim('J1 Base') if _COLORS else 'J1 Base'}) and are case-insensitive.
+        --stepsize  RRT step size in degrees (default 5)
+        --steptime  Delay between waypoints in ms (default 80)
+
+    {_bold('scan') if _COLORS else 'scan'} {_cyan('<axis> <start> <end> <step>') if _COLORS else '<axis> <start> <end> <step>'} [{_cyan('<axis> ...')} ] [{_cyan('--steptime <ms>') if _COLORS else '--steptime <ms>'}]
+        Scan one or more axes.  The first axis always takes start/end/step.
+        Subsequent axes can be:
+          3 values (start end step) — grid scan (cartesian product)
+          2 values (start step)    — coupled scan (lockstep with primary)
+        Axis is resolved by name (first word, case-insensitive) or
+        1-based index.  Other axes hold their current positions.
+        --steptime  Delay between steps in ms (default 80)"""),
         ("COLLISION COMMANDS", f"""\
     {_bold('collision') if _COLORS else 'collision'} [{_cyan('on') if _COLORS else 'on'}|{_cyan('off') if _COLORS else 'off'}]
         Toggle or explicitly enable/disable collision detection.
@@ -236,6 +260,9 @@ def _print_help(device_name, movable_joints):
     $ joints {' '.join(['0'] * min(n_joints, 6))}{'...' if n_joints > 6 else ''}
     $ joint {movable_joints[0][1] if movable_joints else 'J1'} 45
     $ move 150 100 300 45 0 0
+    $ scan {movable_joints[0][1].split()[0].lower() if movable_joints else 'delta'} 0 50 5
+    $ scan {movable_joints[0][1].split()[0].lower() if movable_joints else 'delta'} 0 20 1 {movable_joints[1][1].split()[0].lower() if len(movable_joints) > 1 else 'gamma'} 20 2
+    $ scan {movable_joints[0][1].split()[0].lower() if movable_joints else 'delta'} 0 20 1 {movable_joints[1][1].split()[0].lower() if len(movable_joints) > 1 else 'gamma'} 0 30 2
     $ collision on"""),
     ]
     print()
@@ -264,6 +291,13 @@ async def print_incoming(ws, device_name, movable_joints):
             _clear_line()
 
             if data.get("type") == "state":
+                # If scan_sequence is waiting for state, hand it off silently
+                pending = _ws_pending.get("state")
+                if pending:
+                    pending["data"] = data
+                    pending["event"].set()
+                    continue
+
                 all_joints = data["joints"]
                 ee = data["eePosition"]
                 ori = data.get("eeOrientation", [0, 0, 0])
@@ -313,6 +347,13 @@ async def print_incoming(ws, device_name, movable_joints):
                 _reprint_prompt(device_name)
 
             elif data.get("type") == "objects":
+                # If plan_sequence is waiting for this, hand it off silently
+                pending = _ws_pending.get("objects")
+                if pending:
+                    pending["data"] = data.get("objects", [])
+                    pending["event"].set()
+                    continue
+
                 objs = data.get("objects", [])
                 print(f"  {_bold('OBJECTS')} ({len(objs)} imported)")
                 for o in objs:
@@ -366,6 +407,234 @@ async def demo_sequence(ws, config, num_joints):
     print(f"  {_bgreen('Demo complete!')}")
 
 
+# ── Path planning sequence ───────────────────────────────────────────────────
+
+def _densify_path(path, step_deg):
+    """
+    Interpolate between consecutive waypoints so no step exceeds step_deg
+    (measured as the max joint displacement across all joints).
+    """
+    import math
+    dense = [path[0]]
+    for i in range(len(path) - 1):
+        q0 = path[i]
+        q1 = path[i + 1]
+        max_delta = max(abs(a - b) for a, b in zip(q0, q1))
+        n_steps = max(1, math.ceil(max_delta / step_deg))
+        for k in range(1, n_steps + 1):
+            t = k / n_steps
+            dense.append([a + t * (b - a) for a, b in zip(q0, q1)])
+    return dense
+
+
+async def plan_sequence(ws, config_path, start_q, goal_q, step_ms=80, step_deg=5.0):
+    """
+    Run RRT-Connect planner from start_q to goal_q, then stream waypoints
+    to the viewer.
+      step_ms  — delay between waypoints in milliseconds (playback speed)
+      step_deg — RRT extension step size in degrees (smaller = finer paths, slower planning)
+    Automatically fetches imported mesh objects from the viewer and uses
+    their world bounding boxes as collision obstacles.
+    """
+    try:
+        from planner import RobotPlanner
+    except ImportError:
+        print(f"  {_bred('Error')}: planner.py not found — make sure it is in the same directory")
+        return
+
+    # ── Fetch current scene objects from viewer ───────────────────────────
+    event = asyncio.Event()
+    _ws_pending["objects"] = {"event": event, "data": None}
+    await ws.send(json.dumps({"cmd": "listObjects"}))
+    try:
+        await asyncio.wait_for(event.wait(), timeout=3.0)
+        objects_data = _ws_pending["objects"]["data"] or []
+    except asyncio.TimeoutError:
+        objects_data = []
+        print(f"  {_yellow('Warning')}: timed out waiting for object list — planning without scene obstacles")
+    finally:
+        _ws_pending.pop("objects", None)
+
+    # ── Build planner and sync obstacles ─────────────────────────────────
+    planner = RobotPlanner(config_path, step_deg=step_deg)
+    n_obs = planner.sync_from_viewer_objects(objects_data)
+    if n_obs:
+        print(f"  {_dim(f'Using {n_obs} scene object(s) as collision obstacles')}")
+    elif objects_data:
+        print(f"  {_dim('Scene objects found but none have geometry bounding boxes (point clouds?)')}")
+
+    print(f"  {_dim(f'Planning... (step size {step_deg}°)')}")
+    path = planner.plan(start_q, goal_q)
+
+    if path is None:
+        print(f"  {_bred('No path found.')}")
+        return
+
+    # Densify: interpolate between sparse planner waypoints so motion is smooth
+    dense = _densify_path(path, step_deg)
+
+    print(f"  {_bgreen('Executing')} {len(dense)} steps "
+          f"({_dim(f'{step_ms} ms/step, {step_deg}° resolution')})  "
+          f"{_dim('press q to stop')}")
+
+    fd = sys.stdin.fileno()
+    old_term = termios.tcgetattr(fd)
+    stopped = False
+    try:
+        tty.setcbreak(fd)   # single-keypress mode; keeps Ctrl+C working
+        for q in dense:
+            if select.select([sys.stdin], [], [], 0)[0]:
+                ch = sys.stdin.read(1)
+                if ch.lower() == 'q':
+                    stopped = True
+                    break
+            await ws.send(json.dumps({"cmd": "setJoints", "angles": [round(a, 4) for a in q]}))
+            await asyncio.sleep(step_ms / 1000.0)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
+
+    if stopped:
+        print(f"\n  {_yellow('Motion stopped.')}")
+    else:
+        print(f"  {_bgreen('Done.')}")
+
+
+# ── Scan sequence ────────────────────────────────────────────────────────────
+
+def _build_axis_vals(start, end, step):
+    """Build a list of values from start to end in increments of step."""
+    import math
+    step = abs(step)
+    direction = 1.0 if end >= start else -1.0
+    n_steps = int(math.floor(abs(end - start) / step)) + 1
+    vals = []
+    for i in range(n_steps):
+        val = start + i * step * direction
+        if direction > 0 and val > end:
+            val = end
+        elif direction < 0 and val < end:
+            val = end
+        vals.append(val)
+    if not vals or vals[-1] != end:
+        vals.append(end)
+    return vals
+
+
+async def scan_sequence(ws, movable_joints, num_joints, grid_axes,
+                        coupled_axes=None, step_ms=80):
+    """
+    N-dimensional grid scan, or 1D coupled (lockstep) scan.
+
+    grid_axes    — list of (axis_idx, start, end, step) for axes that form
+                   the cartesian-product grid.
+    coupled_axes — list of (axis_idx, start, step) for axes that move in
+                   lockstep with the primary (first grid) axis.  The number
+                   of points is determined by the primary axis.
+    """
+    import itertools
+
+    # ── Fetch current joint state ─────────────────────────────────────────
+    event = asyncio.Event()
+    _ws_pending["state"] = {"event": event, "data": None}
+    await ws.send(json.dumps({"cmd": "getState"}))
+    try:
+        await asyncio.wait_for(event.wait(), timeout=3.0)
+        state_data = _ws_pending["state"]["data"]
+    except asyncio.TimeoutError:
+        state_data = None
+        print(f"  {_yellow('Warning')}: timed out waiting for state — using zeros for other axes")
+    finally:
+        _ws_pending.pop("state", None)
+
+    # Build base as full joint array (all joints including fixed)
+    if state_data:
+        base = list(state_data["joints"])
+    else:
+        base = [0.0] * num_joints
+
+    coupled_axes = coupled_axes or []
+
+    # ── Build per-axis value ranges for grid axes ─────────────────────────
+    grid_ranges = []   # [(actual_joint_idx, [vals...])]
+    for axis_idx, start, end, step in grid_axes:
+        step = abs(step)
+        if step < 1e-6:
+            print(f"  {_bred('Error')}: step size must be > 0")
+            return
+        vals = _build_axis_vals(start, end, step)
+        actual_joint_idx = movable_joints[axis_idx][0]
+        grid_ranges.append((actual_joint_idx, vals))
+
+    # ── Build waypoints ───────────────────────────────────────────────────
+    if coupled_axes:
+        # 1D coupled scan — all axes move in lockstep with primary axis
+        primary_vals = grid_ranges[0][1]
+        n_points = len(primary_vals)
+
+        # Build coupled value lists (same length as primary)
+        coupled_ranges = []  # [(actual_joint_idx, [vals...])]
+        for axis_idx, c_start, c_step in coupled_axes:
+            actual_joint_idx = movable_joints[axis_idx][0]
+            vals = [c_start + i * c_step for i in range(n_points)]
+            coupled_ranges.append((actual_joint_idx, vals))
+
+        # All grid axes beyond the first also lockstep (same length)
+        all_ranges = grid_ranges + coupled_ranges
+        waypoints = []
+        for i in range(n_points):
+            angles = list(base)
+            for joint_idx, vals in all_ranges:
+                angles[joint_idx] = vals[i]
+            waypoints.append(angles)
+    else:
+        # N-dimensional grid scan (cartesian product)
+        all_val_lists = [vals for _, vals in grid_ranges]
+        joint_indices = [idx for idx, _ in grid_ranges]
+        waypoints = []
+        for combo in itertools.product(*all_val_lists):
+            angles = list(base)
+            for joint_idx, val in zip(joint_indices, combo):
+                angles[joint_idx] = val
+            waypoints.append(angles)
+
+    # ── Print scan summary ────────────────────────────────────────────────
+    axis_descs = []
+    for axis_idx, start, end, step in grid_axes:
+        name = movable_joints[axis_idx][1]
+        axis_descs.append(f"{_bold(name)}: {start} → {end} (step {abs(step)})")
+    for axis_idx, c_start, c_step in coupled_axes:
+        name = movable_joints[axis_idx][1]
+        n_points = len(grid_ranges[0][1])
+        c_end = c_start + (n_points - 1) * c_step
+        axis_descs.append(f"{_bold(name)}: {c_start} → {c_end} (step {c_step})")
+    mode_str = _dim("coupled") if coupled_axes else (_dim("grid") if len(grid_axes) > 1 else "")
+    mode_suffix = f"  {mode_str}" if mode_str else ""
+    print(f"  {_bgreen('Scanning')} {', '.join(axis_descs)}{mode_suffix}")
+    print(f"  {len(waypoints)} points, {step_ms} ms/step  "
+          f"{_dim('press q to stop')}")
+
+    fd = sys.stdin.fileno()
+    old_term = termios.tcgetattr(fd)
+    stopped = False
+    try:
+        tty.setcbreak(fd)
+        for q in waypoints:
+            if select.select([sys.stdin], [], [], 0)[0]:
+                ch = sys.stdin.read(1)
+                if ch.lower() == 'q':
+                    stopped = True
+                    break
+            await ws.send(json.dumps({"cmd": "setJoints", "angles": [round(a, 4) for a in q]}))
+            await asyncio.sleep(step_ms / 1000.0)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
+
+    if stopped:
+        print(f"\n  {_yellow('Scan stopped.')}")
+    else:
+        print(f"  {_bgreen('Scan complete.')}")
+
+
 # ── Object reference parsing ─────────────────────────────────────────────────
 
 def _parse_obj_ref(token):
@@ -403,6 +672,22 @@ async def interactive(url, config_path):
     print(f"  {_bgreen('Connected!')} Type {_bold('help')} for commands, {_bold('Tab')} to complete.\n")
 
     listener = asyncio.create_task(print_incoming(ws, device_name, movable_joints))
+
+    def _resolve_axis_name(name):
+        """Map axis name → index in movable_joints list, or None."""
+        nl = name.lower()
+        for mi, (_, jname) in enumerate(movable_joints):
+            if jname.lower() == nl:                     # exact
+                return mi
+            if jname.lower().split()[0] == nl:          # first word
+                return mi
+        try:                                            # 1-based number
+            n = int(name)
+            if 1 <= n <= n_movable:
+                return n - 1
+        except ValueError:
+            pass
+        return None
 
     loop = asyncio.get_event_loop()
     prompt = _prompt(device_name)
@@ -468,9 +753,9 @@ async def interactive(url, config_path):
                             all_angles[joint_idx] = val
                         await ws.send(json.dumps({"cmd": "setJoints", "angles": all_angles}))
 
-                elif cmd == "joint":
+                elif cmd in ("joint", "pos"):
                     if len(parts) < 3:
-                        print(f"  {_yellow('Usage')}: joint {_cyan('<name> <angle>')}")
+                        print(f"  {_yellow('Usage')}: {cmd} {_cyan('<name> <angle>')}")
                         print(f"  Available: {', '.join(name for _, name in movable_joints)}")
                     else:
                         name = parts[1].lower()
@@ -484,17 +769,6 @@ async def interactive(url, config_path):
                                 print(f"  {_yellow('Unknown joint')}: {parts[1]}")
                                 print(f"  Available: {', '.join(n for _, n in movable_joints)}")
                                 continue
-                        # Get current state, modify one joint, send all
-                        # For simplicity, send a getState first, but we can also just
-                        # build from scratch. Send setJoints with only the target joint changed.
-                        # We need current angles — request state and set in callback.
-                        # Simpler: build array with 0s except the target joint
-                        # Actually, the viewer keeps its own state, so we should
-                        # get state, modify, and re-send. But that requires async round-trip.
-                        # Alternative: use a dedicated single-joint command if viewer supports it.
-                        # For now, just print a note and set via setJoints with all 0s except target.
-                        # Better approach: viewer accepts partial joint updates.
-                        # Let's just send a setJoint command that the viewer can handle.
                         joint_idx = joint_name_to_idx[name]
                         await ws.send(json.dumps({
                             "cmd": "setSingleJoint",
@@ -591,6 +865,158 @@ async def interactive(url, config_path):
 
                 elif cmd == "demo":
                     await demo_sequence(ws, config, num_joints)
+
+                elif cmd == "plan":
+                    # plan --start <axes> --end <axes> [--stepsize <deg>] [--steptime <ms>]
+                    # Axes can be positional:  0 0 0 0 0 0
+                    # or named:                mu=0 theta=30  (unspecified axes default to 0)
+                    raw = parts[1:]
+
+                    def _get_flag(flag, default=None):
+                        if flag in raw:
+                            i = raw.index(flag)
+                            return raw[i + 1], raw[:i] + raw[i+2:]
+                        return default, raw
+
+                    def _get_angle_list(flag):
+                        nonlocal raw
+                        if flag not in raw:
+                            return None
+                        i = raw.index(flag)
+                        tokens = []
+                        j = i + 1
+                        while j < len(raw) and not raw[j].startswith('--'):
+                            tokens.append(raw[j])
+                            j += 1
+                        raw = raw[:i] + raw[j:]
+                        if not tokens:
+                            return None
+                        if any('=' in t for t in tokens):
+                            # Named axis mode: mu=30 theta=45 ...
+                            vals = [0.0] * n_movable
+                            for t in tokens:
+                                if '=' not in t:
+                                    raise ValueError(f"Mix of positional and named axes: {t!r}")
+                                name, val = t.split('=', 1)
+                                mi = _resolve_axis_name(name.strip())
+                                if mi is None:
+                                    names = ', '.join(n for _, n in movable_joints)
+                                    raise ValueError(f"Unknown axis {name!r}. Available: {names}")
+                                vals[mi] = float(val)
+                            return vals
+                        else:
+                            # Positional mode
+                            return [float(t) for t in tokens]
+
+                    stepsize_str, raw = _get_flag('--stepsize')
+                    steptime_str, raw = _get_flag('--steptime')
+                    start_vals = _get_angle_list('--start')
+                    end_vals   = _get_angle_list('--end')
+
+                    if start_vals is None or end_vals is None:
+                        names_eg = ' '.join(f'{n.split()[0].lower()}=0'
+                                            for _, n in movable_joints[:3])
+                        print(f"  {_yellow('Usage')}: plan "
+                              f"{_cyan('--start')} {_cyan('<axes>')} "
+                              f"{_cyan('--end')} {_cyan('<axes>')} "
+                              f"[{_cyan('--stepsize')} {_cyan('<deg>')}] "
+                              f"[{_cyan('--steptime')} {_cyan('<ms>')}]")
+                        print(f"  Positional: {_dim(' '.join(['0'] * n_movable))}")
+                        print(f"  Named:      {_dim(names_eg + ' ...')}  "
+                              f"{_dim('(unspecified axes default to 0)')}")
+                        continue
+
+                    if len(start_vals) != n_movable or len(end_vals) != n_movable:
+                        print(f"  {_yellow('Error')}: expected {n_movable} axis values, "
+                              f"got start={len(start_vals)} end={len(end_vals)}")
+                        continue
+
+                    step_deg = float(stepsize_str) if stepsize_str is not None else 5.0
+                    step_ms  = int(steptime_str)   if steptime_str  is not None else 80
+                    await plan_sequence(ws, config_path, start_vals, end_vals,
+                                        step_ms=step_ms, step_deg=step_deg)
+
+                elif cmd == "scan":
+                    # scan <axis> <start> <end> <step> [<axis> ...] [--steptime <ms>]
+                    # Subsequent axes: 3 nums = grid (start end step)
+                    #                  2 nums = coupled (start step)
+                    raw = parts[1:]
+
+                    # Extract optional --steptime flag
+                    steptime_str = None
+                    if '--steptime' in raw:
+                        i = raw.index('--steptime')
+                        steptime_str = raw[i + 1]
+                        raw = raw[:i] + raw[i+2:]
+
+                    if len(raw) < 4:
+                        first_name = movable_joints[0][1].split()[0].lower() if movable_joints else 'J1'
+                        second_name = movable_joints[1][1].split()[0].lower() if len(movable_joints) > 1 else 'J2'
+                        print(f"  {_yellow('Usage')}: scan "
+                              f"{_cyan('<axis> <start> <end> <step>')} "
+                              f"[{_cyan('<axis> ...')}] "
+                              f"[{_cyan('--steptime')} {_cyan('<ms>')}]")
+                        print(f"  1D:      {_dim(f'scan {first_name} 0 50 5')}")
+                        print(f"  Coupled: {_dim(f'scan {first_name} 10 20 1 {second_name} 20 2')}")
+                        print(f"  Grid:    {_dim(f'scan {first_name} 0 20 1 {second_name} 0 30 2')}")
+                        continue
+
+                    # Parse axis groups by detecting axis names vs numbers
+                    def _is_number(s):
+                        try:
+                            float(s)
+                            return True
+                        except ValueError:
+                            return False
+
+                    groups = []
+                    i = 0
+                    while i < len(raw):
+                        axis_name = raw[i]
+                        i += 1
+                        nums = []
+                        while i < len(raw) and _is_number(raw[i]):
+                            nums.append(float(raw[i]))
+                            i += 1
+                        groups.append((axis_name, nums))
+
+                    # Validate first group (must have 3 numbers: start end step)
+                    valid = True
+                    if not groups or len(groups[0][1]) != 3:
+                        print(f"  {_yellow('Error')}: first axis needs 3 values (start end step)")
+                        continue
+
+                    # Resolve all axis names and classify groups
+                    grid_axes = []
+                    coupled_axes = []
+                    for gi, (axis_name, nums) in enumerate(groups):
+                        axis_idx = _resolve_axis_name(axis_name)
+                        if axis_idx is None:
+                            names = ', '.join(n for _, n in movable_joints)
+                            print(f"  {_yellow('Error')}: unknown axis {axis_name!r}. Available: {names}")
+                            valid = False
+                            break
+                        if gi == 0:
+                            # Primary axis — always grid
+                            grid_axes.append((axis_idx, nums[0], nums[1], nums[2]))
+                        elif len(nums) == 3:
+                            # Grid axis (start end step)
+                            grid_axes.append((axis_idx, nums[0], nums[1], nums[2]))
+                        elif len(nums) == 2:
+                            # Coupled axis (start step)
+                            coupled_axes.append((axis_idx, nums[0], nums[1]))
+                        else:
+                            print(f"  {_yellow('Error')}: axis {axis_name!r} needs 3 values "
+                                  f"(start end step) or 2 values (start step), got {len(nums)}")
+                            valid = False
+                            break
+                    if not valid:
+                        continue
+
+                    step_ms = int(steptime_str) if steptime_str is not None else 80
+                    await scan_sequence(ws, movable_joints, num_joints,
+                                        grid_axes, coupled_axes=coupled_axes,
+                                        step_ms=step_ms)
 
                 else:
                     print(f"  {_yellow(cmd)}: command not found. Type {_bold('help')} for usage.")

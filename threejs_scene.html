@@ -2918,10 +2918,24 @@ function findSTLEntry(data) {
   return null;
 }
 
+const _buildInfoBB = new THREE.Box3();
 function buildObjectInfo(entry, index) {
   const p = entry.mesh.position;
   const r = entry.mesh.rotation;
   const s = entry.mesh.scale;
+
+  // World-space AABB in Z-up metres, for the path planner
+  let worldBB = null;
+  if (!entry.isPointCloud && entry.mesh.geometry) {
+    entry.mesh.updateMatrixWorld(false);
+    fastWorldAABB(entry.mesh, _buildInfoBB);
+    // Three.js Y-up → Z-up: x→x, y→z, z→y
+    worldBB = {
+      min: [+_buildInfoBB.min.x.toFixed(4), +_buildInfoBB.min.z.toFixed(4), +_buildInfoBB.min.y.toFixed(4)],
+      max: [+_buildInfoBB.max.x.toFixed(4), +_buildInfoBB.max.z.toFixed(4), +_buildInfoBB.max.y.toFixed(4)],
+    };
+  }
+
   return {
     index,
     name: entry.name,
@@ -2931,6 +2945,7 @@ function buildObjectInfo(entry, index) {
     rotation: [+(r.x * rad2deg).toFixed(2), +(r.z * rad2deg).toFixed(2), +(r.y * rad2deg).toFixed(2)],
     scale: [+s.x.toFixed(4), +s.y.toFixed(4), +s.z.toFixed(4)],
     visible: entry.mesh.visible,
+    worldBB,  // Z-up metres, used by path planner
   };
 }
 
