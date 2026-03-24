@@ -4,18 +4,39 @@ FROM python:3.12-slim AS build
 WORKDIR /app
 COPY . /app
 
-RUN pip install uv && \
+RUN echo "=== Installing uv ===" && \
+    pip install uv && \
+    echo "=== Creating venv ===" && \
     uv venv /app/.venv && \
-    uv pip install --python /app/.venv/bin/python aiohttp
+    echo "=== Installing dependencies ===" && \
+    uv pip install --python /app/.venv/bin/python aiohttp && \
+    echo "=== Build stage complete ==="
 
 # Stage 2: runtime — minimal image with venv + static assets
 FROM python:3.12-slim AS runtime
 
 WORKDIR /app
 
+RUN echo "=== Copying venv from build stage ==="
 COPY --from=build /app/.venv /app/.venv
-COPY server.py threejs_scene.html robot_scene.glb ./
+
+RUN echo "=== Copying application files ==="
+COPY server.py threejs_scene.html *.glb ./
 COPY *.json ./
+
+RUN echo "=== Files in /app ===" && ls -lh /app && \
+    echo "=== Verifying Python ===" && \
+    /app/.venv/bin/python --version && \
+    echo "=== Verifying aiohttp import ===" && \
+    /app/.venv/bin/python -c "import aiohttp; print('aiohttp', aiohttp.__version__)" && \
+    echo "=== Verifying server.py syntax ===" && \
+    /app/.venv/bin/python -m py_compile server.py && echo "server.py OK" && \
+    echo "=== Verifying config files ===" && \
+    for f in *.json; do \
+        /app/.venv/bin/python -c "import json,sys; json.load(open('$f')); print('$f OK')" || \
+        { echo "INVALID JSON: $f"; exit 1; }; \
+    done && \
+    echo "=== Runtime stage verification complete ==="
 
 ENV PATH="/app/.venv/bin:$PATH"
 
