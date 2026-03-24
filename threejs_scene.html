@@ -984,8 +984,11 @@ loader.load(config.model, (gltf) => {
   document.getElementById('loading').textContent = `Loading... ${pct}%`;
 }, (err) => {
   console.error('Load error:', err);
-  document.getElementById('loading').textContent =
-    'Failed to load. Run: python3 -m http.server 8000';
+  const msg = err?.message || String(err);
+  document.getElementById('loading').innerHTML =
+    `<span style="color:#f88">Failed to load <b>${config.model}</b></span><br>` +
+    `<span style="color:#aaa; font-size:0.85em">${msg}</span><br>` +
+    `<span style="color:#aaa; font-size:0.85em">Check the browser console (F12) and server logs for details.</span>`;
 });
 
 // ============================================================
