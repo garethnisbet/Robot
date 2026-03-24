@@ -15,7 +15,7 @@ WORKDIR /app
 
 COPY --from=build /app/.venv /app/.venv
 COPY server.py threejs_scene.html robot_scene.glb ./
-COPY stl_files/ ./stl_files/
+COPY *.json ./
 
 ENV PATH="/app/.venv/bin:$PATH"
 
