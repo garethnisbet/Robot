@@ -316,8 +316,9 @@ const isKappaGeometry = kappaJointIdx >= 0 && thetaJointIdx >= 0 && phiJointIdx 
 
 // Kappa geometry state — populated after FK chain is built
 let kappaAlpha = 0;
-let kappaSignPositive = false; // toggle: true = κ+, false = κ−
+let kappaSignPositive = true; // toggle: true = κ+, false = κ−
 let kappaPhiSign = 1;          // +1 if phi axis ∥ theta, −1 if anti-parallel (at κ=0)
+let kappaThetaSign = 1;        // +1 if kappa tilted toward +theta, −1 if toward −theta
 
 // Kappa ↔ Euler analytical conversion (SSRL / ZXZ decomposition)
 // The kappa rotation about an axis tilted by α from theta decomposes as:
@@ -360,14 +361,14 @@ function updateVirtualAngles() {
   const kappaDeg = sign * jointAngles[kappaJointIdx] * rad2deg;
   const chiDeg = kappaToEuler(kappaDeg).chi;
   const comp = getCompensation(kappaDeg);
-  let thetaDeg = sign * jointAngles[thetaJointIdx] * rad2deg - comp.theta;
-  let phiDeg = sign * jointAngles[phiJointIdx] * rad2deg - comp.phi;
+  let thetaDeg = sign * kappaThetaSign * jointAngles[thetaJointIdx] * rad2deg - comp.theta + 90;
+  let phiDeg = sign * kappaThetaSign * jointAngles[phiJointIdx] * rad2deg - comp.phi + 90;
 
   // Snap near-zero values to exactly 0 to avoid -0.0 display flicker
   const snap = v => Math.abs(v) < 0.05 ? 0 : v;
 
-  document.getElementById('chiSlider').value = chiDeg;
-  document.getElementById('vchi').textContent = snap(chiDeg).toFixed(1);
+  document.getElementById('chiSlider').value = -chiDeg;
+  document.getElementById('vchi').textContent = snap(-chiDeg).toFixed(1);
   document.getElementById('vthetaSlider').value = thetaDeg;
   document.getElementById('vvtheta').textContent = snap(thetaDeg).toFixed(1);
   document.getElementById('vphiSlider').value = phiDeg;
@@ -397,7 +398,7 @@ if (isKappaGeometry) {
       '<label>\u03C6 (phi) <span id="vvphi">0.0</span></label>' +
       '<input type="range" id="vphiSlider" min="' + phiLimits[0] + '" max="' + phiLimits[1] + '" value="0" step="0.5">' +
     '</div>' +
-    '<button id="kappaSignBtn">\u03BA Sign: \u2212</button>';
+    '<button id="kappaSignBtn" class="active">\u03BA Sign: +</button>';
   sliderContainer.parentNode.insertBefore(virtDiv, sliderContainer.nextSibling);
 }
 
@@ -1052,11 +1053,12 @@ if (isKappaGeometry) {
   // When anti-parallel, the phi motor rotates the crystal in the opposite
   // sense, so its compensation sign must be flipped (+δ instead of −δ).
   kappaPhiSign = thetaWorldAxis.dot(phiWorldAxis) > 0 ? 1 : -1;
+  kappaThetaSign = thetaWorldAxis.dot(kappaWorldAxis) >= 0 ? 1 : -1;
 
   // Update chi slider limits from analytical formula
   const kappaLimits = config.joints[kappaJointIdx].limits;
-  const chiAtMin = kappaToEuler(kappaLimits[0]).chi;
-  const chiAtMax = kappaToEuler(kappaLimits[1]).chi;
+  const chiAtMin = -kappaToEuler(kappaLimits[0]).chi;
+  const chiAtMax = -kappaToEuler(kappaLimits[1]).chi;
   const chiSlider = document.getElementById('chiSlider');
   chiSlider.min = Math.min(chiAtMin, chiAtMax).toFixed(1);
   chiSlider.max = Math.max(chiAtMin, chiAtMax).toFixed(1);
@@ -1286,13 +1288,13 @@ if (isKappaGeometry) {
   // κ+ mode: kappa = K, ktheta = vθ + comp_θ, kphi = vφ + comp_φ
   // κ− mode: negate all three physical angles (sign-flipped solution)
   function applyVirtualAngles(vThetaDeg, chiDeg, vPhiDeg) {
-    const result = eulerToKappa(chiDeg);
+    const result = eulerToKappa(-chiDeg);
     if (!result) return; // chi out of range
     const comp = getCompensation(result.kappa);
     const sign = kappaSignPositive ? 1 : -1;
     jointAngles[kappaJointIdx] = sign * result.kappa * deg2rad;
-    jointAngles[thetaJointIdx] = sign * (vThetaDeg + comp.theta) * deg2rad;
-    jointAngles[phiJointIdx] = sign * (vPhiDeg + comp.phi) * deg2rad;
+    jointAngles[thetaJointIdx] = sign * kappaThetaSign * (vThetaDeg - 90 + comp.theta) * deg2rad;
+    jointAngles[phiJointIdx] = sign * kappaThetaSign * (vPhiDeg - 90 + comp.phi) * deg2rad;
     clampJoints();
     updateFK();
     updateSliders();
@@ -2615,7 +2617,7 @@ function buildState() {
     collisionEnabled,
     collision: collisionEnabled && lastCollisions.length > 0,
     collisions: collisionEnabled ? lastCollisions.map(c => ({ link: c.linkName, object: c.stlName })) : [],
-    ...(isKappaGeometry ? { chi: +((kappaSignPositive ? 1 : -1) * kappaToEuler(jointAngles[kappaJointIdx] * rad2deg).chi).toFixed(2) } : {}),
+    ...(isKappaGeometry ? { chi: +((kappaSignPositive ? 1 : -1) * -kappaToEuler(jointAngles[kappaJointIdx] * rad2deg).chi).toFixed(2) } : {}),
   };
 }
 
