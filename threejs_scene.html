@@ -316,13 +316,20 @@ const isKappaGeometry = kappaJointIdx >= 0 && thetaJointIdx >= 0 && phiJointIdx 
 
 // Kappa geometry state — populated after FK chain is built
 let kappaAlpha = 0;
-let kappaSignPositive = false; // toggle: true = κ+, false = κ−
-// Numerically precomputed compensation lookup table: kappaDeg → { theta, phi }
-let kappaCompTable = null; // array of { kappa, chi, theta, phi }
-let kappaChiAxis = null;   // THREE.Vector3 — chi tilt axis in world frame
-let kappaHomeQuat = null;     // THREE.Quaternion — phi frame orientation at home
+let kappaSignPositive = true; // toggle: true = κ+, false = κ−
+let kappaPhiSign = 1;          // +1 if phi axis ∥ theta, −1 if anti-parallel (at κ=0)
+let kappaThetaSign = 1;        // +1 if kappa tilted toward +theta, −1 if toward −theta
 
-// Kappa ↔ Euler angle conversion (depends only on alpha)
+// Kappa ↔ Euler analytical conversion (SSRL / ZXZ decomposition)
+// The kappa rotation about an axis tilted by α from theta decomposes as:
+//   R(κ) = R_θ(δ) · R_χ(χ) · R_θ(δ)     (ZXZ Euler angles)
+// where:
+//   χ = 2·arcsin(sin(α)·sin(κ/2))          — virtual tilt angle
+//   δ = atan2(cos(α)·sin(κ/2), cos(κ/2))   — theta/phi compensation
+// The theta compensation is always −δ. The phi compensation depends on
+// whether the phi motor axis is parallel or anti-parallel to theta at κ=0:
+//   parallel:      comp_φ = −δ  (phi rotates same direction as theta)
+//   anti-parallel:  comp_φ = +δ  (phi rotates opposite, so sign flips)
 function kappaToEuler(kappaDeg) {
   const kappaRad = kappaDeg * deg2rad;
   const chi = 2 * Math.asin(Math.sin(kappaRad / 2) * Math.sin(kappaAlpha));
@@ -338,38 +345,30 @@ function eulerToKappa(chiDeg) {
   return { kappa: kappaRad * rad2deg, chi: chiDeg };
 }
 
-// Interpolate compensation from a lookup table (binary search + lerp)
+// Analytical kappa compensation
 function getCompensation(kappaDeg) {
-  if (!kappaCompTable || kappaCompTable.length === 0) return { theta: 0, phi: 0 };
-  const table = kappaCompTable;
-  if (kappaDeg <= table[0].kappa) return { theta: table[0].theta, phi: table[0].phi };
-  if (kappaDeg >= table[table.length-1].kappa) return { theta: table[table.length-1].theta, phi: table[table.length-1].phi };
-  let lo = 0, hi = table.length - 1;
-  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (table[m].kappa <= kappaDeg) lo = m; else hi = m; }
-  const t = (kappaDeg - table[lo].kappa) / (table[hi].kappa - table[lo].kappa);
-  return {
-    theta: table[lo].theta * (1-t) + table[hi].theta * t,
-    phi: table[lo].phi * (1-t) + table[hi].phi * t,
-  };
+  const halfK = kappaDeg * deg2rad / 2;
+  const delta = Math.atan2(Math.cos(kappaAlpha) * Math.sin(halfK), Math.cos(halfK)) * rad2deg;
+  return { theta: -delta, phi: -delta * kappaPhiSign };
 }
 
 // Update virtual angle sliders from current motor angles
 function updateVirtualAngles() {
-  if (!isKappaGeometry || !kappaCompTable) return;
+  if (!isKappaGeometry || !kappaAlpha) return;
   // In κ− mode the physical angles are the negation of the κ+ solution,
   // so un-negate before applying the normal compensation inverse.
   const sign = kappaSignPositive ? 1 : -1;
   const kappaDeg = sign * jointAngles[kappaJointIdx] * rad2deg;
   const chiDeg = kappaToEuler(kappaDeg).chi;
   const comp = getCompensation(kappaDeg);
-  let thetaDeg = sign * jointAngles[thetaJointIdx] * rad2deg - comp.theta;
-  let phiDeg = sign * jointAngles[phiJointIdx] * rad2deg - comp.phi;
+  let thetaDeg = sign * kappaThetaSign * jointAngles[thetaJointIdx] * rad2deg - comp.theta + 90;
+  let phiDeg = sign * kappaThetaSign * jointAngles[phiJointIdx] * rad2deg - comp.phi + 90;
 
   // Snap near-zero values to exactly 0 to avoid -0.0 display flicker
   const snap = v => Math.abs(v) < 0.05 ? 0 : v;
 
-  document.getElementById('chiSlider').value = chiDeg;
-  document.getElementById('vchi').textContent = snap(chiDeg).toFixed(1);
+  document.getElementById('chiSlider').value = -chiDeg;
+  document.getElementById('vchi').textContent = snap(-chiDeg).toFixed(1);
   document.getElementById('vthetaSlider').value = thetaDeg;
   document.getElementById('vvtheta').textContent = snap(thetaDeg).toFixed(1);
   document.getElementById('vphiSlider').value = phiDeg;
@@ -399,7 +398,7 @@ if (isKappaGeometry) {
       '<label>\u03C6 (phi) <span id="vvphi">0.0</span></label>' +
       '<input type="range" id="vphiSlider" min="' + phiLimits[0] + '" max="' + phiLimits[1] + '" value="0" step="0.5">' +
     '</div>' +
-    '<button id="kappaSignBtn">\u03BA Sign: \u2212</button>';
+    '<button id="kappaSignBtn" class="active">\u03BA Sign: +</button>';
   sliderContainer.parentNode.insertBefore(virtDiv, sliderContainer.nextSibling);
 }
 
@@ -1039,7 +1038,7 @@ function clampJoints() {
 }
 
 // ============================================================
-// Precompute kappa compensation lookup table from actual geometry
+// Compute kappa geometry parameters from actual joint axes
 // ============================================================
 if (isKappaGeometry) {
   scene.updateMatrixWorld(true);
@@ -1047,135 +1046,28 @@ if (isKappaGeometry) {
   // Get world-frame rotation axes at home (all motors = 0)
   const thetaWorldAxis = getJointWorldAxis(thetaJointIdx);
   const kappaWorldAxis = getJointWorldAxis(kappaJointIdx);
+  const phiWorldAxis = getJointWorldAxis(phiJointIdx);
   kappaAlpha = Math.acos(Math.min(1, Math.abs(thetaWorldAxis.dot(kappaWorldAxis))));
 
-  // Chi tilt axis (perpendicular to both theta and kappa axes)
-  kappaChiAxis = new THREE.Vector3().crossVectors(thetaWorldAxis, kappaWorldAxis).normalize();
+  // Determine if phi axis is parallel or anti-parallel to theta at κ=0.
+  // When anti-parallel, the phi motor rotates the crystal in the opposite
+  // sense, so its compensation sign must be flipped (+δ instead of −δ).
+  kappaPhiSign = thetaWorldAxis.dot(phiWorldAxis) > 0 ? 1 : -1;
+  kappaThetaSign = thetaWorldAxis.dot(kappaWorldAxis) >= 0 ? 1 : -1;
 
-  // Verify chiAxis direction: positive kappa should produce positive chi
-  jointAngles[kappaJointIdx] = 0.05;
-  updateFK(); scene.updateMatrixWorld(true);
-  const testPhiAxis = getJointWorldAxis(phiJointIdx);
-  jointAngles[kappaJointIdx] = 0;
-  updateFK(); scene.updateMatrixWorld(true);
-  const homePhiAxis = getJointWorldAxis(phiJointIdx);
-  // Positive chi should tilt phi axis toward chiAxis × thetaAxis direction
-  const expectedTilt = new THREE.Vector3().crossVectors(kappaChiAxis, homePhiAxis);
-  if (testPhiAxis.dot(expectedTilt) < 0) kappaChiAxis.negate();
-
-  // Record home orientation of the phi rotation frame
-  kappaHomeQuat = new THREE.Quaternion();
-  jointRotGroups[phiJointIdx].getWorldQuaternion(kappaHomeQuat);
-
-  // Helper: measure orientation error as axis-angle vector
-  function orientError(targetQuat) {
-    const q = new THREE.Quaternion();
-    jointRotGroups[phiJointIdx].getWorldQuaternion(q);
-    const qErr = targetQuat.clone().conjugate().multiply(q);
-    if (qErr.w < 0) { qErr.x = -qErr.x; qErr.y = -qErr.y; qErr.z = -qErr.z; qErr.w = -qErr.w; }
-    const sh = Math.sqrt(qErr.x*qErr.x + qErr.y*qErr.y + qErr.z*qErr.z);
-    if (sh < 1e-10) return [0, 0, 0];
-    const a = 2 * Math.atan2(sh, qErr.w);
-    return [qErr.x/sh * a, qErr.y/sh * a, qErr.z/sh * a];
-  }
-
-  // Build compensation lookup table from kappa=0 outward in both directions.
-  // At kappa=0, theta and phi axes are collinear (Jacobian is singular),
-  // so we start from the analytically known (0,0) center and sweep outward
-  // where the axes separate and the Jacobian has full rank.
+  // Update chi slider limits from analytical formula
   const kappaLimits = config.joints[kappaJointIdx].limits;
-  const HALF_STEPS = 75;
-  const negEntries = []; // kappa < 0, built outward then reversed
-  const posEntries = []; // kappa >= 0, built outward
-
-  function solveCompEntry(kappaDeg, startTheta, startPhi) {
-    const chiRad = 2 * Math.asin(Math.sin(kappaDeg * deg2rad / 2) * Math.sin(kappaAlpha));
-    const targetQuat = new THREE.Quaternion().setFromAxisAngle(kappaChiAxis, chiRad).multiply(kappaHomeQuat);
-    let tc = startTheta, pc = startPhi;
-    for (let iter = 0; iter < 20; iter++) {
-      jointAngles[kappaJointIdx] = kappaDeg * deg2rad;
-      jointAngles[thetaJointIdx] = tc * deg2rad;
-      jointAngles[phiJointIdx] = pc * deg2rad;
-      updateFK(); scene.updateMatrixWorld(true);
-      const err = orientError(targetQuat);
-      const errNorm = Math.sqrt(err[0]*err[0] + err[1]*err[1] + err[2]*err[2]);
-      if (errNorm < 1e-6) break;
-
-      // Numerical Jacobian (3×2)
-      const eps = 0.05;
-      jointAngles[thetaJointIdx] = (tc + eps) * deg2rad;
-      jointAngles[phiJointIdx] = pc * deg2rad;
-      updateFK(); scene.updateMatrixWorld(true);
-      const eT = orientError(targetQuat);
-
-      jointAngles[thetaJointIdx] = tc * deg2rad;
-      jointAngles[phiJointIdx] = (pc + eps) * deg2rad;
-      updateFK(); scene.updateMatrixWorld(true);
-      const eP = orientError(targetQuat);
-
-      const j0 = [(eT[0]-err[0])/eps, (eT[1]-err[1])/eps, (eT[2]-err[2])/eps];
-      const j1 = [(eP[0]-err[0])/eps, (eP[1]-err[1])/eps, (eP[2]-err[2])/eps];
-
-      // Damped pseudo-inverse (JᵀJ + λI)⁻¹ Jᵀ err — regularisation
-      // prevents blow-up when theta/phi axes are nearly collinear
-      const lambda = 1e-4;
-      const a = j0[0]*j0[0]+j0[1]*j0[1]+j0[2]*j0[2] + lambda;
-      const b = j0[0]*j1[0]+j0[1]*j1[1]+j0[2]*j1[2];
-      const c = j1[0]*j1[0]+j1[1]*j1[1]+j1[2]*j1[2] + lambda;
-      const det = a*c - b*b;
-      if (Math.abs(det) < 1e-20) break;
-
-      const jte0 = j0[0]*err[0]+j0[1]*err[1]+j0[2]*err[2];
-      const jte1 = j1[0]*err[0]+j1[1]*err[1]+j1[2]*err[2];
-
-      tc -= (c*jte0 - b*jte1) / det;
-      pc -= (-b*jte0 + a*jte1) / det;
-    }
-    return { kappa: kappaDeg, chi: chiRad * rad2deg, theta: tc, phi: pc };
-  }
-
-  // Center entry: analytically known — no compensation at home
-  posEntries.push({ kappa: 0, chi: 0, theta: 0, phi: 0 });
-
-  // Sweep positive kappa (0 → kappaMax)
-  let pt = 0, pp = 0;
-  for (let step = 1; step <= HALF_STEPS; step++) {
-    const kappaDeg = kappaLimits[1] * step / HALF_STEPS;
-    const entry = solveCompEntry(kappaDeg, pt, pp);
-    posEntries.push(entry);
-    pt = entry.theta; pp = entry.phi;
-  }
-
-  // Sweep negative kappa (0 → kappaMin)
-  let nt = 0, np = 0;
-  for (let step = 1; step <= HALF_STEPS; step++) {
-    const kappaDeg = kappaLimits[0] * step / HALF_STEPS;
-    const entry = solveCompEntry(kappaDeg, nt, np);
-    negEntries.push(entry);
-    nt = entry.theta; np = entry.phi;
-  }
-
-  // Merge: negative entries (reversed so ascending kappa) + positive entries
-  kappaCompTable = negEntries.reverse().concat(posEntries);
-
-  // Reset to home
-  jointAngles[kappaJointIdx] = 0;
-  jointAngles[thetaJointIdx] = 0;
-  jointAngles[phiJointIdx] = 0;
-  updateFK();
-
-  // Update chi slider limits
-  const chiMin = kappaCompTable[0].chi;
-  const chiMax = kappaCompTable[kappaCompTable.length-1].chi;
+  const chiAtMin = -kappaToEuler(kappaLimits[0]).chi;
+  const chiAtMax = -kappaToEuler(kappaLimits[1]).chi;
   const chiSlider = document.getElementById('chiSlider');
-  chiSlider.min = Math.min(chiMin, chiMax).toFixed(1);
-  chiSlider.max = Math.max(chiMin, chiMax).toFixed(1);
+  chiSlider.min = Math.min(chiAtMin, chiAtMax).toFixed(1);
+  chiSlider.max = Math.max(chiAtMin, chiAtMax).toFixed(1);
 
-  // Log chi=90 compensation for verification
+  // Log verification
   const test90 = eulerToKappa(90);
   if (test90) {
     const comp90 = getCompensation(test90.kappa);
-    console.log(`Kappa geometry: α=${(kappaAlpha*rad2deg).toFixed(1)}°, chi=90° → kappa=${test90.kappa.toFixed(1)}°, ktheta=${comp90.theta.toFixed(1)}°, kphi=${comp90.phi.toFixed(1)}°`);
+    console.log(`Kappa geometry (analytical): α=${(kappaAlpha * rad2deg).toFixed(1)}°, phiSign=${kappaPhiSign}, chi=90° → kappa=${test90.kappa.toFixed(1)}°, comp_θ=${comp90.theta.toFixed(1)}°, comp_φ=${comp90.phi.toFixed(1)}°`);
   }
 }
 
@@ -1396,13 +1288,13 @@ if (isKappaGeometry) {
   // κ+ mode: kappa = K, ktheta = vθ + comp_θ, kphi = vφ + comp_φ
   // κ− mode: negate all three physical angles (sign-flipped solution)
   function applyVirtualAngles(vThetaDeg, chiDeg, vPhiDeg) {
-    const result = eulerToKappa(chiDeg);
+    const result = eulerToKappa(-chiDeg);
     if (!result) return; // chi out of range
     const comp = getCompensation(result.kappa);
     const sign = kappaSignPositive ? 1 : -1;
     jointAngles[kappaJointIdx] = sign * result.kappa * deg2rad;
-    jointAngles[thetaJointIdx] = sign * (vThetaDeg + comp.theta) * deg2rad;
-    jointAngles[phiJointIdx] = sign * (vPhiDeg + comp.phi) * deg2rad;
+    jointAngles[thetaJointIdx] = sign * kappaThetaSign * (vThetaDeg - 90 + comp.theta) * deg2rad;
+    jointAngles[phiJointIdx] = sign * kappaThetaSign * (vPhiDeg - 90 + comp.phi) * deg2rad;
     clampJoints();
     updateFK();
     updateSliders();
@@ -2725,7 +2617,7 @@ function buildState() {
     collisionEnabled,
     collision: collisionEnabled && lastCollisions.length > 0,
     collisions: collisionEnabled ? lastCollisions.map(c => ({ link: c.linkName, object: c.stlName })) : [],
-    ...(isKappaGeometry ? { chi: +((kappaSignPositive ? 1 : -1) * kappaToEuler(jointAngles[kappaJointIdx] * rad2deg).chi).toFixed(2) } : {}),
+    ...(isKappaGeometry ? { chi: +((kappaSignPositive ? 1 : -1) * -kappaToEuler(jointAngles[kappaJointIdx] * rad2deg).chi).toFixed(2) } : {}),
   };
 }
 
