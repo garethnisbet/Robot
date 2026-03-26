@@ -1,6 +1,6 @@
 {
   "name": "Meca500",
-  "model": "robot_scene_v3.glb",
+  "model": "robot_scene.glb",
   "joints": [
     {
       "name": "J1 Base",
