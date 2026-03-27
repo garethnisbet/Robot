@@ -14,7 +14,10 @@ New devices can be added from Blender scenes using the `/build-viewer` skill (se
 ## Features
 
 - **Config-driven viewer** — a single generic `threejs_scene.html` viewer loads any device via JSON config
-- **Model selector** — dropdown to switch between available devices without changing URLs
+- **Multi-device scene** — load multiple devices simultaneously from the add-device dropdown; click a device in the list or click its mesh to switch active device
+- **Device renaming** — double-click a device name in the device list to rename it
+- **Device origin transform** — move and rotate device origins with translate/rotate gizmo modes
+- **Device parenting** — parent a device to a link on another device so it follows the kinematic chain
 - **Auto-fit camera** — camera automatically frames the loaded model on startup
 - **Forward Kinematics** — joint angle sliders for all movable joints (fixed kinematic links are hidden)
 - **Inverse Kinematics** — 6-DOF damped least-squares solver (position + ZYX Euler orientation)
@@ -25,6 +28,7 @@ New devices can be added from Blender scenes using the `/build-viewer` skill (se
 - **Mesh labels toggle** — show/hide object name labels on all meshes
 - **Mesh import** — load external STL, OBJ, PLY, and GLB/GLTF files into the scene with auto-scaling, labels, and per-object colour
 - **Primitive objects** — add cube, sphere, and cylinder primitives directly from the toolbar
+- **Object duplication** — duplicate any imported or primitive object with a single click
 - **Persistent objects** — imported and primitive objects are automatically saved to IndexedDB and restored on page reload
 - **Object manipulation** — click objects to select, then move, rotate, or scale with transform gizmos (keyboard: T/R/S, Escape to deselect)
 - **Parent-child linking** — attach objects to device links so they follow the kinematic chain
@@ -259,15 +263,24 @@ See `helm/values.yaml` for configuration.
 ## Project Structure
 
 ```
-threejs_scene.html       Generic config-driven Three.js FK/IK viewer
+threejs_scene.html       HTML shell — loads viewer.css and js/main.js
+viewer.css               All viewer styles
+js/
+  main.js                Entry point — animate loop, event handlers, initialisation
+  state.js               Shared mutable state (scene, cameras, controls, devices)
+  scene.js               Three.js scene setup, cameras, lights, ground, nav gizmo
+  device.js              Device loading, GLB import, slider/IK sync
+  kinematics.js          FK, IK solver, kappa geometry math
+  panel.js               Control panel UI, device list, parent dropdowns
+  stl.js                 Mesh import/export, primitives, duplication, IndexedDB persistence
+  collision.js           BVH-accelerated collision detection
+  websocket.js           WebSocket client for remote control API
 server.py                WebSocket + HTTP server for remote control API
 remote_control.py        Interactive command-line remote control client (any device)
 robot_config.json        Meca500 R3 device config
 i16_config.json          i16 diffractometer device config
 robot_scene.glb          Meca500 GLB model
 i16_scene.glb            i16 diffractometer GLB model
-.claude/commands/
-  build-viewer.md        Skill for building new device viewers from Blender scenes
 Dockerfile               Multi-stage container build
 helm/                    Kubernetes Helm chart
 ```
