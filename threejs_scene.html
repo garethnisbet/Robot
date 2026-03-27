@@ -4,146 +4,36 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Meca500 Robot - Three.js FK/IK Viewer</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { overflow: hidden; background: #1a1a2e; font-family: 'Segoe UI', monospace; }
-  canvas { display: block; }
-  #panel {
-    position: absolute; top: 10px; right: 10px; width: 260px;
-    max-height: calc(100vh - 20px); overflow-y: auto;
-    background: rgba(10,10,30,0.85); color: #ccc; padding: 14px;
-    border-radius: 8px; backdrop-filter: blur(8px);
-    border: 1px solid rgba(100,100,200,0.2);
-  }
-  #panel h2 { font-size: 14px; margin-bottom: 10px; color: #aac; }
-  .slider-row { margin-bottom: 8px; }
-  .slider-row label {
-    display: flex; justify-content: space-between; font-size: 12px;
-    margin-bottom: 2px; color: #99a;
-  }
-  .slider-row label span { color: #8cf; font-weight: bold; }
-  input[type="range"] {
-    width: 100%; height: 6px; -webkit-appearance: none; appearance: none;
-    background: #2a2a4a; border-radius: 3px; outline: none;
-  }
-  input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none; width: 14px; height: 14px;
-    background: #6688ff; border-radius: 50%; cursor: pointer;
-  }
-  #info {
-    position: absolute; bottom: 10px; left: 10px; color: #667;
-    font-size: 11px; font-family: monospace;
-  }
-  #loading {
-    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-    color: #aac; font-size: 16px; font-family: monospace;
-  }
-  button {
-    width: 100%; padding: 6px; margin-top: 6px; background: #334;
-    color: #aac; border: 1px solid #446; border-radius: 4px; cursor: pointer;
-    font-size: 12px;
-  }
-  button:hover { background: #445; }
-  button.active { background: #448; border-color: #66f; color: #fff; }
-  #ee-info {
-    margin-top: 8px; padding-top: 8px; border-top: 1px solid #334;
-    font-size: 11px; color: #889;
-  }
-  #ee-info span { color: #8cf; }
-  .slider-row label span { cursor: text; }
-  .val-input {
-    width: 54px; background: rgba(0,0,40,0.6); border: 1px solid #66f;
-    color: #8cf; font-weight: bold; font-size: 12px; font-family: monospace;
-    text-align: right; outline: none; padding: 0 3px; border-radius: 2px;
-  }
-  .mesh-label {
-    color: #fff; font-size: 11px; font-family: monospace;
-    background: rgba(0,0,0,0.6); padding: 1px 5px; border-radius: 3px;
-    white-space: nowrap; pointer-events: none;
-  }
-  #stl-list { margin-top: 6px; max-height: 150px; overflow-y: auto; }
-  .stl-item {
-    display: flex; align-items: center; justify-content: space-between;
-    font-size: 11px; color: #aac; padding: 3px 0;
-    border-bottom: 1px solid rgba(100,100,200,0.1);
-  }
-  .stl-item .stl-color {
-    width: 12px; height: 12px; border-radius: 2px; margin-right: 6px;
-    border: 1px solid rgba(255,255,255,0.2); cursor: pointer; flex-shrink: 0;
-  }
-  .stl-item .stl-name {
-    flex: 1; cursor: text; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .stl-item .stl-vis, .stl-item .stl-rm {
-    background: none; border: none; color: #889; cursor: pointer;
-    font-size: 11px; padding: 0 3px; width: auto; margin: 0;
-  }
-  .stl-item .stl-vis:hover, .stl-item .stl-rm:hover { color: #fff; }
-  .stl-item.selected { background: rgba(100,140,255,0.15); border-radius: 3px; }
-  .stl-item .stl-name.selected { color: #8cf; font-weight: bold; }
-  #stl-mode {
-    display: none; margin-top: 6px; font-size: 11px; color: #889;
-    padding: 6px 0 0;
-    border-top: 1px solid #334;
-  }
-  #stl-mode .stl-mode-name {
-    display: block; margin-bottom: 5px; color: #8cf;
-    font-size: 12px; font-weight: bold;
-  }
-  #stl-mode .stl-mode-buttons {
-    display: flex; gap: 4px;
-  }
-  #stl-mode .stl-mode-buttons button {
-    flex: 1; width: auto; padding: 5px 0; margin: 0;
-    font-size: 11px; text-align: center;
-  }
-  #stl-parent { margin-top: 5px; display: flex; align-items: center; gap: 5px; }
-  #stl-parent label { font-size: 11px; color: #889; white-space: nowrap; }
-  #stlParentSelect {
-    flex: 1; background: #223; color: #aac; border: 1px solid #446;
-    border-radius: 3px; font-size: 11px; padding: 2px 4px; outline: none;
-  }
-  #collision-info {
-    margin-top: 6px; padding-top: 6px; border-top: 1px solid #334;
-    font-size: 11px; color: #889;
-  }
-  #collision-info.hit { color: #f66; }
-  #collision-info .collision-pair {
-    color: #fa8; font-size: 10px; display: block;
-    padding-left: 8px; margin-top: 2px;
-  }
-  #ws-status {
-    position: absolute; top: 10px; left: 10px;
-    font-size: 11px; font-family: monospace; color: #889;
-    background: rgba(10,10,30,0.85); padding: 6px 10px;
-    border-radius: 6px; backdrop-filter: blur(8px);
-    border: 1px solid rgba(100,100,200,0.2);
-  }
-  #ws-status .dot {
-    display: inline-block; width: 8px; height: 8px;
-    border-radius: 50%; margin-right: 6px; vertical-align: middle;
-  }
-  #ws-status .dot.off { background: #555; }
-  #ws-status .dot.on { background: #4f4; box-shadow: 0 0 4px #4f4; }
-  #ws-status .dot.err { background: #f44; box-shadow: 0 0 4px #f44; }
-  #nav-gizmo {
-    position: absolute; top: 45px; left: 10px;
-    width: 110px; height: 110px; cursor: default;
-    border-radius: 50%;
-  }
-</style>
+<link rel="stylesheet" href="viewer.css">
 </head>
 <body>
 <div id="loading">Loading robot model...</div>
 <canvas id="nav-gizmo"></canvas>
 <div id="ws-status"><span class="dot off" id="ws-dot"></span><span id="ws-text">API: not connected</span></div>
 <div id="panel">
-  <div id="model-selector" style="margin-bottom:10px;">
-    <select id="modelSelect" style="width:100%;background:#223;color:#aac;border:1px solid #446;border-radius:4px;font-size:12px;padding:4px 6px;outline:none;cursor:pointer;">
-    </select>
+  <div id="device-manager">
+    <div id="device-list"></div>
+    <div id="add-device-row">
+      <select id="addDeviceSelect"></select>
+      <button id="addDeviceBtn" title="Add device to scene">+</button>
+    </div>
+    <button id="moveDeviceBtn" style="margin-top:4px;">Move Device Origin</button>
+    <div id="device-mode" style="display:none; margin-top:4px;">
+      <div style="display:flex; gap:4px;">
+        <button id="devModeT" class="active" style="flex:1; margin:0;">Move</button>
+        <button id="devModeR" style="flex:1; margin:0;">Rotate</button>
+      </div>
+    </div>
+    <div id="device-parent" style="margin-top:4px;">
+      <label style="font-size:11px; color:#889;">Parent:</label>
+      <select id="deviceParentSelect">
+        <option value="">World</option>
+      </select>
+    </div>
   </div>
-  <h2>Joint Angles (deg)</h2>
+  <h2 id="panel-title">Joint Angles (deg)</h2>
   <div id="joint-sliders"></div>
+  <div id="virtual-angles-container"></div>
   <button id="resetBtn">Reset to Home</button>
   <button id="demoBtn" style="display:none;">Demo Pose</button>
   <button id="ikBtn">IK Mode: OFF</button>
@@ -197,7 +87,7 @@
       <label>Z <span id="ikvz">308</span></label>
       <input type="range" id="ikz" min="-100" max="500" value="308" step="1">
     </div>
-    <h2 style="color:#5b5; margin-top:8px;">IK Orientation (deg)</h2>
+    <h2 style="margin-top:8px; color:#5b5;">Orientation (deg)</h2>
     <div class="slider-row">
       <label>&alpha; (Rz) <span id="ikva">0</span></label>
       <input type="range" id="ika" min="-180" max="180" value="0" step="1">
@@ -210,21 +100,19 @@
       <label>&gamma; (Rx) <span id="ikvc">0</span></label>
       <input type="range" id="ikc" min="-180" max="180" value="0" step="1">
     </div>
-  </div>
-  <div id="ee-info">
-    EE: <span id="eePos">-</span><br>
-    Target: <span id="tgtPos">-</span><br>
-    Error: <span id="ikErr">-</span>
+    <div id="ee-info">
+      EE: <span id="eePos">-</span><br>
+      Target: <span id="tgtPos">-</span><br>
+      Error: <span id="ikErr">-</span>
+    </div>
   </div>
 </div>
-<div id="info">Scroll to zoom | Drag to orbit | Right-drag to pan | IK: drag the green sphere | Click STL to select, T=move R=rotate S=scale Esc=deselect</div>
-
 <script type="importmap">
 {
   "imports": {
     "three": "https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.module.js",
     "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.168.0/examples/jsm/",
-    "three-mesh-bvh": "https://esm.sh/three-mesh-bvh@0.7.8?external=three"
+    "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.8/build/index.module.js"
   }
 }
 </script>

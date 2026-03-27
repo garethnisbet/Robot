@@ -1,0 +1,302 @@
+// ============================================================
+// js/collision.js — collision detection
+// ============================================================
+import * as THREE from 'three';
+import * as State from './state.js';
+import { resolveParentLink } from './stl.js';
+
+// ============================================================
+// Highlight helpers
+// ============================================================
+const materialOriginalEmissive  = new WeakMap();
+const highlightedMaterials      = new Set();
+const materialOriginalColor     = new WeakMap();
+const highlightedPointMaterials = new Set();
+
+function saveOriginalEmissive(material) {
+  if (!materialOriginalEmissive.has(material)) {
+    materialOriginalEmissive.set(material, material.emissive.clone());
+  }
+}
+
+export function clearCollisionHighlights() {
+  if (highlightedMaterials.size === 0 && highlightedPointMaterials.size === 0) return;
+  for (const material of highlightedMaterials) {
+    const original = materialOriginalEmissive.get(material);
+    if (original) material.emissive.copy(original);
+  }
+  highlightedMaterials.clear();
+  for (const material of highlightedPointMaterials) {
+    const original = materialOriginalColor.get(material);
+    if (original) material.color.copy(original);
+  }
+  highlightedPointMaterials.clear();
+  const collisionInfoEl  = document.getElementById('collision-info');
+  const collisionTextEl  = document.getElementById('collision-text');
+  collisionInfoEl.classList.remove('hit');
+  collisionTextEl.textContent = 'none';
+  while (collisionTextEl.nextSibling) collisionTextEl.nextSibling.remove();
+}
+
+// ============================================================
+// BVH / AABB helpers
+// ============================================================
+const _collBox1   = new THREE.Box3();
+const _collBox2   = new THREE.Box3();
+const _collMatrix = new THREE.Matrix4();
+const _collPoint  = new THREE.Vector3();
+const _collToLocal = new THREE.Matrix4();
+const POINT_CLOUD_COLLISION_THRESHOLD = 0.04;
+
+const _corners = new Array(8).fill(null).map(() => new THREE.Vector3());
+function fastWorldAABB(mesh, target) {
+  if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+  const bb = mesh.geometry.boundingBox;
+  const m = mesh.matrixWorld;
+  let i = 0;
+  for (let x = 0; x <= 1; x++)
+    for (let y = 0; y <= 1; y++)
+      for (let z = 0; z <= 1; z++)
+        _corners[i++].set(
+          x ? bb.max.x : bb.min.x,
+          y ? bb.max.y : bb.min.y,
+          z ? bb.max.z : bb.min.z
+        ).applyMatrix4(m);
+  target.makeEmpty();
+  for (let j = 0; j < 8; j++) target.expandByPoint(_corners[j]);
+  return target;
+}
+
+function testPointCloudCollision(pointsObj, meshObj) {
+  fastWorldAABB(pointsObj, _collBox1);
+  fastWorldAABB(meshObj, _collBox2);
+  if (!_collBox1.intersectsBox(_collBox2)) return false;
+
+  const bvh = meshObj.geometry.boundsTree;
+  if (!bvh) return false;
+
+  if (!pointsObj._collSamples) {
+    const pos = pointsObj.geometry.getAttribute('position');
+    if (!pos || pos.count === 0) return false;
+    const stride = Math.max(1, Math.floor(pos.count / 20000));
+    const arr = new Float32Array(Math.ceil(pos.count / stride) * 3);
+    let j = 0;
+    for (let i = 0; i < pos.count; i += stride) {
+      arr[j++] = pos.getX(i);
+      arr[j++] = pos.getY(i);
+      arr[j++] = pos.getZ(i);
+    }
+    pointsObj._collSamples = arr;
+    pointsObj._collSampleCount = j / 3 | 0;
+  }
+
+  const matKey = pointsObj.matrixWorld.elements.join(',');
+  if (!pointsObj._collWorld || pointsObj._collWorldKey !== matKey) {
+    const src = pointsObj._collSamples;
+    const n   = pointsObj._collSampleCount;
+    const dst = pointsObj._collWorld = new Float32Array(n * 3);
+    const m   = pointsObj.matrixWorld.elements;
+    for (let i = 0; i < n; i++) {
+      const x = src[i*3], y = src[i*3+1], z = src[i*3+2];
+      dst[i*3]   = m[0]*x + m[4]*y + m[8]*z  + m[12];
+      dst[i*3+1] = m[1]*x + m[5]*y + m[9]*z  + m[13];
+      dst[i*3+2] = m[2]*x + m[6]*y + m[10]*z + m[14];
+    }
+    pointsObj._collWorldKey = matKey;
+  }
+
+  _collToLocal.copy(meshObj.matrixWorld).invert();
+  const m   = _collToLocal.elements;
+  const src = pointsObj._collWorld;
+  const n   = pointsObj._collSampleCount;
+  for (let i = 0; i < n; i++) {
+    const x = src[i*3], y = src[i*3+1], z = src[i*3+2];
+    _collPoint.set(
+      m[0]*x + m[4]*y + m[8]*z  + m[12],
+      m[1]*x + m[5]*y + m[9]*z  + m[13],
+      m[2]*x + m[6]*y + m[10]*z + m[14],
+    );
+    if (bvh.closestPointToPoint(_collPoint, {}, 0, POINT_CLOUD_COLLISION_THRESHOLD)) return true;
+  }
+  return false;
+}
+
+function _highlightObject(obj) {
+  const mat = obj.material;
+  if (mat.emissive) {
+    saveOriginalEmissive(mat);
+    mat.emissive.set(0xff2200);
+    highlightedMaterials.add(mat);
+  } else {
+    if (!materialOriginalColor.has(mat)) materialOriginalColor.set(mat, mat.color.clone());
+    mat.color.set(0xff2200);
+    highlightedPointMaterials.add(mat);
+  }
+}
+
+function highlightCollisionMeshes(meshA, meshB) {
+  _highlightObject(meshA);
+  _highlightObject(meshB);
+}
+
+function testMeshPairCollision(meshA, meshB) {
+  fastWorldAABB(meshA, _collBox1);
+  fastWorldAABB(meshB, _collBox2);
+  if (!_collBox1.intersectsBox(_collBox2)) return false;
+  const bvhA = meshA.geometry.boundsTree;
+  const bvhB = meshB.geometry.boundsTree;
+  if (bvhA && bvhB) {
+    _collMatrix.copy(meshA.matrixWorld).invert().multiply(meshB.matrixWorld);
+    if (!bvhA.intersectsGeometry(meshB.geometry, _collMatrix)) return false;
+  }
+  return true;
+}
+
+// ============================================================
+// checkCollisions — called every frame
+// ============================================================
+let _collisionFrame = 0;
+const COLLISION_THROTTLE = 6;
+
+export function checkCollisions() {
+  if (!State.collisionEnabled) return;
+  if (++_collisionFrame % COLLISION_THROTTLE !== 0) return;
+
+  clearCollisionHighlights();
+
+  const collisionInfoEl = document.getElementById('collision-info');
+  const collisionTextEl = document.getElementById('collision-text');
+
+  const visibleSTLs      = State.importedSTLs.filter(e => e.mesh.visible && !e.isPointCloud);
+  const visiblePointClouds = State.importedSTLs.filter(e => e.mesh.visible && e.isPointCloud);
+
+  const worldSTLs    = visibleSTLs.filter(e => !e.parentLink);
+  const parentedSTLs = visibleSTLs.filter(e => e.parentLink);
+
+  // Build extended links from ALL devices
+  const allExtendedLinks = [];
+  for (const dev of State.devices) {
+    for (const link of dev.robotLinkMeshes) {
+      allExtendedLinks.push({
+        name: link.name,
+        deviceName: dev.name,
+        deviceId: dev.id,
+        meshes: [...link.meshes],
+        stlEntries: [],
+      });
+    }
+  }
+
+  // Attach parented STLs to their respective device links
+  for (const stl of parentedSTLs) {
+    const { dev, linkName } = resolveParentLink(stl.parentLink);
+    if (dev && linkName) {
+      const extLink = allExtendedLinks.find(l => l.deviceId === dev.id && l.name === linkName);
+      if (extLink) {
+        extLink.meshes.push(stl.mesh);
+        extLink.stlEntries.push(stl);
+      }
+    }
+  }
+
+  const collisions = [];
+  const hitPairs = new Set();
+
+  function addCollision(nameA, nameB, meshA, meshB) {
+    const key = [nameA, nameB].sort().join('|');
+    if (hitPairs.has(key)) return;
+    hitPairs.add(key);
+    collisions.push({ linkName: nameA, stlName: nameB });
+    highlightCollisionMeshes(meshA, meshB);
+  }
+
+  // 1) World STLs vs all device links
+  for (const stlEntry of worldSTLs) {
+    for (const link of allExtendedLinks) {
+      const displayName = State.devices.length > 1 ? `${link.deviceName}:${link.name}` : link.name;
+      for (const robotMesh of link.meshes) {
+        if (testMeshPairCollision(stlEntry.mesh, robotMesh)) {
+          addCollision(displayName, stlEntry.name, stlEntry.mesh, robotMesh);
+          break;
+        }
+      }
+    }
+  }
+
+  // 2) Parented STLs vs other links
+  for (const stl of parentedSTLs) {
+    const { dev: stlDev, linkName: stlLinkName } = resolveParentLink(stl.parentLink);
+    for (const link of allExtendedLinks) {
+      if (link.deviceId === (stlDev ? stlDev.id : null) && link.name === stlLinkName) continue;
+      const displayName = State.devices.length > 1 ? `${link.deviceName}:${link.name}` : link.name;
+      for (const robotMesh of link.meshes) {
+        if (testMeshPairCollision(stl.mesh, robotMesh)) {
+          addCollision(displayName, stl.name, stl.mesh, robotMesh);
+          break;
+        }
+      }
+    }
+  }
+
+  // 3) Point clouds vs all device links
+  for (const pc of visiblePointClouds) {
+    for (const link of allExtendedLinks) {
+      const displayName = State.devices.length > 1 ? `${link.deviceName}:${link.name}` : link.name;
+      for (const robotMesh of link.meshes) {
+        if (testPointCloudCollision(pc.mesh, robotMesh)) {
+          addCollision(displayName, pc.name, pc.mesh, robotMesh);
+          break;
+        }
+      }
+    }
+  }
+
+  // 4) Link vs link (self-collision within same device + cross-device)
+  for (let i = 0; i < allExtendedLinks.length; i++) {
+    for (let j = i + 1; j < allExtendedLinks.length; j++) {
+      const linkA = allExtendedLinks[i];
+      const linkB = allExtendedLinks[j];
+      // Skip adjacency only within same device
+      if (linkA.deviceId === linkB.deviceId) {
+        const dev = State.devices.find(d => d.id === linkA.deviceId);
+        if (dev && dev.adjPairs.has([linkA.name, linkB.name].sort().join('|'))) continue;
+      }
+      const nameA = State.devices.length > 1 ? `${linkA.deviceName}:${linkA.name}` : linkA.name;
+      const nameB = State.devices.length > 1 ? `${linkB.deviceName}:${linkB.name}` : linkB.name;
+      let found = false;
+      for (const meshA of linkA.meshes) {
+        for (const meshB of linkB.meshes) {
+          if (testMeshPairCollision(meshA, meshB)) {
+            addCollision(nameA, nameB, meshA, meshB);
+            found = true;
+            break;
+          }
+        }
+        if (found) break;
+      }
+    }
+  }
+
+  // Update UI
+  const parent = collisionInfoEl;
+  while (parent.children.length > 0 && parent.lastChild !== collisionTextEl &&
+         parent.lastChild.classList && parent.lastChild.classList.contains('collision-pair')) {
+    parent.lastChild.remove();
+  }
+
+  State.setLastCollisions(collisions);
+
+  if (collisions.length > 0) {
+    collisionInfoEl.classList.add('hit');
+    collisionTextEl.textContent = `${collisions.length} collision${collisions.length > 1 ? 's' : ''}`;
+    for (const c of collisions) {
+      const span = document.createElement('span');
+      span.className = 'collision-pair';
+      span.textContent = `${c.linkName} \u2194 ${c.stlName}`;
+      parent.appendChild(span);
+    }
+  } else {
+    collisionInfoEl.classList.remove('hit');
+    collisionTextEl.textContent = 'none';
+  }
+}

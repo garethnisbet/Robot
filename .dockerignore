@@ -8,6 +8,10 @@ robot/
 visualisation/
 main.py
 remote_control.py
+planner.py
+update_model.py
 requirements.txt
 __pycache__
 *.pyc
+*.blend
+*.blend1

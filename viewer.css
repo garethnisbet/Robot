@@ -1,0 +1,167 @@
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #1a1a2e; font-family: 'Segoe UI', monospace; }
+  canvas { display: block; }
+  #panel {
+    position: absolute; top: 10px; right: 10px; width: 260px;
+    max-height: calc(100vh - 20px); overflow-y: auto;
+    background: rgba(10,10,30,0.85); color: #ccc; padding: 14px;
+    border-radius: 8px; backdrop-filter: blur(8px);
+    border: 1px solid rgba(100,100,200,0.2);
+  }
+  #panel h2 { font-size: 14px; margin-bottom: 10px; color: #aac; }
+  .slider-row { margin-bottom: 8px; }
+  .slider-row label {
+    display: flex; justify-content: space-between; font-size: 12px;
+    margin-bottom: 2px; color: #99a;
+  }
+  .slider-row label span { color: #8cf; font-weight: bold; }
+  input[type="range"] {
+    width: 100%; height: 6px; -webkit-appearance: none; appearance: none;
+    background: #2a2a4a; border-radius: 3px; outline: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 14px; height: 14px;
+    background: #6688ff; border-radius: 50%; cursor: pointer;
+  }
+  #info {
+    position: absolute; bottom: 10px; left: 10px; color: #667;
+    font-size: 11px; font-family: monospace;
+  }
+  #loading {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: #aac; font-size: 16px; font-family: monospace;
+  }
+  button {
+    width: 100%; padding: 6px; margin-top: 6px; background: #334;
+    color: #aac; border: 1px solid #446; border-radius: 4px; cursor: pointer;
+    font-size: 12px;
+  }
+  button:hover { background: #445; }
+  button.active { background: #448; border-color: #66f; color: #fff; }
+  #ee-info {
+    margin-top: 8px; padding-top: 8px; border-top: 1px solid #334;
+    font-size: 11px; color: #889;
+  }
+  #ee-info span { color: #8cf; }
+  .slider-row label span { cursor: text; }
+  .val-input {
+    width: 54px; background: rgba(0,0,40,0.6); border: 1px solid #66f;
+    color: #8cf; font-weight: bold; font-size: 12px; font-family: monospace;
+    text-align: right; outline: none; padding: 0 3px; border-radius: 2px;
+  }
+  .mesh-label {
+    color: #fff; font-size: 11px; font-family: monospace;
+    background: rgba(0,0,0,0.6); padding: 1px 5px; border-radius: 3px;
+    white-space: nowrap; pointer-events: none;
+  }
+  #stl-list { margin-top: 6px; max-height: 150px; overflow-y: auto; }
+  .stl-item {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 11px; color: #aac; padding: 3px 0;
+    border-bottom: 1px solid rgba(100,100,200,0.1);
+  }
+  .stl-item .stl-color {
+    width: 12px; height: 12px; border-radius: 2px; margin-right: 6px;
+    border: 1px solid rgba(255,255,255,0.2); cursor: pointer; flex-shrink: 0;
+  }
+  .stl-item .stl-name {
+    flex: 1; cursor: text; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .stl-item .stl-vis, .stl-item .stl-rm {
+    background: none; border: none; color: #889; cursor: pointer;
+    font-size: 11px; padding: 0 3px; width: auto; margin: 0;
+  }
+  .stl-item .stl-vis:hover, .stl-item .stl-rm:hover { color: #fff; }
+  .stl-item.selected { background: rgba(100,140,255,0.15); border-radius: 3px; }
+  .stl-item .stl-name.selected { color: #8cf; font-weight: bold; }
+  #stl-mode {
+    display: none; margin-top: 6px; font-size: 11px; color: #889;
+    padding: 6px 0 0;
+    border-top: 1px solid #334;
+  }
+  #stl-mode .stl-mode-name {
+    display: block; margin-bottom: 5px; color: #8cf;
+    font-size: 12px; font-weight: bold;
+  }
+  #stl-mode .stl-mode-buttons {
+    display: flex; gap: 4px;
+  }
+  #stl-mode .stl-mode-buttons button {
+    flex: 1; width: auto; padding: 5px 0; margin: 0;
+    font-size: 11px; text-align: center;
+  }
+  #stl-parent { margin-top: 5px; display: flex; align-items: center; gap: 5px; }
+  #stl-parent label { font-size: 11px; color: #889; white-space: nowrap; }
+  #stlParentSelect {
+    flex: 1; background: #223; color: #aac; border: 1px solid #446;
+    border-radius: 3px; font-size: 11px; padding: 2px 4px; outline: none;
+  }
+  #collision-info {
+    margin-top: 6px; padding-top: 6px; border-top: 1px solid #334;
+    font-size: 11px; color: #889;
+  }
+  #collision-info.hit { color: #f66; }
+  #collision-info .collision-pair {
+    color: #fa8; font-size: 10px; display: block;
+    padding-left: 8px; margin-top: 2px;
+  }
+  #ws-status {
+    position: absolute; top: 10px; left: 10px;
+    font-size: 11px; font-family: monospace; color: #889;
+    background: rgba(10,10,30,0.85); padding: 6px 10px;
+    border-radius: 6px; backdrop-filter: blur(8px);
+    border: 1px solid rgba(100,100,200,0.2);
+  }
+  #ws-status .dot {
+    display: inline-block; width: 8px; height: 8px;
+    border-radius: 50%; margin-right: 6px; vertical-align: middle;
+  }
+  #ws-status .dot.off { background: #555; }
+  #ws-status .dot.on { background: #4f4; box-shadow: 0 0 4px #4f4; }
+  #ws-status .dot.err { background: #f44; box-shadow: 0 0 4px #f44; }
+  #nav-gizmo {
+    position: absolute; top: 45px; left: 10px;
+    width: 110px; height: 110px; cursor: default;
+    border-radius: 50%;
+  }
+  /* Device manager styles */
+  #device-manager { margin-bottom: 10px; }
+  #device-list {
+    max-height: 120px; overflow-y: auto; margin-bottom: 4px;
+  }
+  .device-item {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 11px; color: #aac; padding: 4px 6px;
+    border: 1px solid transparent; border-radius: 4px;
+    cursor: pointer; margin-bottom: 2px;
+  }
+  .device-item:hover { background: rgba(100,140,255,0.1); }
+  .device-item.active {
+    background: rgba(100,140,255,0.2);
+    border-color: rgba(100,140,255,0.4);
+    color: #fff;
+  }
+  .device-item .dev-name {
+    flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .device-item .dev-rm {
+    background: none; border: none; color: #667; cursor: pointer;
+    font-size: 11px; padding: 0 3px; width: auto; margin: 0;
+  }
+  .device-item .dev-rm:hover { color: #f66; }
+  #add-device-row {
+    display: flex; gap: 4px;
+  }
+  #addDeviceSelect {
+    flex: 1; background: #223; color: #aac; border: 1px solid #446;
+    border-radius: 4px; font-size: 11px; padding: 3px 6px; outline: none;
+  }
+  #addDeviceBtn {
+    width: 32px; padding: 3px 0; margin: 0; font-size: 14px; font-weight: bold;
+  }
+  #device-parent { display: flex; align-items: center; gap: 5px; }
+  #device-parent label { font-size: 11px; color: #889; white-space: nowrap; }
+  #deviceParentSelect {
+    flex: 1; background: #223; color: #aac; border: 1px solid #446;
+    border-radius: 3px; font-size: 11px; padding: 2px 4px; outline: none;
+  }
