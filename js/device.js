@@ -253,8 +253,9 @@ export async function loadDevice(configFile) {
     kappaJointIdx,
     thetaJointIdx,
     phiJointIdx,
-    kappaSignPositive: false,
+    kappaSignPositive: true,
     kappaPhiSign: 1,
+    kappaThetaSign: 1,
     parentLink: null,
     loaded: false,
   };
@@ -265,8 +266,9 @@ export async function loadDevice(configFile) {
     const thetaWorldAxis = getJointWorldAxis(dev, thetaJointIdx);
     const kappaWorldAxis = getJointWorldAxis(dev, kappaJointIdx);
     const phiWorldAxis   = getJointWorldAxis(dev, phiJointIdx);
-    dev.kappaAlpha    = Math.acos(Math.min(1, Math.abs(thetaWorldAxis.dot(kappaWorldAxis))));
-    dev.kappaPhiSign  = thetaWorldAxis.dot(phiWorldAxis) >= 0 ? 1 : -1;
+    dev.kappaAlpha      = Math.acos(Math.min(1, Math.abs(thetaWorldAxis.dot(kappaWorldAxis))));
+    dev.kappaPhiSign    = thetaWorldAxis.dot(phiWorldAxis) >= 0 ? 1 : -1;
+    dev.kappaThetaSign  = thetaWorldAxis.dot(kappaWorldAxis) >= 0 ? 1 : -1;
   }
 
   // Load GLB model
@@ -374,8 +376,8 @@ export async function loadDevice(configFile) {
       // Kappa chi slider limits
       if (isKappaGeometry) {
         const kappaLimits = [jointLimits[kappaJointIdx][0] * rad2deg, jointLimits[kappaJointIdx][1] * rad2deg];
-        const chiAtMin = kappaToEuler(dev, kappaLimits[0]).chi;
-        const chiAtMax = kappaToEuler(dev, kappaLimits[1]).chi;
+        const chiAtMin = -kappaToEuler(dev, kappaLimits[0]).chi;
+        const chiAtMax = -kappaToEuler(dev, kappaLimits[1]).chi;
         dev._chiLimits = [Math.min(chiAtMin, chiAtMax), Math.max(chiAtMin, chiAtMax)];
 
         const test90 = eulerToKappa(dev, 90);

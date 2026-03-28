@@ -57,7 +57,7 @@ export function buildState(dev) {
     collisionEnabled: State.collisionEnabled,
     collision: State.collisionEnabled && State.lastCollisions.length > 0,
     collisions: State.collisionEnabled ? State.lastCollisions.map(c => ({ link: c.linkName, object: c.stlName })) : [],
-    ...(dev.isKappaGeometry ? { chi: +((dev.kappaSignPositive ? 1 : -1) * kappaToEuler(dev, dev.jointAngles[dev.kappaJointIdx] * rad2deg).chi).toFixed(2) } : {}),
+    ...(dev.isKappaGeometry ? { chi: +-((dev.kappaSignPositive ? 1 : -1) * kappaToEuler(dev, dev.jointAngles[dev.kappaJointIdx] * rad2deg).chi).toFixed(2) } : {}),
   };
 }
 
@@ -349,20 +349,20 @@ export function handleCommand(data) {
     // Read current virtual angles
     const sign = dev.kappaSignPositive ? 1 : -1;
     const curKappaDeg = sign * dev.jointAngles[dev.kappaJointIdx] * rad2deg;
-    const curChi = kappaToEuler(dev, curKappaDeg).chi;
+    const curChi = -kappaToEuler(dev, curKappaDeg).chi;
     const curComp = getCompensation(dev, curKappaDeg);
-    const curTheta = sign * dev.jointAngles[dev.thetaJointIdx] * rad2deg - curComp.theta;
-    const curPhi   = sign * dev.jointAngles[dev.phiJointIdx]   * rad2deg - curComp.phi;
+    const curTheta = sign * dev.kappaThetaSign * dev.jointAngles[dev.thetaJointIdx] * rad2deg - curComp.theta + 90;
+    const curPhi   = sign * dev.kappaThetaSign * dev.jointAngles[dev.phiJointIdx]   * rad2deg - curComp.phi + 90;
     // Use provided values or fall back to current
     const newChi   = chi   !== null ? chi   : curChi;
     const newTheta = theta !== null ? theta : curTheta;
     const newPhi   = phi   !== null ? phi   : curPhi;
-    const result = eulerToKappa(dev, newChi);
+    const result = eulerToKappa(dev, -newChi);
     if (!result) { wsSend({ type: 'error', error: 'Chi value out of range' }); return; }
     const comp = getCompensation(dev, result.kappa);
     dev.jointAngles[dev.kappaJointIdx] = sign * result.kappa * deg2rad;
-    dev.jointAngles[dev.thetaJointIdx] = sign * (newTheta + comp.theta) * deg2rad;
-    dev.jointAngles[dev.phiJointIdx]   = sign * (newPhi + comp.phi) * deg2rad;
+    dev.jointAngles[dev.thetaJointIdx] = sign * dev.kappaThetaSign * (newTheta - 90 + comp.theta) * deg2rad;
+    dev.jointAngles[dev.phiJointIdx]   = sign * dev.kappaThetaSign * (newPhi - 90 + comp.phi) * deg2rad;
     clampJoints(dev);
     updateFK(dev);
     updateSliders(dev);
@@ -376,10 +376,10 @@ export function handleCommand(data) {
     }
     const sign = dev.kappaSignPositive ? 1 : -1;
     const kappaDeg = sign * dev.jointAngles[dev.kappaJointIdx] * rad2deg;
-    const chiDeg = kappaToEuler(dev, kappaDeg).chi;
+    const chiDeg = -kappaToEuler(dev, kappaDeg).chi;
     const comp = getCompensation(dev, kappaDeg);
-    const thetaDeg = sign * dev.jointAngles[dev.thetaJointIdx] * rad2deg - comp.theta;
-    const phiDeg   = sign * dev.jointAngles[dev.phiJointIdx]   * rad2deg - comp.phi;
+    const thetaDeg = sign * dev.kappaThetaSign * dev.jointAngles[dev.thetaJointIdx] * rad2deg - comp.theta + 90;
+    const phiDeg   = sign * dev.kappaThetaSign * dev.jointAngles[dev.phiJointIdx]   * rad2deg - comp.phi + 90;
     wsSend({
       type: 'virtualAngles',
       device: dev.name,

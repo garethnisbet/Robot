@@ -77,14 +77,14 @@ export function updateVirtualAngles(dev) {
   const kappaDeg = sign * dev.jointAngles[dev.kappaJointIdx] * rad2deg;
   const chiDeg = kappaToEuler(dev, kappaDeg).chi;
   const comp = getCompensation(dev, kappaDeg);
-  let thetaDeg = sign * dev.jointAngles[dev.thetaJointIdx] * rad2deg - comp.theta;
-  let phiDeg = sign * dev.jointAngles[dev.phiJointIdx] * rad2deg - comp.phi;
+  let thetaDeg = sign * dev.kappaThetaSign * dev.jointAngles[dev.thetaJointIdx] * rad2deg - comp.theta + 90;
+  let phiDeg = sign * dev.kappaThetaSign * dev.jointAngles[dev.phiJointIdx] * rad2deg - comp.phi + 90;
 
   const snap = v => Math.abs(v) < 0.05 ? 0 : v;
   const chiSlider = document.getElementById('chiSlider');
   if (chiSlider) {
-    chiSlider.value = chiDeg;
-    document.getElementById('vchi').textContent = snap(chiDeg).toFixed(1);
+    chiSlider.value = -chiDeg;
+    document.getElementById('vchi').textContent = snap(-chiDeg).toFixed(1);
     document.getElementById('vthetaSlider').value = thetaDeg;
     document.getElementById('vvtheta').textContent = snap(thetaDeg).toFixed(1);
     document.getElementById('vphiSlider').value = phiDeg;

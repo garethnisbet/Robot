@@ -127,18 +127,18 @@ export function buildControlPanel(dev) {
       '<div class="slider-row"><label>\u03C6 (phi) <span id="vvphi">0</span></label>' +
       `<input type="range" id="vphiSlider" min="${phiLimits[0]}" max="${phiLimits[1]}" value="0" step="0.5">` +
       '</div>' +
-      '<button id="kappaSignBtn">\u03BA Sign: \u2212</button>' +
+      '<button id="kappaSignBtn" class="active">\u03BA Sign: +</button>' +
       '</div>';
 
     // Bind virtual angle events
     function applyVirtualAngles(vThetaDeg, chiDeg, vPhiDeg) {
-      const result = eulerToKappa(dev, chiDeg);
+      const result = eulerToKappa(dev, -chiDeg);
       if (!result) return;
       const comp = getCompensation(dev, result.kappa);
       const sign = dev.kappaSignPositive ? 1 : -1;
       dev.jointAngles[dev.kappaJointIdx] = sign * result.kappa * deg2rad;
-      dev.jointAngles[dev.thetaJointIdx] = sign * (vThetaDeg + comp.theta) * deg2rad;
-      dev.jointAngles[dev.phiJointIdx]   = sign * (vPhiDeg + comp.phi) * deg2rad;
+      dev.jointAngles[dev.thetaJointIdx] = sign * dev.kappaThetaSign * (vThetaDeg - 90 + comp.theta) * deg2rad;
+      dev.jointAngles[dev.phiJointIdx]   = sign * dev.kappaThetaSign * (vPhiDeg - 90 + comp.phi) * deg2rad;
       clampJoints(dev);
       updateFK(dev);
       updateSliders(dev);
