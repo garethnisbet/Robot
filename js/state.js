@@ -73,6 +73,7 @@ export function setOrthoOn(v)         { orthoOn = v; }
 
 export function setActiveDevice(dev)  { activeDevice = dev; }
 export function incrementDeviceId()   { return 'dev_' + (deviceIdCounter++); }
+export function resetDeviceIdCounter() { deviceIdCounter = 0; }
 
 export function setLabelsOn(v)          { labelsOn = v; }
 export function setMoveDeviceActive(v)  { moveDeviceActive = v; }

@@ -22,7 +22,6 @@ import {
   navCanvas, NAV_AXES, navHitTest,
   navHovered, setNavHovered, renderNavGizmo,
   snapAnim, setSnapAnim, snapClock, easeNavSnap,
-  setStlSaveCallback,
 } from './scene.js';
 import {
   updateFK, getEEWorldPosition, getEEWorldQuaternion,
@@ -36,10 +35,10 @@ import {
   buildControlPanel, rebuildDeviceList,
   setActiveDevice, findDeviceForObject,
   setDeviceParent, rebuildDeviceParentDropdown,
+  rebuildPrimaryModelDropdown,
 } from './panel.js';
 import {
-  saveSTLDebounced,
-  restorePersistedSTLs,
+  exportSceneState, importSceneState, restoreSTLsFromState,
   loadSTLFile, loadOBJFile, loadPLYFile, loadGLBFile,
   addPrimitive,
   selectSTL, deselectSTL, setSTLTransformMode, setSTLParent,
@@ -52,9 +51,6 @@ import {
 // Register the setActiveDevice callback for websocket.js
 // (avoids circular dependency: websocket -> panel -> websocket)
 registerSetActiveDevice(setActiveDevice);
-
-// Wire the STL-save callback into scene.js transform controls
-setStlSaveCallback(saveSTLDebounced);
 
 // ============================================================
 // Raycaster (for click-to-select)
@@ -258,6 +254,90 @@ document.getElementById('deviceParentSelect').addEventListener('change', (e) => 
   setDeviceParent(State.activeDevice, e.target.value);
 });
 
+// Primary model selector
+document.getElementById('primaryModelSelect').addEventListener('change', async (e) => {
+  const configFile = e.target.value;
+  if (!configFile) return;
+
+  // Remove the current primary device (first in the list)
+  const primaryDev = State.devices[0];
+  if (primaryDev && primaryDev.configFile === configFile) return; // same model
+
+  const select = e.target;
+  select.disabled = true;
+  try {
+    document.getElementById('loading').style.display = 'block';
+    document.getElementById('loading').textContent = 'Loading model...';
+
+    // Load the new device first
+    const dev = await loadDevice(configFile);
+
+    // Remove old primary (allow removal even if it's the only device since we're replacing)
+    if (primaryDev) {
+      // Detach any active controls
+      if (primaryDev === State.activeDevice) {
+        State.transformControls.detach();
+        State.deviceTransformControls.detach();
+      }
+      // Clean up scene objects
+      State.scene.remove(primaryDev.rootGroup);
+      primaryDev.rootGroup.traverse(child => {
+        if (child.geometry) child.geometry.dispose();
+        if (child.material) {
+          if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+          else child.material.dispose();
+        }
+      });
+      for (const label of primaryDev.meshLabels) label.removeFromParent();
+      if (primaryDev.chainLine) State.scene.remove(primaryDev.chainLine);
+      for (const s of primaryDev.chainSpheres) State.scene.remove(s);
+      if (primaryDev.ikTarget) State.scene.remove(primaryDev.ikTarget);
+      if (primaryDev.ikLine) State.scene.remove(primaryDev.ikLine);
+      const idx = State.devices.indexOf(primaryDev);
+      if (idx >= 0) State.devices.splice(idx, 1);
+    }
+
+    // Insert new device at front as primary
+    State.devices.unshift(dev);
+    State.setActiveDevice(dev);
+    updateFK(dev);
+    buildControlPanel(dev);
+    rebuildDeviceList();
+
+    // Auto-fit camera to new primary
+    const fitBox = new THREE.Box3();
+    for (const grp of dev.jointRotGroups) {
+      grp.updateWorldMatrix(true, true);
+      grp.traverse((child) => { if (child.isMesh) fitBox.expandByObject(child); });
+    }
+    for (const mesh of dev.staticMeshes) {
+      mesh.updateWorldMatrix(true, false);
+      fitBox.expandByObject(mesh);
+    }
+    if (!fitBox.isEmpty()) {
+      const fitCenter = fitBox.getCenter(new THREE.Vector3());
+      const fitSize   = fitBox.getSize(new THREE.Vector3());
+      const maxDim    = Math.max(fitSize.x, fitSize.y, fitSize.z);
+      const fov       = State.camera.fov * (Math.PI / 180);
+      const fitDist   = maxDim / (2 * Math.tan(fov / 2)) * 1.2;
+      const direction = new THREE.Vector3(1, 0.6, 1).normalize();
+      State.camera.position.copy(fitCenter).addScaledVector(direction, fitDist);
+      State.orbitControls.target.copy(fitCenter);
+      State.camera.updateProjectionMatrix();
+      State.orbitControls.update();
+    }
+
+    document.getElementById('loading').style.display = 'none';
+  } catch (err) {
+    console.error('Failed to load primary model:', err);
+    document.getElementById('loading').innerHTML =
+      `<span style="color:#f88">Failed to load model</span><br>` +
+      `<span style="color:#aaa; font-size:0.85em">${err?.message || err}</span>`;
+    setTimeout(() => { document.getElementById('loading').style.display = 'none'; }, 3000);
+  }
+  select.disabled = false;
+});
+
 // Add device button
 document.getElementById('addDeviceBtn').addEventListener('click', async () => {
   const select = document.getElementById('addDeviceSelect');
@@ -320,13 +400,11 @@ document.getElementById('lockAspectCb').addEventListener('change', (e) => {
 document.getElementById('stlResetRot').addEventListener('click', () => {
   if (!State.selectedSTL) return;
   State.selectedSTL.mesh.rotation.set(0, 0, 0);
-  saveSTLDebounced(State.selectedSTL);
 });
 
 document.getElementById('stlResetScale').addEventListener('click', () => {
   if (!State.selectedSTL) return;
   State.selectedSTL.mesh.scale.set(1, 1, 1);
-  saveSTLDebounced(State.selectedSTL);
 });
 
 document.getElementById('stlParentSelect').addEventListener('change', (e) => {
@@ -481,6 +559,7 @@ try {
   updateFK(initialDevice);
   buildControlPanel(initialDevice);
   rebuildDeviceList();
+  rebuildPrimaryModelDropdown(configParam);
 
   // Auto-fit camera
   const fitBox = new THREE.Box3();
@@ -517,8 +596,150 @@ try {
     `<span style="color:#aaa; font-size:0.85em">Check the browser console (F12) and server logs for details.</span>`;
 }
 
-// Restore persisted STLs
-restorePersistedSTLs();
+// Save / Load scene buttons
+document.getElementById('saveSceneBtn').addEventListener('click', () => exportSceneState());
+
+document.getElementById('loadSceneBtn').addEventListener('click', () => {
+  document.getElementById('loadSceneFile').click();
+});
+
+document.getElementById('loadSceneFile').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    document.getElementById('loading').style.display = 'block';
+    document.getElementById('loading').textContent = 'Loading scene...';
+
+    const data = await importSceneState(file);
+
+    // Clear existing imported STLs
+    for (const entry of [...State.importedSTLs]) {
+      if (State.selectedSTL === entry) deselectSTL();
+      entry.mesh.removeFromParent();
+      entry.mesh.geometry.dispose();
+      entry.mesh.material.dispose();
+    }
+    State.importedSTLs.length = 0;
+    document.getElementById('stl-list').innerHTML = '';
+
+    // Clear existing devices and reload from state
+    for (const dev of [...State.devices]) {
+      State.transformControls.detach();
+      State.deviceTransformControls.detach();
+      State.scene.remove(dev.rootGroup);
+      dev.rootGroup.traverse(child => {
+        if (child.geometry) child.geometry.dispose();
+        if (child.material) {
+          if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+          else child.material.dispose();
+        }
+      });
+      for (const label of dev.meshLabels) label.removeFromParent();
+      if (dev.chainLine) State.scene.remove(dev.chainLine);
+      for (const s of dev.chainSpheres) State.scene.remove(s);
+      if (dev.ikTarget) State.scene.remove(dev.ikTarget);
+      if (dev.ikLine) State.scene.remove(dev.ikLine);
+    }
+    State.devices.length = 0;
+    State.resetDeviceIdCounter();
+
+    // Reload devices from state
+    if (data.devices && data.devices.length > 0) {
+      for (const devState of data.devices) {
+        const dev = await loadDevice(devState.configFile);
+        State.devices.push(dev);
+        if (devState.name) dev.name = devState.name;
+        if (devState.jointAngles) {
+          for (let i = 0; i < devState.jointAngles.length && i < dev.jointAngles.length; i++) {
+            dev.jointAngles[i] = devState.jointAngles[i];
+          }
+        }
+        if (devState.position) {
+          dev.rootGroup.position.set(...devState.position);
+        }
+        if (devState.rotation) {
+          dev.rootGroup.rotation.set(...devState.rotation);
+        }
+        updateFK(dev);
+        console.log('[Load Scene] Device:', dev.name, 'id:', dev.id,
+          'joints:', dev.jointAngles.map(a => (a * 180 / Math.PI).toFixed(1)),
+          'pos:', [dev.rootGroup.position.x, dev.rootGroup.position.y, dev.rootGroup.position.z]);
+      }
+      // Restore device parent links (must happen after all devices are loaded)
+      for (let i = 0; i < data.devices.length; i++) {
+        const parentLink = data.devices[i].parentLink;
+        if (parentLink && parentLink.includes(':')) {
+          const [idxStr, linkName] = parentLink.split(':', 2);
+          const parentIdx = parseInt(idxStr, 10);
+          let runtimeLink = null;
+          if (!isNaN(parentIdx) && parentIdx >= 0 && parentIdx < State.devices.length) {
+            runtimeLink = State.devices[parentIdx].id + ':' + linkName;
+          } else {
+            // Legacy format — search by link name
+            for (const dev of State.devices) {
+              if (dev !== State.devices[i] && dev.linkToJoint && dev.linkToJoint[linkName] !== undefined) {
+                runtimeLink = dev.id + ':' + linkName;
+                break;
+              }
+            }
+          }
+          if (runtimeLink) setDeviceParent(State.devices[i], runtimeLink, true);
+        }
+      }
+      State.setActiveDevice(State.devices[0]);
+      buildControlPanel(State.devices[0]);
+    }
+
+    // Restore camera
+    if (data.camera) {
+      if (data.camera.position) State.camera.position.set(...data.camera.position);
+      if (data.camera.target) State.orbitControls.target.set(...data.camera.target);
+      State.camera.updateProjectionMatrix();
+      State.orbitControls.update();
+    }
+
+    // Ensure full scene graph is updated before restoring STLs
+    State.scene.updateMatrixWorld(true);
+
+    // Restore STLs (two-phase: create, then apply transforms)
+    if (data.stls && data.stls.length > 0) {
+      await restoreSTLsFromState(data.stls);
+    }
+
+    // Post-load verification
+    console.log('[Load Scene v3] Verification:');
+    for (let i = 0; i < (data.stls || []).length; i++) {
+      const rec = data.stls[i];
+      const entry = State.importedSTLs[i];
+      if (!entry) { console.warn('  MISSING:', rec.name); continue; }
+      const m = entry.mesh;
+      const posOk = rec.position &&
+        Math.abs(m.position.x - rec.position[0]) < 1e-6 &&
+        Math.abs(m.position.y - rec.position[1]) < 1e-6 &&
+        Math.abs(m.position.z - rec.position[2]) < 1e-6;
+      const parentExpected = rec.parentLink ? 'yes' : 'no';
+      const parentActual = entry.parentLink ? 'yes' : 'no';
+      if (!posOk || parentExpected !== parentActual) {
+        console.warn(`  MISMATCH ${rec.name}:`,
+          'pos expected:', rec.position, 'got:', [m.position.x, m.position.y, m.position.z],
+          'parent expected:', rec.parentLink, 'got:', entry.parentLink);
+      } else {
+        console.log(`  OK ${rec.name}`);
+      }
+    }
+
+    rebuildDeviceList();
+    rebuildPrimaryModelDropdown(State.devices[0]?.configFile || 'robot_config.json');
+    document.getElementById('loading').style.display = 'none';
+  } catch (err) {
+    console.error('Failed to load scene:', err);
+    document.getElementById('loading').innerHTML =
+      `<span style="color:#f88">Failed to load scene</span><br>` +
+      `<span style="color:#aaa; font-size:0.85em">${err?.message || err}</span>`;
+    setTimeout(() => { document.getElementById('loading').style.display = 'none'; }, 3000);
+  }
+  e.target.value = '';
+});
 
 // Start render loop
 animate();

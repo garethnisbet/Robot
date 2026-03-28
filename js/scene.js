@@ -76,15 +76,8 @@ stlTransformCtrl.addEventListener('objectChange', () => {
   s.set(s0.x * ratio, s0.y * ratio, s0.z * ratio);
 });
 
-// The stl drag-end save callback is injected by main.js after stl.js loads
-let _saveSTLDebounced = null;
-export function setStlSaveCallback(fn) { _saveSTLDebounced = fn; }
-
 stlTransformCtrl.addEventListener('dragging-changed', (e) => {
   orbitCtrl.enabled = !e.value;
-  if (!e.value && State.selectedSTL && _saveSTLDebounced) {
-    _saveSTLDebounced(State.selectedSTL);
-  }
 });
 scene.add(stlTransformCtrl);
 

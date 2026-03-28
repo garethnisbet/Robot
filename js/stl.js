@@ -1,5 +1,5 @@
 // ============================================================
-// js/stl.js — STL/OBJ/PLY/GLB import, IndexedDB persistence,
+// js/stl.js — STL/OBJ/PLY/GLB import, file-based scene save/load,
 //             primitive creation, STL list UI,
 //             selection, transform mode, parent assignment
 // ============================================================
@@ -31,117 +31,170 @@ function nextColor() {
 }
 
 // ============================================================
-// IndexedDB helpers
+// Scene state save/load (file-based)
 // ============================================================
-const STL_DB_NAME    = 'RobotViewerSTLs';
-const STL_DB_VERSION = 1;
-const STL_STORE      = 'stls';
 
-function openSTLDB() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(STL_DB_NAME, STL_DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STL_STORE)) {
-        db.createObjectStore(STL_STORE, { keyPath: 'id' });
-      }
+function _arrayBufferToBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function _base64ToArrayBuffer(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+// Convert runtime parentLink (devId:linkName) to stable index-based format (devIndex:linkName)
+function _parentLinkToStable(parentLink) {
+  if (!parentLink || !parentLink.includes(':')) return parentLink;
+  const [devId, linkName] = parentLink.split(':', 2);
+  const devIdx = State.devices.findIndex(d => d.id === devId);
+  if (devIdx < 0) return null;
+  return devIdx + ':' + linkName;
+}
+
+export function exportSceneState() {
+  const stls = State.importedSTLs.map(entry => {
+    const m = entry.mesh;
+    return {
+      id: entry.stlId,
+      name: entry.name,
+      color: entry.color,
+      buffer: _arrayBufferToBase64(entry._buffer),
+      fileType: entry.fileType || 'stl',
+      isPointCloud: entry.isPointCloud || false,
+      position: [m.position.x, m.position.y, m.position.z],
+      rotation: [m.rotation.x, m.rotation.y, m.rotation.z],
+      scale: [m.scale.x, m.scale.y, m.scale.z],
+      visible: m.visible,
+      parentLink: _parentLinkToStable(entry.parentLink),
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror   = () => reject(req.error);
   });
+
+  const devices = State.devices.map((dev, i) => ({
+    configFile: dev.configFile,
+    name: dev.name,
+    jointAngles: [...dev.jointAngles],
+    position: [dev.rootGroup.position.x, dev.rootGroup.position.y, dev.rootGroup.position.z],
+    rotation: [dev.rootGroup.rotation.x, dev.rootGroup.rotation.y, dev.rootGroup.rotation.z],
+    parentLink: _parentLinkToStable(dev.parentLink),
+  }));
+
+  const cam = State.camera;
+  const ctrl = State.orbitControls;
+  const camera = {
+    position: [cam.position.x, cam.position.y, cam.position.z],
+    target: [ctrl.target.x, ctrl.target.y, ctrl.target.z],
+  };
+
+  const payload = { version: 1, devices, stls, camera };
+  console.log('[Save Scene]', devices.length, 'devices,', stls.length, 'objects');
+  for (const d of devices) console.log('  device:', d.name, 'joints:', d.jointAngles.map(a => (a * 180 / Math.PI).toFixed(1)));
+  for (const s of stls) console.log('  object:', s.name, 'pos:', s.position, 'rot:', s.rotation, 'parent:', s.parentLink);
+
+  const blob = new Blob(
+    [JSON.stringify(payload, null, 2)],
+    { type: 'application/json' }
+  );
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'scene_state.json';
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
-async function saveSTLToDB(entry) {
-  const db = await openSTLDB();
-  const tx = db.transaction(STL_STORE, 'readwrite');
-  const store = tx.objectStore(STL_STORE);
-  const m = entry.mesh;
-  store.put({
-    id: entry.stlId,
-    name: entry.name,
-    color: entry.color,
-    buffer: entry._buffer,
-    fileType: entry.fileType || 'stl',
-    position: [m.position.x, m.position.y, m.position.z],
-    rotation:  [m.rotation.x, m.rotation.y, m.rotation.z],
-    scale:    [m.scale.x, m.scale.y, m.scale.z],
-    visible:  m.visible,
-    parentLink: entry.parentLink || null,
-  });
-  return new Promise((resolve, reject) => {
-    tx.oncomplete = resolve;
-    tx.onerror    = () => reject(tx.error);
-  });
+export async function importSceneState(file) {
+  const text = await file.text();
+  const data = JSON.parse(text);
+  if (!data.version || !data.stls) throw new Error('Invalid scene file');
+  return data;
 }
 
-async function deleteSTLFromDB(stlId) {
-  const db = await openSTLDB();
-  const tx = db.transaction(STL_STORE, 'readwrite');
-  tx.objectStore(STL_STORE).delete(stlId);
-  return new Promise((resolve, reject) => {
-    tx.oncomplete = resolve;
-    tx.onerror    = () => reject(tx.error);
-  });
+// Convert stable index-based parentLink (devIndex:linkName) back to runtime (devId:linkName)
+// Also handles legacy format (devId:linkName) from older save files
+function _parentLinkFromStable(parentLink) {
+  if (!parentLink || !parentLink.includes(':')) return parentLink;
+  const [idxStr, linkName] = parentLink.split(':', 2);
+  // Try index-based format first (e.g. "0:L1")
+  const devIdx = parseInt(idxStr, 10);
+  if (!isNaN(devIdx) && devIdx >= 0 && devIdx < State.devices.length) {
+    return State.devices[devIdx].id + ':' + linkName;
+  }
+  // Legacy format (e.g. "dev_0:L1") — search by link name across all devices
+  for (const dev of State.devices) {
+    if (dev.linkToJoint[linkName] !== undefined) {
+      return dev.id + ':' + linkName;
+    }
+  }
+  return null;
 }
 
-async function loadAllSTLsFromDB() {
-  const db = await openSTLDB();
-  const tx = db.transaction(STL_STORE, 'readonly');
-  const store = tx.objectStore(STL_STORE);
-  return new Promise((resolve, reject) => {
-    const req = store.getAll();
-    req.onsuccess = () => resolve(req.result);
-    req.onerror   = () => reject(req.error);
-  });
-}
+export async function restoreSTLsFromState(records) {
+  console.log('[Load Scene v3] Restoring', records.length, 'objects — two-phase restore');
 
-export function saveSTLDebounced(entry) {
-  saveSTLToDB(entry).catch(e => console.warn('STL save failed:', e));
-}
-
-// ============================================================
-// Restore persisted meshes
-// ============================================================
-export async function restorePersistedSTLs() {
-  try {
-    const records = await loadAllSTLsFromDB();
-    for (const rec of records) {
-      const transforms = {
-        position: rec.position,
-        rotation:  rec.rotation,
-        scale:    rec.scale,
-        visible:  rec.visible,
-        parentLink: rec.parentLink || null,
-      };
-      const fileType = rec.fileType || 'stl';
-      if (fileType === 'stl') {
-        createSTLFromBuffer(rec.buffer, rec.name, rec.color, rec.id, transforms);
-      } else if (fileType === 'ply') {
-        const geometry = plyLoader.parse(rec.buffer);
-        if (_isPLYPointCloud(rec.buffer)) {
-          _addPointsToScene(geometry, rec.buffer, rec.name, rec.color, rec.id, transforms);
-        } else {
-          geometry.computeVertexNormals();
-          _addMeshToScene(geometry, rec.buffer, 'ply', rec.name, rec.color, rec.id, transforms);
-        }
-      } else if (fileType === 'obj') {
-        const text = new TextDecoder().decode(rec.buffer);
-        const group = objLoader.parse(text);
-        const geometry = _mergeObject3D(group);
-        _addMeshToScene(geometry, rec.buffer, 'obj', rec.name, rec.color, rec.id, transforms);
-      } else if (fileType === 'glb') {
-        try {
-          const gltf = await new Promise((resolve, reject) =>
-            gltfImportLoader.parse(rec.buffer, '', resolve, reject));
-          const geometry = _mergeObject3D(gltf.scene);
-          _addMeshToScene(geometry, rec.buffer, 'glb', rec.name, rec.color, rec.id, transforms);
-        } catch (e) {
-          console.warn('Failed to restore GLB mesh:', rec.name, e);
-        }
+  // ── Phase 1: create meshes WITHOUT transforms (default positions) ──
+  const created = [];
+  for (const rec of records) {
+    const buffer = _base64ToArrayBuffer(rec.buffer);
+    let entry = null;
+    const fileType = rec.fileType || 'stl';
+    if (fileType === 'stl') {
+      entry = createSTLFromBuffer(buffer, rec.name, rec.color, rec.id, null);
+    } else if (fileType === 'ply') {
+      const geometry = plyLoader.parse(buffer);
+      if (rec.isPointCloud || _isPLYPointCloud(buffer)) {
+        entry = _addPointsToScene(geometry, buffer, rec.name, rec.color, rec.id, null);
+      } else {
+        geometry.computeVertexNormals();
+        entry = _addMeshToScene(geometry, buffer, 'ply', rec.name, rec.color, rec.id, null);
+      }
+    } else if (fileType === 'obj') {
+      const objText = new TextDecoder().decode(buffer);
+      const group = objLoader.parse(objText);
+      const geometry = _mergeObject3D(group);
+      entry = _addMeshToScene(geometry, buffer, 'obj', rec.name, rec.color, rec.id, null);
+    } else if (fileType === 'glb') {
+      try {
+        const gltf = await new Promise((resolve, reject) =>
+          gltfImportLoader.parse(buffer, '', resolve, reject));
+        const geometry = _mergeObject3D(gltf.scene);
+        entry = _addMeshToScene(geometry, buffer, 'glb', rec.name, rec.color, rec.id, null);
+      } catch (e) {
+        console.warn('Failed to restore GLB mesh:', rec.name, e);
       }
     }
-  } catch (e) {
-    console.warn('Failed to restore meshes:', e);
+    created.push({ rec, entry });
+  }
+
+  // ── Phase 2: apply transforms and parent links explicitly ──
+  console.log('[Load Scene v3] Phase 2: applying transforms & parents');
+  for (const { rec, entry } of created) {
+    if (!entry) continue;
+    const m = entry.mesh;
+
+    // Apply saved transforms
+    if (rec.position) m.position.set(rec.position[0], rec.position[1], rec.position[2]);
+    if (rec.rotation) m.rotation.set(rec.rotation[0], rec.rotation[1], rec.rotation[2]);
+    if (rec.scale)    m.scale.set(rec.scale[0], rec.scale[1], rec.scale[2]);
+    if (rec.visible !== undefined) m.visible = rec.visible;
+
+    // Apply parent link
+    const resolvedParent = _parentLinkFromStable(rec.parentLink);
+    if (resolvedParent) {
+      setSTLParent(entry, resolvedParent, true);
+    }
+
+    console.log('[Restore]', rec.name,
+      'pos:', [m.position.x.toFixed(4), m.position.y.toFixed(4), m.position.z.toFixed(4)],
+      'rot:', [m.rotation.x.toFixed(4), m.rotation.y.toFixed(4), m.rotation.z.toFixed(4)],
+      'scale:', [m.scale.x.toFixed(4), m.scale.y.toFixed(4), m.scale.z.toFixed(4)],
+      'parent:', entry.parentLink,
+      'meshParent:', m.parent?.name || 'Scene');
   }
 }
 
@@ -225,6 +278,10 @@ export function _addPointsToScene(geometry, buffer, name, color, stlId, transfor
   State.importedSTLs.push(entry);
   State.setStlColorIdx(Math.max(State.stlColorIdx, stlColors.indexOf(color) + 1));
   addSTLListItem(entry);
+
+  if (transforms && transforms.parentLink) {
+    setSTLParent(entry, transforms.parentLink, true);
+  }
   return entry;
 }
 
@@ -289,8 +346,7 @@ export function loadSTLFile(file) {
     const baseName = file.name.replace(/\.stl$/i, '');
     const color = nextColor();
     const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    const entry = createSTLFromBuffer(buffer, baseName, color, stlId, null);
-    saveSTLDebounced(entry);
+    createSTLFromBuffer(buffer, baseName, color, stlId, null);
   };
   reader.readAsArrayBuffer(file);
 }
@@ -305,8 +361,7 @@ export function loadOBJFile(file) {
     const baseName = file.name.replace(/\.obj$/i, '');
     const color = nextColor();
     const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    const entry = _addMeshToScene(geometry, buffer, 'obj', baseName, color, stlId, null);
-    saveSTLDebounced(entry);
+    _addMeshToScene(geometry, buffer, 'obj', baseName, color, stlId, null);
   };
   reader.readAsText(file);
 }
@@ -319,14 +374,12 @@ export function loadPLYFile(file) {
     const baseName = file.name.replace(/\.ply$/i, '');
     const color = nextColor();
     const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    let entry;
     if (_isPLYPointCloud(buffer)) {
-      entry = _addPointsToScene(geometry, buffer, baseName, color, stlId, null);
+      _addPointsToScene(geometry, buffer, baseName, color, stlId, null);
     } else {
       geometry.computeVertexNormals();
-      entry = _addMeshToScene(geometry, buffer, 'ply', baseName, color, stlId, null);
+      _addMeshToScene(geometry, buffer, 'ply', baseName, color, stlId, null);
     }
-    saveSTLDebounced(entry);
   };
   reader.readAsArrayBuffer(file);
 }
@@ -340,8 +393,7 @@ export async function loadGLBFile(file) {
     const gltf = await new Promise((resolve, reject) =>
       gltfImportLoader.parse(buffer, '', resolve, reject));
     const geometry = _mergeObject3D(gltf.scene);
-    const entry = _addMeshToScene(geometry, buffer, 'glb', baseName, color, stlId, null);
-    saveSTLDebounced(entry);
+    _addMeshToScene(geometry, buffer, 'glb', baseName, color, stlId, null);
   } catch (err) {
     console.error('GLB load error:', err);
     alert(`Failed to load GLB/GLTF file: ${err.message}`);
@@ -404,8 +456,7 @@ export function addPrimitive(type) {
 
   const color = nextColor();
   const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-  const entry = createSTLFromBuffer(buffer, name, color, stlId, null);
-  saveSTLDebounced(entry);
+  createSTLFromBuffer(buffer, name, color, stlId, null);
 }
 
 // ============================================================
@@ -451,7 +502,6 @@ export async function duplicateSTL(srcEntry) {
       return;
     }
   }
-  if (newEntry) saveSTLDebounced(newEntry);
 }
 
 // ============================================================
@@ -470,7 +520,6 @@ export function addSTLListItem(entry) {
   colorSwatch.addEventListener('input', () => {
     entry.mesh.material.color.set(colorSwatch.value);
     entry.color = entry.mesh.material.color.getHex();
-    saveSTLDebounced(entry);
   });
 
   const nameSpan = document.createElement('span');
@@ -496,7 +545,6 @@ export function addSTLListItem(entry) {
         entry.name = input.value.trim();
         nameSpan.textContent = entry.name;
         entry.label.element.textContent = entry.name;
-        saveSTLDebounced(entry);
       }
       input.remove();
       nameSpan.style.display = '';
@@ -516,7 +564,6 @@ export function addSTLListItem(entry) {
   visBtn.addEventListener('click', () => {
     entry.mesh.visible = !entry.mesh.visible;
     visBtn.style.opacity = entry.mesh.visible ? 1 : 0.3;
-    saveSTLDebounced(entry);
   });
 
   const rmBtn = document.createElement('button');
@@ -531,7 +578,6 @@ export function addSTLListItem(entry) {
     const si = State.importedSTLs.indexOf(entry);
     if (si >= 0) State.importedSTLs.splice(si, 1);
     item.remove();
-    deleteSTLFromDB(entry.stlId).catch(e => console.warn('STL delete failed:', e));
   });
 
   const dupBtn = document.createElement('button');
@@ -607,8 +653,6 @@ export function setSTLParent(entry, parentValue, preserveLocal = false) {
     State.scene.add(mesh);
     entry.parentLink = null;
   }
-
-  saveSTLDebounced(entry);
 }
 
 export function selectSTL(entry, listItem) {

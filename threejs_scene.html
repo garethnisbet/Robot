@@ -12,6 +12,10 @@
 <div id="ws-status"><span class="dot off" id="ws-dot"></span><span id="ws-text">API: not connected</span></div>
 <div id="panel">
   <div id="device-manager">
+    <div id="primary-model-row">
+      <label style="font-size:11px; color:#889;">Primary:</label>
+      <select id="primaryModelSelect"></select>
+    </div>
     <div id="device-list"></div>
     <div id="add-device-row">
       <select id="addDeviceSelect"></select>
@@ -73,6 +77,11 @@
     </div>
   </div>
   <div id="collision-info" style="display:none;">Collisions: <span id="collision-text">none</span></div>
+  <div style="display:flex; gap:4px; margin-top:8px; padding-top:8px; border-top:1px solid #334;">
+    <button id="saveSceneBtn" style="flex:1; margin:0;">Save Scene</button>
+    <button id="loadSceneBtn" style="flex:1; margin:0;">Load Scene</button>
+    <input type="file" id="loadSceneFile" accept=".json" style="display:none">
+  </div>
   <div id="ik-panel" style="display:none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #334;">
     <h2 style="color:#5b5;">IK Target (mm)</h2>
     <div class="slider-row">

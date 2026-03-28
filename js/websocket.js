@@ -10,7 +10,7 @@ import {
 import { loadDevice } from './device.js';
 import { updateSliders, setIKMode, syncIKSliders } from './device.js';
 import { rebuildDeviceList, rebuildParentDropdown } from './panel.js';
-import { setSTLParent, saveSTLDebounced } from './stl.js';
+import { setSTLParent } from './stl.js';
 import { clearCollisionHighlights } from './collision.js';
 
 const deg2rad = Math.PI / 180;
@@ -317,7 +317,6 @@ export function handleCommand(data) {
     if (data.parent !== undefined) {
       setSTLParent(entry, data.parent, false);
     }
-    saveSTLDebounced(entry);
     const idx = State.importedSTLs.indexOf(entry);
     wsSend({ type: 'object', ...buildObjectInfo(entry, idx) });
 

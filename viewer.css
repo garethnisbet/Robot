@@ -126,6 +126,13 @@
   }
   /* Device manager styles */
   #device-manager { margin-bottom: 10px; }
+  #primary-model-row {
+    display: flex; align-items: center; gap: 5px; margin-bottom: 6px;
+  }
+  #primaryModelSelect {
+    flex: 1; background: #223; color: #aac; border: 1px solid #446;
+    border-radius: 4px; font-size: 11px; padding: 3px 6px; outline: none;
+  }
   #device-list {
     max-height: 120px; overflow-y: auto; margin-bottom: 4px;
   }

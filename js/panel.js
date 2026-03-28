@@ -383,6 +383,22 @@ export function rebuildAddDeviceDropdown() {
 }
 
 // ============================================================
+// rebuildPrimaryModelDropdown
+// ============================================================
+export function rebuildPrimaryModelDropdown(currentConfigFile) {
+  const select = document.getElementById('primaryModelSelect');
+  if (!select) return;
+  select.innerHTML = '';
+  for (const cf of configFiles) {
+    const opt = document.createElement('option');
+    opt.value = cf;
+    opt.textContent = cf.replace('_config.json', '').replace(/_/g, ' ');
+    if (cf === currentConfigFile) opt.selected = true;
+    select.appendChild(opt);
+  }
+}
+
+// ============================================================
 // removeDevice
 // ============================================================
 export function removeDevice(dev) {
@@ -456,26 +472,32 @@ export function rebuildDeviceParentDropdown() {
 // ============================================================
 const _devReparentMat = new THREE.Matrix4();
 
-export function setDeviceParent(dev, parentValue) {
+export function setDeviceParent(dev, parentValue, preserveLocal = false) {
   const rootGroup = dev.rootGroup;
   const { dev: parentDev, linkName } = resolveParentLink(parentValue);
 
-  // Save world transform
-  rootGroup.updateWorldMatrix(true, false);
-  _devReparentMat.copy(rootGroup.matrixWorld);
+  if (!preserveLocal) {
+    // Save world transform for coordinate conversion
+    rootGroup.updateWorldMatrix(true, false);
+    _devReparentMat.copy(rootGroup.matrixWorld);
+  }
 
   rootGroup.removeFromParent();
 
   if (parentDev && linkName && parentDev.linkToJoint[linkName] !== undefined) {
     const jointIdx = parentDev.linkToJoint[linkName];
     const linkGroup = parentDev.jointRotGroups[jointIdx];
-    linkGroup.updateWorldMatrix(true, false);
-    const localMat = linkGroup.matrixWorld.clone().invert().multiply(_devReparentMat);
-    localMat.decompose(rootGroup.position, rootGroup.quaternion, rootGroup.scale);
+    if (!preserveLocal) {
+      linkGroup.updateWorldMatrix(true, false);
+      const localMat = linkGroup.matrixWorld.clone().invert().multiply(_devReparentMat);
+      localMat.decompose(rootGroup.position, rootGroup.quaternion, rootGroup.scale);
+    }
     linkGroup.add(rootGroup);
     dev.parentLink = parentDev.id + ':' + linkName;
   } else {
-    _devReparentMat.decompose(rootGroup.position, rootGroup.quaternion, rootGroup.scale);
+    if (!preserveLocal) {
+      _devReparentMat.decompose(rootGroup.position, rootGroup.quaternion, rootGroup.scale);
+    }
     State.scene.add(rootGroup);
     dev.parentLink = null;
   }
