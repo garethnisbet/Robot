@@ -172,15 +172,19 @@ scene.add(new THREE.HemisphereLight(0x8888bb, 0x333344, 0.4));
 // ============================================================
 // Ground + grid
 // ============================================================
-const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(4, 4),
-  new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.9 })
-);
+const groundMat = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.9 });
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(4, 4), groundMat);
 ground.rotation.x = -Math.PI / 2;
 ground.position.y = 0;
 ground.receiveShadow = true;
 scene.add(ground);
 scene.add(new THREE.GridHelper(2, 40, 0x333355, 0x222244));
+
+export function setFloorSize(radius) {
+  const size = radius * 2;
+  ground.geometry.dispose();
+  ground.geometry = new THREE.PlaneGeometry(size * 2, size * 2);
+}
 
 // ============================================================
 // Navigation gizmo (Blender-style, Canvas 2D)

@@ -22,6 +22,7 @@ import {
   navCanvas, NAV_AXES, navHitTest,
   navHovered, setNavHovered, renderNavGizmo,
   snapAnim, setSnapAnim, snapClock, easeNavSnap,
+  setFloorSize,
 } from './scene.js';
 import {
   updateFK, getEEWorldPosition, getEEWorldQuaternion,
@@ -444,6 +445,13 @@ collisionBtn.addEventListener('click', () => {
   collisionBtn.classList.toggle('active', State.collisionEnabled);
   collisionInfoEl.style.display = State.collisionEnabled ? 'block' : 'none';
   if (!State.collisionEnabled) clearCollisionHighlights();
+});
+
+// Floor size slider
+document.getElementById('floorSize').addEventListener('input', (e) => {
+  const r = parseFloat(e.target.value);
+  document.getElementById('floorSizeVal').textContent = `${r} m`;
+  setFloorSize(r);
 });
 
 // ============================================================
