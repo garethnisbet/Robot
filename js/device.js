@@ -189,6 +189,28 @@ export async function loadDevice(configFile) {
   const phiJointIdx   = config.joints.findIndex(j => j.name === 'phi');
   const isKappaGeometry = kappaJointIdx >= 0 && thetaJointIdx >= 0 && phiJointIdx >= 0;
 
+  // Origin helper — axis gizmo + coordinate label at device base
+  const originHelpers = [];
+  const originLabels = [];
+  const originSize = 0.04;
+  {
+    const axes = new THREE.AxesHelper(originSize);
+    axes.renderOrder = 2;
+    axes.material.depthTest = false;
+    axes.visible = State.originsOn;
+    rootGroup.add(axes);
+    originHelpers.push(axes);
+
+    const div = document.createElement('div');
+    div.className = 'origin-label';
+    div.textContent = '';
+    const lbl = new CSS2DObject(div);
+    lbl.position.set(0, originSize * 1.2, 0);
+    lbl.visible = State.originsOn;
+    rootGroup.add(lbl);
+    originLabels.push(lbl);
+  }
+
   // Build adjacency for collision detection
   const adjPairs = buildAdjacencyPairs(config);
 
@@ -213,6 +235,8 @@ export async function loadDevice(configFile) {
     meshLabels: [],
     robotLinkMeshes: [],
     staticMeshes: [],
+    originHelpers,
+    originLabels,
     chainVisible: false,
     chainLine,
     chainSpheres,

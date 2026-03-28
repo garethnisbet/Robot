@@ -29,6 +29,7 @@ export let deviceIdCounter = 0;
 
 // UI flags
 export let labelsOn         = false;
+export let originsOn        = false;
 export let moveDeviceActive = false;
 
 // Collision
@@ -76,6 +77,7 @@ export function incrementDeviceId()   { return 'dev_' + (deviceIdCounter++); }
 export function resetDeviceIdCounter() { deviceIdCounter = 0; }
 
 export function setLabelsOn(v)          { labelsOn = v; }
+export function setOriginsOn(v)         { originsOn = v; }
 export function setMoveDeviceActive(v)  { moveDeviceActive = v; }
 
 export function setCollisionEnabled(v)  { collisionEnabled = v; }

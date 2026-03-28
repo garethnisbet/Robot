@@ -45,12 +45,14 @@ import {
 } from './stl.js';
 import { checkCollisions, clearCollisionHighlights } from './collision.js';
 import {
-  wsConnect, registerSetActiveDevice,
+  wsConnect, registerSetActiveDevice, registerAvailableConfigs,
 } from './websocket.js';
 
-// Register the setActiveDevice callback for websocket.js
+// Register callbacks for websocket.js
 // (avoids circular dependency: websocket -> panel -> websocket)
+import { configFiles } from './panel.js';
 registerSetActiveDevice(setActiveDevice);
+registerAvailableConfigs(configFiles);
 
 // ============================================================
 // Raycaster (for click-to-select)
@@ -58,6 +60,7 @@ registerSetActiveDevice(setActiveDevice);
 const raycaster = new THREE.Raycaster();
 raycaster.params.Points = { threshold: 0.005 };
 const mouse = new THREE.Vector2();
+const _originWP = new THREE.Vector3();
 
 // ============================================================
 // fmtV helper
@@ -103,6 +106,17 @@ function animate() {
   // Chain visualization for all devices
   for (const dev of State.devices) {
     if (dev.chainVisible) updateChain(dev);
+  }
+
+  // Origin coordinate labels
+  if (State.originsOn) {
+    for (const dev of State.devices) {
+      dev.rootGroup.getWorldPosition(_originWP);
+      const x = +(_originWP.x * 1000).toFixed(1);
+      const y = +(_originWP.z * 1000).toFixed(1);
+      const z = +(_originWP.y * 1000).toFixed(1);
+      dev.originLabels[0].element.textContent = `${dev.name} ${x}, ${y}, ${z}`;
+    }
   }
 
   checkCollisions();
@@ -186,6 +200,16 @@ document.getElementById('chainBtn').addEventListener('click', () => {
 });
 
 document.getElementById('orthoBtn').addEventListener('click', () => setOrtho(!State.orthoOn));
+
+document.getElementById('originsBtn').addEventListener('click', () => {
+  State.setOriginsOn(!State.originsOn);
+  document.getElementById('originsBtn').textContent = `Origins: ${State.originsOn ? 'ON' : 'OFF'}`;
+  document.getElementById('originsBtn').classList.toggle('active', State.originsOn);
+  for (const dev of State.devices) {
+    dev.originHelpers.forEach(h => h.visible = State.originsOn);
+    dev.originLabels.forEach(l => l.visible = State.originsOn);
+  }
+});
 
 document.getElementById('labelBtn').addEventListener('click', () => {
   State.setLabelsOn(!State.labelsOn);
