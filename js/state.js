@@ -32,6 +32,9 @@ export let labelsOn         = false;
 export let originsOn        = false;
 export let moveDeviceActive = false;
 
+// Floor
+export let floorSize = 2;
+
 // Collision
 export let collisionEnabled = false;
 export let lastCollisions   = [];
@@ -79,6 +82,8 @@ export function resetDeviceIdCounter() { deviceIdCounter = 0; }
 export function setLabelsOn(v)          { labelsOn = v; }
 export function setOriginsOn(v)         { originsOn = v; }
 export function setMoveDeviceActive(v)  { moveDeviceActive = v; }
+
+export function setFloorSize(v)         { floorSize = v; }
 
 export function setCollisionEnabled(v)  { collisionEnabled = v; }
 export function setLastCollisions(arr)  { lastCollisions = arr; }

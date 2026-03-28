@@ -722,6 +722,13 @@ document.getElementById('loadSceneFile').addEventListener('change', async (e) =>
       buildControlPanel(State.devices[0]);
     }
 
+    // Restore floor size
+    if (data.floorSize != null) {
+      setFloorSize(data.floorSize);
+      document.getElementById('floorSize').value = data.floorSize;
+      document.getElementById('floorSizeVal').textContent = `${data.floorSize} m`;
+    }
+
     // Restore camera
     if (data.camera) {
       if (data.camera.position) State.camera.position.set(...data.camera.position);

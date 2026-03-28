@@ -137,13 +137,13 @@ export function setOrtho(on) {
 // Lighting
 // ============================================================
 const sun = new THREE.DirectionalLight(0xffffff, 19.2);
-sun.position.set(3, 5, 2);
+sun.position.set(3, 10, 2);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.near = 0.01;
-sun.shadow.camera.far = 8;
-sun.shadow.camera.left = sun.shadow.camera.bottom = -0.5;
-sun.shadow.camera.right = sun.shadow.camera.top = 0.5;
+sun.shadow.camera.near = 0.1;
+sun.shadow.camera.far = 20;
+sun.shadow.camera.left = sun.shadow.camera.bottom = -4;
+sun.shadow.camera.right = sun.shadow.camera.top = 4;
 scene.add(sun);
 
 const fill = new THREE.DirectionalLight(0xffffff, 0.8);
@@ -181,6 +181,7 @@ scene.add(ground);
 scene.add(new THREE.GridHelper(2, 40, 0x333355, 0x222244));
 
 export function setFloorSize(radius) {
+  State.setFloorSize(radius);
   const size = radius * 2;
   ground.geometry.dispose();
   ground.geometry = new THREE.PlaneGeometry(size * 2, size * 2);

@@ -660,6 +660,7 @@ export function handleCommand(data) {
       collisionEnabled: State.collisionEnabled,
       labels: State.labelsOn,
       ortho: State.orthoOn,
+      floorSize: State.floorSize,
     });
 
   } else if (cmd === 'saveScene') {

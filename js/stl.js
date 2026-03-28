@@ -57,7 +57,7 @@ function _parentLinkToStable(parentLink) {
   return devIdx + ':' + linkName;
 }
 
-export function exportSceneState() {
+export async function exportSceneState() {
   const stls = State.importedSTLs.map(entry => {
     const m = entry.mesh;
     return {
@@ -91,15 +91,32 @@ export function exportSceneState() {
     target: [ctrl.target.x, ctrl.target.y, ctrl.target.z],
   };
 
-  const payload = { version: 1, devices, stls, camera };
+  const payload = { version: 1, devices, stls, camera, floorSize: State.floorSize };
   console.log('[Save Scene]', devices.length, 'devices,', stls.length, 'objects');
   for (const d of devices) console.log('  device:', d.name, 'joints:', d.jointAngles.map(a => (a * 180 / Math.PI).toFixed(1)));
   for (const s of stls) console.log('  object:', s.name, 'pos:', s.position, 'rot:', s.rotation, 'parent:', s.parentLink);
 
-  const blob = new Blob(
-    [JSON.stringify(payload, null, 2)],
-    { type: 'application/json' }
-  );
+  const json = JSON.stringify(payload, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: 'scene_state.json',
+        types: [{
+          description: 'Scene JSON',
+          accept: { 'application/json': ['.json'] },
+        }],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return;
+    } catch (e) {
+      if (e.name === 'AbortError') return; // user cancelled
+    }
+  }
+  // Fallback for browsers without File System Access API
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

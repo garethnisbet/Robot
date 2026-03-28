@@ -406,7 +406,7 @@ export function updateSliders(dev) {
   if (dev !== State.activeDevice) return;
   for (let si = 0; si < dev.sliderJointMap.length; si++) {
     const ji = dev.sliderJointMap[si];
-    const deg = dev.jointAngles[ji] * rad2deg;
+    const deg = dev.apiSign[ji] * dev.jointAngles[ji] * rad2deg;
     const slider = document.getElementById(`j${si+1}`);
     const label  = document.getElementById(`v${si+1}`);
     if (slider) slider.value = deg;

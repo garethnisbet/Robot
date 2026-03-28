@@ -71,7 +71,8 @@ def _save_history():
 COMMANDS = [
     "state", "home", "fk", "ik", "joints", "joint", "pos", "move", "target",
     "collision", "collisions", "objects", "obj", "objpos", "objrot",
-    "objscale", "objvis", "objresetrot", "objresetscale", "demo", "plan", "scan", "clear", "history", "help",
+    "objscale", "objvis", "objresetrot", "objresetscale", "devices", "device",
+    "demo", "plan", "scan", "clear", "history", "help",
     "quit", "exit",
 ]
 
@@ -82,6 +83,7 @@ class Completer:
     def __init__(self, joint_names=None):
         self.matches = []
         self.joint_names = joint_names or []
+        self.device_names = []
 
     def complete(self, text, state):
         if state == 0:
@@ -95,6 +97,8 @@ class Completer:
                 self.matches = [a + " " for a in OBJVIS_ARGS if a.startswith(text)]
             elif parts[0] in ("joint", "pos") and len(parts) == 2:
                 self.matches = [n + " " for n in self.joint_names if n.lower().startswith(text.lower())]
+            elif parts[0] == "device" and len(parts) == 2:
+                self.matches = [n + " " for n in self.device_names if n.lower().startswith(text.lower())]
             else:
                 self.matches = []
         return self.matches[state] if state < len(self.matches) else None
@@ -156,6 +160,13 @@ def _print_help(device_name, movable_joints):
         (header, None),
         ("NAME", f"    {device_name.lower()} - interactive remote control terminal for {device_name} viewer"),
         ("SYNOPSIS", f"    python remote_control.py [--url ws://HOST:PORT/ws] [--config CONFIG.json]"),
+        ("DEVICE COMMANDS", f"""\
+    {_bold('devices') if _COLORS else 'devices'}
+        List all devices loaded in the viewer, showing which is active.
+
+    {_bold('device') if _COLORS else 'device'} {_cyan('<name>') if _COLORS else '<name>'}
+        Switch to a different device by name.  Updates the prompt, joint
+        names, and tab completion to match the new device's config."""),
         ("ROBOT COMMANDS", f"""\
     {_bold('state') if _COLORS else 'state'}
         Request current device state (joints, end-effector pose, collisions).
@@ -199,6 +210,8 @@ def _print_help(device_name, movable_joints):
           2 values (start step)    — coupled scan (lockstep with primary)
         Axis is resolved by name (first word, case-insensitive) or
         1-based index.  Other axes hold their current positions.
+        Use {_bold('Device:Axis') if _COLORS else 'Device:Axis'} syntax to scan axes across multiple
+        devices simultaneously (e.g. scan Meca500:J1 0 90 5 GP225:J2 0 45 5).
         --steptime  Delay between steps in ms (default 80)"""),
         ("COLLISION COMMANDS", f"""\
     {_bold('collision') if _COLORS else 'collision'} [{_cyan('on') if _COLORS else 'on'}|{_cyan('off') if _COLORS else 'off'}]
@@ -263,7 +276,10 @@ def _print_help(device_name, movable_joints):
     $ scan {movable_joints[0][1].split()[0].lower() if movable_joints else 'delta'} 0 50 5
     $ scan {movable_joints[0][1].split()[0].lower() if movable_joints else 'delta'} 0 20 1 {movable_joints[1][1].split()[0].lower() if len(movable_joints) > 1 else 'gamma'} 20 2
     $ scan {movable_joints[0][1].split()[0].lower() if movable_joints else 'delta'} 0 20 1 {movable_joints[1][1].split()[0].lower() if len(movable_joints) > 1 else 'gamma'} 0 30 2
-    $ collision on"""),
+    $ collision on
+    $ devices
+    $ device GP225
+    $ scan Meca500:J1 0 90 5 GP225:J2 0 45 5"""),
     ]
     print()
     for heading, body in sections:
@@ -283,10 +299,12 @@ def _reprint_prompt(device_name):
     print(_prompt(device_name), end="", flush=True)
 
 
-async def print_incoming(ws, device_name, movable_joints):
+async def print_incoming(ws, ctx):
     """Background task to print state messages from the viewer."""
     try:
         async for message in ws:
+            device_name = ctx["device_name"]
+            movable_joints = ctx["movable_joints"]
             data = json.loads(message)
             _clear_line()
 
@@ -375,6 +393,39 @@ async def print_incoming(ws, device_name, movable_joints):
                 print(f"    pos  = ({_cyan(f'{p[0]:.1f}')}, {_cyan(f'{p[1]:.1f}')}, {_cyan(f'{p[2]:.1f}')}) mm")
                 print(f"    rot  = ({_magenta(f'{r[0]:.1f}')}, {_magenta(f'{r[1]:.1f}')}, {_magenta(f'{r[2]:.1f}')}) deg")
                 print(f"    scale= ({s[0]:.3f}, {s[1]:.3f}, {s[2]:.3f})")
+                _reprint_prompt(device_name)
+
+            elif data.get("type") == "devices":
+                pending = _ws_pending.get("devices")
+                if pending:
+                    pending["data"] = data
+                    pending["event"].set()
+                    continue
+                devs = data.get("devices", [])
+                if "completer" in ctx:
+                    ctx["completer"].device_names = [d["name"] for d in devs]
+                print(f"  {_bold('DEVICES')} ({len(devs)} loaded)")
+                for d in devs:
+                    active = d.get("active", False)
+                    marker = _bgreen("*") if active else " "
+                    name = _bold(d["name"]) if active else d["name"]
+                    cfg = _dim(d.get("config", "?"))
+                    kappa = f" {_dim('[kappa]')}" if d.get("isKappa") else ""
+                    print(f"    {marker} {name}  {cfg}  "
+                          f"{d.get('numJoints', '?')} joints  {d.get('mode', '?')}{kappa}")
+                _reprint_prompt(device_name)
+
+            elif data.get("type") == "device":
+                pending = _ws_pending.get("device")
+                if pending:
+                    pending["data"] = data
+                    pending["event"].set()
+                    continue
+                d = data
+                kappa = f" {_dim('[kappa]')}" if d.get("isKappa") else ""
+                print(f"  {_bold('DEVICE')} {_bold(d.get('name', '?'))}  "
+                      f"{_dim(d.get('config', '?'))}  "
+                      f"{d.get('numJoints', '?')} joints  mode={d.get('mode', '?')}{kappa}")
                 _reprint_prompt(device_name)
 
             elif data.get("type") == "error" or "error" in data:
@@ -497,6 +548,25 @@ async def plan_sequence(ws, config_path, start_q, goal_q, step_ms=80, step_deg=5
         print(f"\n  {_yellow('Motion stopped.')}")
     else:
         print(f"  {_bgreen('Done.')}")
+
+
+# ── Scan helpers ─────────────────────────────────────────────────────────────
+
+def _resolve_axis_for_device(name, movable_joints):
+    """Map axis name → index in a device's movable_joints list, or None."""
+    nl = name.lower()
+    for mi, (_, jname) in enumerate(movable_joints):
+        if jname.lower() == nl:
+            return mi
+        if jname.lower().split()[0] == nl:
+            return mi
+    try:
+        n = int(name)
+        if 1 <= n <= len(movable_joints):
+            return n - 1
+    except ValueError:
+        pass
+    return None
 
 
 # ── Scan sequence ────────────────────────────────────────────────────────────
@@ -635,6 +705,154 @@ async def scan_sequence(ws, movable_joints, num_joints, grid_axes,
         print(f"  {_bgreen('Scan complete.')}")
 
 
+# ── Multi-device scan ───────────────────────────────────────────────────────
+
+async def _fetch_device_configs(ws, device_names):
+    """Fetch device list from the viewer and load configs for named devices."""
+    event = asyncio.Event()
+    _ws_pending["devices"] = {"event": event, "data": None}
+    await ws.send(json.dumps({"cmd": "listDevices"}))
+    try:
+        await asyncio.wait_for(event.wait(), timeout=3.0)
+        resp = _ws_pending["devices"]["data"]
+    except asyncio.TimeoutError:
+        return None
+    finally:
+        _ws_pending.pop("devices", None)
+
+    if not resp:
+        return None
+    devs = resp.get("devices", [])
+    result = {}
+    for dname in device_names:
+        dev = next((d for d in devs if d["name"] == dname), None)
+        if not dev:
+            return None
+        cfg_path = dev.get("config")
+        if not cfg_path:
+            return None
+        config = load_config(cfg_path)
+        if not config:
+            return None
+        result[dname] = {
+            "config": config,
+            "movable_joints": get_movable_joints(config),
+            "num_joints": len(config["joints"]),
+        }
+    return result
+
+
+async def multi_scan_sequence(ws, device_axes, step_ms=80):
+    """
+    Multi-device scan: axes on different devices scanned simultaneously.
+
+    device_axes — list of tuples:
+        Grid:    (device, joint_idx, "grid",    start, end, step, label)
+        Coupled: (device, joint_idx, "coupled", start, step, label)
+    """
+    import itertools
+
+    # Collect unique devices in order
+    device_names = list(dict.fromkeys(a[0] for a in device_axes))
+
+    # Fetch current state for each device
+    bases = {}
+    for dname in device_names:
+        event = asyncio.Event()
+        _ws_pending["state"] = {"event": event, "data": None}
+        await ws.send(json.dumps({"cmd": "getState", "device": dname}))
+        try:
+            await asyncio.wait_for(event.wait(), timeout=3.0)
+            state_data = _ws_pending["state"]["data"]
+        except asyncio.TimeoutError:
+            state_data = None
+            print(f"  {_yellow('Warning')}: timed out fetching state for {dname}")
+        finally:
+            _ws_pending.pop("state", None)
+        bases[dname] = list(state_data["joints"]) if state_data else [0.0] * 20
+
+    # Separate grid and coupled axes
+    grid_ranges = []    # [(device, joint_idx, [vals], label)]
+    coupled_info = []   # [(device, joint_idx, start, step, label)]
+    for a in device_axes:
+        dname, joint_idx, mode = a[0], a[1], a[2]
+        if mode == "grid":
+            start, end, step, label = a[3], a[4], a[5], a[6]
+            if abs(step) < 1e-6:
+                print(f"  {_bred('Error')}: step size must be > 0")
+                return
+            vals = _build_axis_vals(start, end, step)
+            grid_ranges.append((dname, joint_idx, vals, label))
+        else:
+            coupled_info.append((dname, joint_idx, a[3], a[4], a[5]))
+
+    # Build waypoints — each is {device_name: [angles...]}
+    if coupled_info:
+        primary_vals = grid_ranges[0][2]
+        n_points = len(primary_vals)
+        coupled_ranges = []
+        for dname, joint_idx, c_start, c_step, _lbl in coupled_info:
+            vals = [c_start + i * c_step for i in range(n_points)]
+            coupled_ranges.append((dname, joint_idx, vals))
+        all_ranges = [(d, j, v) for d, j, v, _ in grid_ranges] + coupled_ranges
+        waypoints = []
+        for i in range(n_points):
+            wp = {d: list(bases[d]) for d in device_names}
+            for dname, joint_idx, vals in all_ranges:
+                wp[dname][joint_idx] = vals[i]
+            waypoints.append(wp)
+    else:
+        all_val_lists = [v for _, _, v, _ in grid_ranges]
+        waypoints = []
+        for combo in itertools.product(*all_val_lists):
+            wp = {d: list(bases[d]) for d in device_names}
+            for (dname, joint_idx, _, _), val in zip(grid_ranges, combo):
+                wp[dname][joint_idx] = val
+            waypoints.append(wp)
+
+    # Print summary
+    axis_descs = []
+    for a in device_axes:
+        if a[2] == "grid":
+            label, start, end, step = a[6], a[3], a[4], a[5]
+            axis_descs.append(f"{_bold(label)}: {start} \u2192 {end} (step {abs(step)})")
+        else:
+            label, c_start, c_step = a[5], a[3], a[4]
+            n_points = len(grid_ranges[0][2])
+            c_end = c_start + (n_points - 1) * c_step
+            axis_descs.append(f"{_bold(label)}: {c_start} \u2192 {c_end} (step {c_step})")
+    mode_str = _dim("coupled") if coupled_info else (_dim("grid") if len(grid_ranges) > 1 else "")
+    mode_suffix = f"  {mode_str}" if mode_str else ""
+    print(f"  {_bgreen('Scanning')} {', '.join(axis_descs)}  {_dim('multi-device')}{mode_suffix}")
+    print(f"  {len(waypoints)} points, {step_ms} ms/step  {_dim('press q to stop')}")
+
+    fd = sys.stdin.fileno()
+    old_term = termios.tcgetattr(fd)
+    stopped = False
+    try:
+        tty.setcbreak(fd)
+        for wp in waypoints:
+            if select.select([sys.stdin], [], [], 0)[0]:
+                ch = sys.stdin.read(1)
+                if ch.lower() == 'q':
+                    stopped = True
+                    break
+            for dname, angles in wp.items():
+                await ws.send(json.dumps({
+                    "cmd": "setJoints",
+                    "device": dname,
+                    "angles": [round(a, 4) for a in angles],
+                }))
+            await asyncio.sleep(step_ms / 1000.0)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
+
+    if stopped:
+        print(f"\n  {_yellow('Scan stopped.')}")
+    else:
+        print(f"  {_bgreen('Scan complete.')}")
+
+
 # ── Object reference parsing ─────────────────────────────────────────────────
 
 def _parse_obj_ref(token):
@@ -652,12 +870,14 @@ async def interactive(url, config_path):
     movable_joints = get_movable_joints(config)
     n_movable = len(movable_joints)
     joint_name_to_idx = {name.lower(): idx for idx, name in movable_joints}
+    ctx = {"device_name": device_name, "movable_joints": movable_joints}
 
     _load_history()
     completer = Completer(joint_names=[name for _, name in movable_joints])
     readline.set_completer(completer.complete)
     readline.parse_and_bind("tab: complete")
     readline.set_completer_delims(" \t\n")
+    ctx["completer"] = completer
 
     _print_banner(device_name, url, movable_joints)
     print(f"  Connecting to {_dim(url)} ...")
@@ -671,7 +891,22 @@ async def interactive(url, config_path):
 
     print(f"  {_bgreen('Connected!')} Type {_bold('help')} for commands, {_bold('Tab')} to complete.\n")
 
-    listener = asyncio.create_task(print_incoming(ws, device_name, movable_joints))
+    listener = asyncio.create_task(print_incoming(ws, ctx))
+
+    def _update_device_state(new_config, new_config_path, new_name):
+        nonlocal config, config_path, device_name, num_joints, movable_joints
+        nonlocal n_movable, joint_name_to_idx, prompt
+        config = new_config
+        config_path = new_config_path
+        device_name = new_name
+        num_joints = len(config["joints"]) if config else 6
+        movable_joints = get_movable_joints(config)
+        n_movable = len(movable_joints)
+        joint_name_to_idx = {name.lower(): idx for idx, name in movable_joints}
+        prompt = _prompt(device_name)
+        completer.joint_names = [name for _, name in movable_joints]
+        ctx["device_name"] = device_name
+        ctx["movable_joints"] = movable_joints
 
     def _resolve_axis_name(name):
         """Map axis name → index in movable_joints list, or None."""
@@ -729,6 +964,64 @@ async def interactive(url, config_path):
 
                 elif cmd == "state":
                     await ws.send(json.dumps({"cmd": "getState"}))
+
+                elif cmd == "devices":
+                    await ws.send(json.dumps({"cmd": "listDevices"}))
+
+                elif cmd == "device":
+                    if len(parts) < 2:
+                        print(f"  {_yellow('Usage')}: device {_cyan('<name>')}")
+                        print(f"  Type {_bold('devices')} to list available devices.")
+                    else:
+                        target = " ".join(parts[1:])
+                        # Switch active device and wait for confirmation
+                        event = asyncio.Event()
+                        _ws_pending["state"] = {"event": event, "data": None}
+                        await ws.send(json.dumps({"cmd": "setActiveDevice", "device": target}))
+                        try:
+                            await asyncio.wait_for(event.wait(), timeout=2.0)
+                            state_data = _ws_pending["state"]["data"]
+                        except asyncio.TimeoutError:
+                            state_data = None
+                        finally:
+                            _ws_pending.pop("state", None)
+
+                        if not state_data:
+                            continue
+
+                        new_name = state_data.get("device", target)
+
+                        # Fetch device info to get config path
+                        event = asyncio.Event()
+                        _ws_pending["device"] = {"event": event, "data": None}
+                        await ws.send(json.dumps({"cmd": "getDevice"}))
+                        try:
+                            await asyncio.wait_for(event.wait(), timeout=2.0)
+                            dev_data = _ws_pending["device"]["data"]
+                        except asyncio.TimeoutError:
+                            dev_data = None
+                        finally:
+                            _ws_pending.pop("device", None)
+
+                        new_config_path = dev_data.get("config") if dev_data else None
+                        if new_config_path:
+                            new_config = load_config(new_config_path)
+                            if new_config:
+                                _update_device_state(new_config, new_config_path, new_name)
+                                names = ", ".join(name for _, name in movable_joints)
+                                print(f"  {_bgreen('Switched to')} {_bold(new_name)}")
+                                print(f"  Joints ({n_movable}): {_dim(names)}")
+                            else:
+                                device_name = new_name
+                                prompt = _prompt(device_name)
+                                ctx["device_name"] = device_name
+                                print(f"  {_bgreen('Switched to')} {_bold(new_name)} "
+                                      f"{_yellow('(config not available locally)')}")
+                        else:
+                            device_name = new_name
+                            prompt = _prompt(device_name)
+                            ctx["device_name"] = device_name
+                            print(f"  {_bgreen('Switched to')} {_bold(new_name)}")
 
                 elif cmd == "home":
                     await ws.send(json.dumps({"cmd": "home"}))
@@ -959,6 +1252,7 @@ async def interactive(url, config_path):
                         print(f"  1D:      {_dim(f'scan {first_name} 0 50 5')}")
                         print(f"  Coupled: {_dim(f'scan {first_name} 10 20 1 {second_name} 20 2')}")
                         print(f"  Grid:    {_dim(f'scan {first_name} 0 20 1 {second_name} 0 30 2')}")
+                        print(f"  Multi:   {_dim('scan DeviceA:axis1 0 50 5 DeviceB:axis1 0 30 5')}")
                         continue
 
                     # Parse axis groups by detecting axis names vs numbers
@@ -986,37 +1280,84 @@ async def interactive(url, config_path):
                         print(f"  {_yellow('Error')}: first axis needs 3 values (start end step)")
                         continue
 
-                    # Resolve all axis names and classify groups
-                    grid_axes = []
-                    coupled_axes = []
-                    for gi, (axis_name, nums) in enumerate(groups):
-                        axis_idx = _resolve_axis_name(axis_name)
-                        if axis_idx is None:
-                            names = ', '.join(n for _, n in movable_joints)
-                            print(f"  {_yellow('Error')}: unknown axis {axis_name!r}. Available: {names}")
-                            valid = False
-                            break
-                        if gi == 0:
-                            # Primary axis — always grid
-                            grid_axes.append((axis_idx, nums[0], nums[1], nums[2]))
-                        elif len(nums) == 3:
-                            # Grid axis (start end step)
-                            grid_axes.append((axis_idx, nums[0], nums[1], nums[2]))
-                        elif len(nums) == 2:
-                            # Coupled axis (start step)
-                            coupled_axes.append((axis_idx, nums[0], nums[1]))
-                        else:
-                            print(f"  {_yellow('Error')}: axis {axis_name!r} needs 3 values "
-                                  f"(start end step) or 2 values (start step), got {len(nums)}")
-                            valid = False
-                            break
-                    if not valid:
-                        continue
-
                     step_ms = int(steptime_str) if steptime_str is not None else 80
-                    await scan_sequence(ws, movable_joints, num_joints,
-                                        grid_axes, coupled_axes=coupled_axes,
-                                        step_ms=step_ms)
+
+                    # Check if any axis uses device:axis syntax
+                    is_multi = any(':' in g[0] for g in groups)
+
+                    if is_multi:
+                        # ── Multi-device scan ────────────────────────
+                        parsed = []
+                        for axis_name, nums in groups:
+                            if ':' in axis_name:
+                                dp, ap = axis_name.split(':', 1)
+                            else:
+                                dp, ap = device_name, axis_name
+                            parsed.append((dp, ap, nums))
+
+                        dev_names_used = list(dict.fromkeys(g[0] for g in parsed))
+                        dev_configs = await _fetch_device_configs(ws, dev_names_used)
+                        if dev_configs is None:
+                            print(f"  {_bred('Error')}: could not load config for one or more devices. "
+                                  f"Are they loaded in the viewer?")
+                            continue
+
+                        device_axes = []
+                        for gi, (dp, ap, nums) in enumerate(parsed):
+                            dc = dev_configs[dp]
+                            mi = _resolve_axis_for_device(ap, dc["movable_joints"])
+                            if mi is None:
+                                names = ', '.join(n for _, n in dc["movable_joints"])
+                                print(f"  {_yellow('Error')}: unknown axis {ap!r} on "
+                                      f"{dp}. Available: {names}")
+                                valid = False
+                                break
+                            jidx = dc["movable_joints"][mi][0]
+                            label = f"{dp}:{dc['movable_joints'][mi][1]}"
+                            if gi == 0 or len(nums) == 3:
+                                device_axes.append((dp, jidx, "grid",
+                                                    nums[0], nums[1], nums[2], label))
+                            elif len(nums) == 2:
+                                device_axes.append((dp, jidx, "coupled",
+                                                    nums[0], nums[1], label))
+                            else:
+                                print(f"  {_yellow('Error')}: axis {ap!r} needs 3 values "
+                                      f"(start end step) or 2 (start step), got {len(nums)}")
+                                valid = False
+                                break
+                        if not valid:
+                            continue
+                        await multi_scan_sequence(ws, device_axes, step_ms=step_ms)
+
+                    else:
+                        # ── Single-device scan (existing) ────────────
+                        grid_axes = []
+                        coupled_axes = []
+                        for gi, (axis_name, nums) in enumerate(groups):
+                            axis_idx = _resolve_axis_name(axis_name)
+                            if axis_idx is None:
+                                names = ', '.join(n for _, n in movable_joints)
+                                print(f"  {_yellow('Error')}: unknown axis {axis_name!r}. "
+                                      f"Available: {names}")
+                                valid = False
+                                break
+                            if gi == 0:
+                                grid_axes.append((axis_idx, nums[0], nums[1], nums[2]))
+                            elif len(nums) == 3:
+                                grid_axes.append((axis_idx, nums[0], nums[1], nums[2]))
+                            elif len(nums) == 2:
+                                coupled_axes.append((axis_idx, nums[0], nums[1]))
+                            else:
+                                print(f"  {_yellow('Error')}: axis {axis_name!r} needs 3 values "
+                                      f"(start end step) or 2 values (start step), "
+                                      f"got {len(nums)}")
+                                valid = False
+                                break
+                        if not valid:
+                            continue
+                        await scan_sequence(ws, movable_joints, num_joints,
+                                            grid_axes, coupled_axes=coupled_axes,
+                                            step_ms=step_ms)
 
                 else:
                     print(f"  {_yellow(cmd)}: command not found. Type {_bold('help')} for usage.")

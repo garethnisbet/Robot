@@ -68,11 +68,14 @@ export function buildControlPanel(dev) {
     const ji = dev.sliderJointMap[si];
     const j = dev.config.joints[ji];
     const displayName = dev.kappaSliderNames[ji] || j.name;
-    const deg = dev.jointAngles[ji] * rad2deg;
+    const sign = dev.apiSign[ji];
+    const deg = sign * dev.jointAngles[ji] * rad2deg;
+    const lo = sign < 0 ? -j.limits[1] : j.limits[0];
+    const hi = sign < 0 ? -j.limits[0] : j.limits[1];
     const div = document.createElement('div');
     div.className = 'slider-row';
     div.innerHTML = `<label>${displayName} <span id="v${si+1}">${deg.toFixed(1)}</span></label>` +
-      `<input type="range" id="j${si+1}" min="${j.limits[0]}" max="${j.limits[1]}" value="${deg.toFixed(1)}" step="0.5">`;
+      `<input type="range" id="j${si+1}" min="${lo}" max="${hi}" value="${deg.toFixed(1)}" step="0.5">`;
     sliderContainer.appendChild(div);
   }
 
@@ -84,7 +87,7 @@ export function buildControlPanel(dev) {
     slider.addEventListener('input', () => {
       const deg = parseFloat(slider.value);
       label.textContent = deg.toFixed(1);
-      dev.jointAngles[ji] = deg * deg2rad;
+      dev.jointAngles[ji] = dev.apiSign[ji] * deg * deg2rad;
       updateFK(dev);
       updateVirtualAngles(dev);
       if (dev.ikMode) {
