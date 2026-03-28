@@ -131,7 +131,7 @@ Self-collision between device links uses kinematic adjacency analysis — links 
 
 ## Remote Control
 
-The WebSocket API at `ws://localhost:8080/ws` allows any client to control the device and read its state in real time.
+The WebSocket API at `ws://localhost:8080/ws` allows any client to control devices, manage multi-device scenes, manipulate objects, and control the camera in real time. All commands target the active device by default; include `"device": "<name>"` to target a specific device.
 
 ### Interactive Client
 
@@ -148,6 +148,8 @@ The client reads the device config to determine joint names and count. The promp
 | Command | Example | Description |
 |---------|---------|-------------|
 | `state` | `state` | Request current device state |
+| `devices` | `devices` | List all loaded devices |
+| `device` | `device i16` | Switch active device by name |
 | `home` | `home` | All joints to 0 |
 | `fk` | `fk` | Switch to FK mode |
 | `ik` | `ik` | Switch to IK mode |
@@ -156,6 +158,17 @@ The client reads the device config to determine joint names and count. The promp
 | `move` | `move 150 100 300 45 0 0` | Switch to IK and move to position (mm) + orientation (deg) |
 | `target` | `target 190 0 308` | Set IK target without switching mode |
 | `demo` | `demo` | Run the config's demo pose |
+
+**Motion planning commands:**
+
+| Command | Example | Description |
+|---------|---------|-------------|
+| `plan` | `plan --start 0 0 0 --end 45 90 0` | Linear interpolation between two poses |
+| `plan` | `plan --start mu=0 --end mu=45 --stepsize 1 --steptime 50` | Named axes with custom step |
+| `scan` | `scan theta 0 90 5` | 1D scan of a single axis |
+| `scan` | `scan theta 0 90 5 phi 0 30 2` | 2D grid scan |
+| `scan` | `scan theta 0 90 5 phi 0 1` | Coupled scan (phi steps with theta) |
+| `scan` | `scan DevA:theta 0 50 5 DevB:phi 0 30 5` | Multi-device scan |
 
 **Object commands:**
 
@@ -179,12 +192,39 @@ The client reads the device config to determine joint names and count. The promp
 
 ### API Protocol (JSON over WebSocket)
 
-**Device commands:**
+All positions are in mm, angles in degrees, using Z-up robot convention. Most commands accept an optional `"device"` field to target a specific device by name or ID; if omitted, the active device is used.
+
+**Device management:**
 ```json
 {"cmd": "getState"}
+{"cmd": "listDevices"}
+{"cmd": "getDevice"}
+{"cmd": "addDevice", "config": "i16_config.json"}
+{"cmd": "removeDevice", "device": "Meca500"}
+{"cmd": "renameDevice", "name": "MyRobot"}
+{"cmd": "setActiveDevice", "device": "i16"}
+{"cmd": "setDeviceOrigin", "position": [100, 0, 0], "rotation": [0, 0, 45]}
+{"cmd": "setDeviceParent", "parent": "dev_0:L3"}
+{"cmd": "listConfigs"}
+```
+
+**Joint control:**
+```json
 {"cmd": "setJoints", "angles": [0, -30, 60, 0, 45, 90]}
 {"cmd": "setSingleJoint", "index": 1, "angle": -30}
 {"cmd": "home"}
+{"cmd": "demoPose"}
+```
+
+**Kappa virtual angles** (diffractometer geometry):
+```json
+{"cmd": "setVirtualAngles", "chi": 45, "theta": 10, "phi": 20}
+{"cmd": "getVirtualAngles"}
+{"cmd": "setKappaSign", "positive": true}
+```
+
+**IK control:**
+```json
 {"cmd": "setMode", "mode": "IK"}
 {"cmd": "setIKTarget", "position": [190, 0, 308], "orientation": [0, 0, 0]}
 {"cmd": "moveTo", "position": [150, 100, 300], "orientation": [45, 0, 0]}
@@ -195,6 +235,10 @@ The client reads the device config to determine joint names and count. The promp
 {"cmd": "listObjects"}
 {"cmd": "getObject", "object": "MyPart"}
 {"cmd": "setObject", "object": "MyPart", "position": [100, 50, 0], "rotation": [0, 0, 45]}
+{"cmd": "setObject", "object": "MyPart", "color": "#ff0000", "parent": "dev_0:L3"}
+{"cmd": "addPrimitive", "type": "cube"}
+{"cmd": "removeObject", "object": "MyPart"}
+{"cmd": "duplicateObject", "object": "MyPart"}
 {"cmd": "resetObjectRotation", "object": "MyPart"}
 {"cmd": "resetObjectScale", "index": 0}
 ```
@@ -205,12 +249,34 @@ The client reads the device config to determine joint names and count. The promp
 {"cmd": "getCollisions"}
 ```
 
-Positions are in mm, angles in degrees, using Z-up robot convention.
+**Visualization toggles:**
+```json
+{"cmd": "setLabels", "enabled": true}
+{"cmd": "setOrigins", "enabled": true}
+{"cmd": "setChain", "enabled": true}
+{"cmd": "setOrtho", "enabled": true}
+```
+
+**Camera control:**
+```json
+{"cmd": "getCamera"}
+{"cmd": "setCamera", "position": [500, 500, 500], "target": [0, 0, 150]}
+{"cmd": "snapCamera", "view": "front"}
+```
+Snap views: `+X`, `-X`, `+Y`, `-Y`, `+Z`, `-Z`, `top`, `bottom`, `front`, `back`, `left`, `right`, `iso`.
+
+**Scene persistence:**
+```json
+{"cmd": "getSceneState"}
+{"cmd": "saveScene"}
+{"cmd": "help"}
+```
 
 **State response:**
 ```json
 {
   "type": "state",
+  "device": "Meca500",
   "joints": [0, -30, 60, 0, 45, 90],
   "eePosition": [190.0, 0.0, 308.0],
   "eeOrientation": [0.0, 0.0, 0.0],
@@ -218,9 +284,12 @@ Positions are in mm, angles in degrees, using Z-up robot convention.
   "ikError": null,
   "collisionEnabled": true,
   "collision": false,
-  "collisions": []
+  "collisions": [],
+  "chi": 45.0
 }
 ```
+
+The `chi` field is only present for kappa-geometry devices (diffractometers).
 
 ### Custom Client Example (Python)
 
@@ -236,6 +305,19 @@ async def main():
 
         # Set a single joint by index
         await ws.send(json.dumps({"cmd": "setSingleJoint", "index": 1, "angle": -45}))
+
+        # Multi-device: add a second device and position it
+        await ws.send(json.dumps({"cmd": "addDevice", "config": "i16_config.json"}))
+        await ws.recv()
+        await ws.send(json.dumps({"cmd": "setDeviceOrigin", "device": "i16", "position": [500, 0, 0]}))
+
+        # Camera: snap to front view
+        await ws.send(json.dumps({"cmd": "snapCamera", "view": "front"}))
+
+        # Kappa virtual angles (diffractometer only)
+        await ws.send(json.dumps({"cmd": "setActiveDevice", "device": "i16"}))
+        await ws.recv()
+        await ws.send(json.dumps({"cmd": "setVirtualAngles", "chi": 45, "theta": 10}))
 
         # Enable collision detection
         await ws.send(json.dumps({"cmd": "setCollision", "enabled": True}))
