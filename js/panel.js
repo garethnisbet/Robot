@@ -95,6 +95,7 @@ export function buildControlPanel(dev) {
         dev.ikTarget.position.copy(getEEWorldPosition(dev));
         dev.ikTargetQuat.copy(getEEWorldQuaternion(dev));
         dev.ikTargetEuler.setFromQuaternion(dev.ikTargetQuat, 'YZX');
+        dev.ikTarget.quaternion.copy(dev.ikTargetQuat);
         syncIKSliders(dev);
       }
     });
@@ -147,6 +148,7 @@ export function buildControlPanel(dev) {
         dev.ikTarget.position.copy(getEEWorldPosition(dev));
         dev.ikTargetQuat.copy(getEEWorldQuaternion(dev));
         dev.ikTargetEuler.setFromQuaternion(dev.ikTargetQuat, 'YZX');
+        dev.ikTarget.quaternion.copy(dev.ikTargetQuat);
         syncIKSliders(dev);
       }
     }

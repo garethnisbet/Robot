@@ -47,6 +47,7 @@ export let stlColorIdx    = 0;
 export let selectedSTL      = null;
 export let selectedListItem = null;
 export let lockAspect       = false;
+export let stlSelectable    = true;
 
 // WebSocket
 export let ws               = null;
@@ -92,6 +93,7 @@ export function setStlColorIdx(v)       { stlColorIdx = v; }
 export function setSelectedSTL(e)       { selectedSTL = e; }
 export function setSelectedListItem(i)  { selectedListItem = i; }
 export function setLockAspect(v)        { lockAspect = v; }
+export function setStlSelectable(v)     { stlSelectable = v; }
 
 export function setWs(socket)           { ws = socket; }
 export function setWsReconnectTimer(t)  { wsReconnectTimer = t; }

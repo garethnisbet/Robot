@@ -174,6 +174,7 @@ export function applyIKTarget(dev, data) {
   if (Array.isArray(data.orientation) && data.orientation.length === 3) {
     dev.ikTargetEuler.set(data.orientation[2] * deg2rad, data.orientation[0] * deg2rad, data.orientation[1] * deg2rad, 'YZX');
     dev.ikTargetQuat.setFromEuler(dev.ikTargetEuler);
+    dev.ikTarget.quaternion.copy(dev.ikTargetQuat);
   }
   syncIKSliders(dev);
 }
@@ -187,6 +188,7 @@ function syncIKAfterFK(dev) {
     dev.ikTarget.position.copy(getEEWorldPosition(dev));
     dev.ikTargetQuat.copy(getEEWorldQuaternion(dev));
     dev.ikTargetEuler.setFromQuaternion(dev.ikTargetQuat, 'YZX');
+    dev.ikTarget.quaternion.copy(dev.ikTargetQuat);
     syncIKSliders(dev);
   }
 }

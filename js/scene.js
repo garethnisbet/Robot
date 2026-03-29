@@ -52,6 +52,13 @@ transformCtrl.setMode('translate');
 transformCtrl.addEventListener('dragging-changed', (e) => {
   orbitCtrl.enabled = !e.value;
 });
+transformCtrl.addEventListener('objectChange', () => {
+  if (transformCtrl.getMode() !== 'rotate') return;
+  const dev = State.activeDevice;
+  if (!dev || !dev.ikMode) return;
+  dev.ikTargetQuat.copy(dev.ikTarget.quaternion);
+  dev.ikTargetEuler.setFromQuaternion(dev.ikTargetQuat, 'YZX');
+});
 scene.add(transformCtrl);
 
 const stlTransformCtrl = new TransformControls(camera, renderer.domElement);

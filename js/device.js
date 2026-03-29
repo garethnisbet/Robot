@@ -438,6 +438,7 @@ export function setIKMode(dev, on) {
     dev.ikTarget.position.copy(getEEWorldPosition(dev));
     dev.ikTargetQuat.copy(getEEWorldQuaternion(dev));
     dev.ikTargetEuler.setFromQuaternion(dev.ikTargetQuat, 'YZX');
+    dev.ikTarget.quaternion.copy(dev.ikTargetQuat);
     State.transformControls.attach(dev.ikTarget);
     syncIKSliders(dev);
   } else {

@@ -57,7 +57,7 @@ function _parentLinkToStable(parentLink) {
   return devIdx + ':' + linkName;
 }
 
-export async function exportSceneState() {
+export function buildScenePayload() {
   const stls = State.importedSTLs.map(entry => {
     const m = entry.mesh;
     return {
@@ -91,10 +91,14 @@ export async function exportSceneState() {
     target: [ctrl.target.x, ctrl.target.y, ctrl.target.z],
   };
 
-  const payload = { version: 1, devices, stls, camera, floorSize: State.floorSize };
-  console.log('[Save Scene]', devices.length, 'devices,', stls.length, 'objects');
-  for (const d of devices) console.log('  device:', d.name, 'joints:', d.jointAngles.map(a => (a * 180 / Math.PI).toFixed(1)));
-  for (const s of stls) console.log('  object:', s.name, 'pos:', s.position, 'rot:', s.rotation, 'parent:', s.parentLink);
+  return { version: 1, devices, stls, camera, floorSize: State.floorSize };
+}
+
+export async function exportSceneState() {
+  const payload = buildScenePayload();
+  console.log('[Save Scene]', payload.devices.length, 'devices,', payload.stls.length, 'objects');
+  for (const d of payload.devices) console.log('  device:', d.name, 'joints:', d.jointAngles.map(a => (a * 180 / Math.PI).toFixed(1)));
+  for (const s of payload.stls) console.log('  object:', s.name, 'pos:', s.position, 'rot:', s.rotation, 'parent:', s.parentLink);
 
   const json = JSON.stringify(payload, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
