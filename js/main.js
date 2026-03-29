@@ -707,6 +707,44 @@ document.getElementById('loadSceneBtn').addEventListener('click', () => {
   document.getElementById('loadSceneFile').click();
 });
 
+document.getElementById('clearSceneBtn').addEventListener('click', () => {
+  if (!confirm('Clear the entire scene? This cannot be undone.')) return;
+
+  // Clear imported STLs
+  for (const entry of [...State.importedSTLs]) {
+    if (State.selectedSTL === entry) deselectSTL();
+    entry.mesh.removeFromParent();
+    entry.mesh.geometry.dispose();
+    entry.mesh.material.dispose();
+  }
+  State.importedSTLs.length = 0;
+  document.getElementById('stl-list').innerHTML = '';
+
+  // Clear devices
+  for (const dev of [...State.devices]) {
+    State.transformControls.detach();
+    State.deviceTransformControls.detach();
+    State.scene.remove(dev.rootGroup);
+    dev.rootGroup.traverse(child => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) {
+        if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+        else child.material.dispose();
+      }
+    });
+    for (const label of dev.meshLabels) label.removeFromParent();
+    if (dev.chainLine) State.scene.remove(dev.chainLine);
+    for (const s of dev.chainSpheres) State.scene.remove(s);
+    if (dev.ikTarget) State.scene.remove(dev.ikTarget);
+    if (dev.ikLine) State.scene.remove(dev.ikLine);
+  }
+  State.devices.length = 0;
+  State.resetDeviceIdCounter();
+
+  rebuildDeviceList();
+  rebuildPrimaryModelDropdown('robot_config.json');
+});
+
 // ============================================================
 // Core scene restore (used by file load and localStorage restore)
 // ============================================================

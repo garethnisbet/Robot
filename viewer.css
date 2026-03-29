@@ -66,8 +66,12 @@
     border-bottom: 1px solid rgba(100,100,200,0.1);
   }
   .stl-item .stl-color {
-    width: 12px; height: 12px; border-radius: 2px; margin-right: 6px;
+    width: 12px; height: 12px; border-radius: 2px; margin-right: 4px;
     border: 1px solid rgba(255,255,255,0.2); cursor: pointer; flex-shrink: 0;
+  }
+  .stl-item .stl-alpha {
+    width: 36px; height: 10px; margin-right: 4px; flex-shrink: 0;
+    accent-color: #6af; cursor: pointer;
   }
   .stl-item .stl-name {
     flex: 1; cursor: text; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

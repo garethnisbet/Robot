@@ -64,6 +64,7 @@ export function buildScenePayload() {
       id: entry.stlId,
       name: entry.name,
       color: entry.color,
+      opacity: entry.opacity,
       buffer: _arrayBufferToBase64(entry._buffer),
       fileType: entry.fileType || 'stl',
       isPointCloud: entry.isPointCloud || false,
@@ -203,6 +204,10 @@ export async function restoreSTLsFromState(records) {
     if (rec.rotation) m.rotation.set(rec.rotation[0], rec.rotation[1], rec.rotation[2]);
     if (rec.scale)    m.scale.set(rec.scale[0], rec.scale[1], rec.scale[2]);
     if (rec.visible !== undefined) m.visible = rec.visible;
+    if (rec.opacity !== undefined) {
+      m.material.opacity = rec.opacity;
+      entry.opacity = rec.opacity;
+    }
 
     // Apply parent link
     const resolvedParent = _parentLinkFromStable(rec.parentLink);
@@ -295,7 +300,7 @@ export function _addPointsToScene(geometry, buffer, name, color, stlId, transfor
   label.position.copy(center);
   points.add(label);
 
-  const entry = { mesh: points, label, name, color: matColor, stlId, _buffer: buffer, fileType: 'ply', isPointCloud: true, parentLink: null };
+  const entry = { mesh: points, label, name, color: matColor, opacity: material.opacity, stlId, _buffer: buffer, fileType: 'ply', isPointCloud: true, parentLink: null };
   State.importedSTLs.push(entry);
   State.setStlColorIdx(Math.max(State.stlColorIdx, stlColors.indexOf(color) + 1));
   addSTLListItem(entry);
@@ -340,7 +345,7 @@ export function _addMeshToScene(geometry, buffer, fileType, name, color, stlId, 
   label.position.copy(center);
   mesh.add(label);
 
-  const entry = { mesh, label, name, color, stlId, _buffer: buffer, fileType, parentLink: null };
+  const entry = { mesh, label, name, color, opacity: material.opacity, stlId, _buffer: buffer, fileType, parentLink: null };
   State.importedSTLs.push(entry);
   State.setStlColorIdx(Math.max(State.stlColorIdx, stlColors.indexOf(color) + 1));
   addSTLListItem(entry);
@@ -523,6 +528,11 @@ export async function duplicateSTL(srcEntry) {
       return;
     }
   }
+  // Copy opacity from source
+  if (newEntry) {
+    newEntry.opacity = srcEntry.opacity;
+    newEntry.mesh.material.opacity = srcEntry.opacity;
+  }
 }
 
 // ============================================================
@@ -541,6 +551,19 @@ export function addSTLListItem(entry) {
   colorSwatch.addEventListener('input', () => {
     entry.mesh.material.color.set(colorSwatch.value);
     entry.color = entry.mesh.material.color.getHex();
+  });
+
+  const alphaSlider = document.createElement('input');
+  alphaSlider.type = 'range';
+  alphaSlider.className = 'stl-alpha';
+  alphaSlider.min = '0';
+  alphaSlider.max = '100';
+  alphaSlider.value = Math.round((entry.opacity ?? entry.mesh.material.opacity) * 100);
+  alphaSlider.title = 'Opacity';
+  alphaSlider.addEventListener('input', () => {
+    const val = parseInt(alphaSlider.value, 10) / 100;
+    entry.mesh.material.opacity = val;
+    entry.opacity = val;
   });
 
   const nameSpan = document.createElement('span');
@@ -611,6 +634,7 @@ export function addSTLListItem(entry) {
   });
 
   item.appendChild(colorSwatch);
+  item.appendChild(alphaSlider);
   item.appendChild(nameSpan);
   item.appendChild(dupBtn);
   item.appendChild(visBtn);
