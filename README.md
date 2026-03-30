@@ -10,6 +10,7 @@ Interactive 3D visualisation and control for robots and scientific instruments. 
 | i16 Diffractometer | `i16_config.json` | 10 movable (branching) | Diamond Light Source 6-circle diffractometer with merlin and crystal detectors |
 | Yaskawa GP225 | `gp225_config.json` | 6 (serial) | 6-DOF heavy-payload industrial robot |
 | Yaskawa GP280 | `gp280_config.json` | 6 (serial) | 6-DOF heavy-payload industrial robot |
+| Yaskawa GP180-120 | `gp180_config.json` | 6 (serial) | 6-DOF heavy-payload industrial robot |
 
 New devices can be added from Blender scenes using the `/build-viewer` skill (see [Adding New Devices](#adding-new-devices)).
 
@@ -357,7 +358,8 @@ js/
   kinematics.js          FK, IK solver, kappa geometry math
   panel.js               Control panel UI, device list, parent dropdowns
   stl.js                 Mesh import/export, primitives, duplication, IndexedDB persistence
-  collision.js           BVH-accelerated collision detection
+  collision.js           BVH-accelerated collision detection (Web Worker + main-thread fallback)
+  collision-worker.js    Background thread for collision math
   websocket.js           WebSocket client for remote control API
 server.py                WebSocket + HTTP server for remote control API
 remote_control.py        Interactive command-line remote control client (any device)
@@ -365,10 +367,12 @@ robot_config.json        Meca500 R3 device config
 i16_config.json          i16 diffractometer device config
 gp225_config.json        Yaskawa GP225 device config
 gp280_config.json        Yaskawa GP280 device config
+gp180_config.json        Yaskawa GP180-120 device config
 robot_scene.glb          Meca500 GLB model
 i16_scene.glb            i16 diffractometer GLB model
 gp225_scene.glb          Yaskawa GP225 GLB model
 gp280_scene_v2.glb       Yaskawa GP280 GLB model
+gp180_scene.glb          Yaskawa GP180-120 GLB model
 Dockerfile               Multi-stage container build
 helm/                    Kubernetes Helm chart
 ```
