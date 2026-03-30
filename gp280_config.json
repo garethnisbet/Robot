@@ -1,6 +1,6 @@
 {
   "name": "GP280",
-  "model": "gp280_scene_v3.glb",
+  "model": "gp280_scene.glb",
   "joints": [
     {
       "name": "J1 Base",
