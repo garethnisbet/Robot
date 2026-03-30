@@ -1,5 +1,5 @@
 // ============================================================
-// js/collision.js — collision detection
+// js/collision.js — collision detection (Web Worker + fallback)
 // ============================================================
 import * as THREE from 'three';
 import * as State from './state.js';
@@ -38,8 +38,274 @@ export function clearCollisionHighlights() {
   while (collisionTextEl.nextSibling) collisionTextEl.nextSibling.remove();
 }
 
+function _highlightObject(obj) {
+  const mat = obj.material;
+  if (mat.emissive) {
+    saveOriginalEmissive(mat);
+    mat.emissive.set(0xff2200);
+    highlightedMaterials.add(mat);
+  } else {
+    if (!materialOriginalColor.has(mat)) materialOriginalColor.set(mat, mat.color.clone());
+    mat.color.set(0xff2200);
+    highlightedPointMaterials.add(mat);
+  }
+}
+
+function highlightCollisionMeshes(meshA, meshB) {
+  _highlightObject(meshA);
+  _highlightObject(meshB);
+}
+
 // ============================================================
-// BVH / AABB helpers
+// Web Worker state
+// ============================================================
+let worker        = null;
+let workerReady   = false;
+let workerBusy    = false;
+const sentMeshes  = new Set();     // mesh UUIDs sent to worker
+const meshByUUID  = new Map();     // UUID -> mesh (for highlighting)
+
+export function initCollisionWorker() {
+  try {
+    worker = new Worker('js/collision-worker.js', { type: 'module' });
+    worker.onmessage = onWorkerMessage;
+    worker.onerror = (e) => {
+      console.warn('[Collision] Worker failed, using main thread:', e.message || e);
+      workerReady = false;
+      worker = null;
+    };
+  } catch (e) {
+    console.warn('[Collision] Worker not supported, using main thread');
+    worker = null;
+  }
+}
+
+function onWorkerMessage(e) {
+  const msg = e.data;
+  switch (msg.type) {
+    case 'ready':
+      workerReady = true;
+      console.log('[Collision] Worker ready — offloaded to background thread');
+      break;
+    case 'results':
+      workerBusy = false;
+      applyWorkerResults(msg.collisions);
+      break;
+    case 'error':
+      console.warn('[Collision] Worker init failed, using main thread:', msg.message);
+      workerReady = false;
+      worker = null;
+      break;
+  }
+}
+
+function ensureMeshInWorker(mesh) {
+  if (sentMeshes.has(mesh.uuid)) return;
+  const geom = mesh.geometry;
+  const pos  = geom.getAttribute('position');
+  if (!pos) return;
+  const idx  = geom.getIndex();
+
+  // Copy buffers (originals stay on main thread for rendering)
+  const positions = new Float32Array(pos.array);
+  const index     = idx ? new Uint32Array(idx.array) : null;
+  const isPointCloud = !!mesh.isPoints;
+
+  const transfer = [positions.buffer];
+  if (index) transfer.push(index.buffer);
+
+  worker.postMessage({
+    type: 'addMesh',
+    meshId: mesh.uuid,
+    geomId: geom.uuid,
+    positions,
+    index,
+    isPointCloud,
+  }, transfer);
+
+  sentMeshes.add(mesh.uuid);
+  meshByUUID.set(mesh.uuid, mesh);
+}
+
+export function removeCollisionMesh(mesh) {
+  if (worker && sentMeshes.has(mesh.uuid)) {
+    worker.postMessage({ type: 'removeMesh', meshId: mesh.uuid });
+    sentMeshes.delete(mesh.uuid);
+    meshByUUID.delete(mesh.uuid);
+  }
+}
+
+// ============================================================
+// Shared: build extended links + pair context
+// ============================================================
+function buildCollisionContext() {
+  const visibleSTLs       = State.importedSTLs.filter(e => e.mesh.visible && !e.isPointCloud);
+  const visiblePointClouds = State.importedSTLs.filter(e => e.mesh.visible && e.isPointCloud);
+
+  const worldSTLs    = visibleSTLs.filter(e => !e.parentLink);
+  const parentedSTLs = visibleSTLs.filter(e => e.parentLink);
+
+  const allExtendedLinks = [];
+  for (const dev of State.devices) {
+    for (const link of dev.robotLinkMeshes) {
+      allExtendedLinks.push({
+        name: link.name,
+        deviceName: dev.name,
+        deviceId: dev.id,
+        meshes: [...link.meshes],
+        stlEntries: [],
+      });
+    }
+  }
+
+  for (const stl of parentedSTLs) {
+    const { dev, linkName } = resolveParentLink(stl.parentLink);
+    if (dev && linkName) {
+      const extLink = allExtendedLinks.find(l => l.deviceId === dev.id && l.name === linkName);
+      if (extLink) {
+        extLink.meshes.push(stl.mesh);
+        extLink.stlEntries.push(stl);
+      }
+    }
+  }
+
+  return { worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks };
+}
+
+// ============================================================
+// Worker path: build pairs & send to worker
+// ============================================================
+function checkCollisionsOffThread() {
+  if (workerBusy) return;
+
+  const { worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks } = buildCollisionContext();
+
+  const matrices  = {};
+  const meshPairs = [];
+  const pcPairs   = [];
+  const hitPairs  = new Set();
+
+  function collectMatrix(mesh) {
+    if (!matrices[mesh.uuid]) {
+      matrices[mesh.uuid] = Array.from(mesh.matrixWorld.elements);
+    }
+    ensureMeshInWorker(mesh);
+  }
+
+  function addPair(target, meshA, meshB, nameA, nameB) {
+    const key = [nameA, nameB].sort().join('|');
+    if (hitPairs.has(key)) return;
+    hitPairs.add(key);
+    collectMatrix(meshA);
+    collectMatrix(meshB);
+    target.push([meshA.uuid, meshB.uuid, nameA, nameB]);
+  }
+
+  // 1) World STLs vs all device links
+  for (const stlEntry of worldSTLs) {
+    for (const link of allExtendedLinks) {
+      const displayName = State.devices.length > 1 ? `${link.deviceName}:${link.name}` : link.name;
+      for (const robotMesh of link.meshes) {
+        addPair(meshPairs, stlEntry.mesh, robotMesh, displayName, stlEntry.name);
+      }
+    }
+  }
+
+  // 2) Parented STLs vs other links
+  for (const stl of parentedSTLs) {
+    const { dev: stlDev, linkName: stlLinkName } = resolveParentLink(stl.parentLink);
+    for (const link of allExtendedLinks) {
+      if (link.deviceId === (stlDev ? stlDev.id : null) && link.name === stlLinkName) continue;
+      const displayName = State.devices.length > 1 ? `${link.deviceName}:${link.name}` : link.name;
+      for (const robotMesh of link.meshes) {
+        addPair(meshPairs, stl.mesh, robotMesh, displayName, stl.name);
+      }
+    }
+  }
+
+  // 3) Point clouds vs all device links
+  for (const pc of visiblePointClouds) {
+    for (const link of allExtendedLinks) {
+      const displayName = State.devices.length > 1 ? `${link.deviceName}:${link.name}` : link.name;
+      for (const robotMesh of link.meshes) {
+        addPair(pcPairs, pc.mesh, robotMesh, displayName, pc.name);
+      }
+    }
+  }
+
+  // 4) Link vs link (self-collision + cross-device)
+  for (let i = 0; i < allExtendedLinks.length; i++) {
+    for (let j = i + 1; j < allExtendedLinks.length; j++) {
+      const linkA = allExtendedLinks[i];
+      const linkB = allExtendedLinks[j];
+      if (linkA.deviceId === linkB.deviceId) {
+        const dev = State.devices.find(d => d.id === linkA.deviceId);
+        if (dev && dev.adjPairs.has([linkA.name, linkB.name].sort().join('|'))) continue;
+      }
+      const nameA = State.devices.length > 1 ? `${linkA.deviceName}:${linkA.name}` : linkA.name;
+      const nameB = State.devices.length > 1 ? `${linkB.deviceName}:${linkB.name}` : linkB.name;
+      for (const meshA of linkA.meshes) {
+        for (const meshB of linkB.meshes) {
+          addPair(meshPairs, meshA, meshB, nameA, nameB);
+        }
+      }
+    }
+  }
+
+  if (meshPairs.length === 0 && pcPairs.length === 0) {
+    applyWorkerResults([]);
+    return;
+  }
+
+  workerBusy = true;
+  worker.postMessage({
+    type: 'checkPairs',
+    matrices,
+    meshPairs,
+    pointCloudPairs: pcPairs,
+  });
+}
+
+function applyWorkerResults(collisions) {
+  clearCollisionHighlights();
+
+  const collisionInfoEl = document.getElementById('collision-info');
+  const collisionTextEl = document.getElementById('collision-text');
+
+  const collisionList = [];
+  for (const [idA, idB, nameA, nameB] of collisions) {
+    collisionList.push({ linkName: nameA, stlName: nameB });
+    const meshA = meshByUUID.get(idA);
+    const meshB = meshByUUID.get(idB);
+    if (meshA && meshB) highlightCollisionMeshes(meshA, meshB);
+  }
+
+  // Remove stale pair spans
+  const parent = collisionInfoEl;
+  while (parent.children.length > 0 && parent.lastChild !== collisionTextEl &&
+         parent.lastChild.classList && parent.lastChild.classList.contains('collision-pair')) {
+    parent.lastChild.remove();
+  }
+
+  State.setLastCollisions(collisionList);
+
+  if (collisionList.length > 0) {
+    collisionInfoEl.classList.add('hit');
+    collisionTextEl.textContent = `${collisionList.length} collision${collisionList.length > 1 ? 's' : ''}`;
+    for (const c of collisionList) {
+      const span = document.createElement('span');
+      span.className = 'collision-pair';
+      span.textContent = `${c.linkName} \u2194 ${c.stlName}`;
+      parent.appendChild(span);
+    }
+  } else {
+    collisionInfoEl.classList.remove('hit');
+    collisionTextEl.textContent = 'none';
+  }
+}
+
+// ============================================================
+// Main-thread fallback (original BVH logic)
 // ============================================================
 const _collBox1   = new THREE.Box3();
 const _collBox2   = new THREE.Box3();
@@ -121,24 +387,6 @@ function testPointCloudCollision(pointsObj, meshObj) {
   return false;
 }
 
-function _highlightObject(obj) {
-  const mat = obj.material;
-  if (mat.emissive) {
-    saveOriginalEmissive(mat);
-    mat.emissive.set(0xff2200);
-    highlightedMaterials.add(mat);
-  } else {
-    if (!materialOriginalColor.has(mat)) materialOriginalColor.set(mat, mat.color.clone());
-    mat.color.set(0xff2200);
-    highlightedPointMaterials.add(mat);
-  }
-}
-
-function highlightCollisionMeshes(meshA, meshB) {
-  _highlightObject(meshA);
-  _highlightObject(meshB);
-}
-
 function testMeshPairCollision(meshA, meshB) {
   fastWorldAABB(meshA, _collBox1);
   fastWorldAABB(meshB, _collBox2);
@@ -152,52 +400,13 @@ function testMeshPairCollision(meshA, meshB) {
   return true;
 }
 
-// ============================================================
-// checkCollisions — called every frame
-// ============================================================
-let _collisionFrame = 0;
-const COLLISION_THROTTLE = 6;
-
-export function checkCollisions() {
-  if (!State.collisionEnabled) return;
-  if (++_collisionFrame % COLLISION_THROTTLE !== 0) return;
-
+function checkCollisionsMainThread() {
   clearCollisionHighlights();
 
   const collisionInfoEl = document.getElementById('collision-info');
   const collisionTextEl = document.getElementById('collision-text');
 
-  const visibleSTLs      = State.importedSTLs.filter(e => e.mesh.visible && !e.isPointCloud);
-  const visiblePointClouds = State.importedSTLs.filter(e => e.mesh.visible && e.isPointCloud);
-
-  const worldSTLs    = visibleSTLs.filter(e => !e.parentLink);
-  const parentedSTLs = visibleSTLs.filter(e => e.parentLink);
-
-  // Build extended links from ALL devices
-  const allExtendedLinks = [];
-  for (const dev of State.devices) {
-    for (const link of dev.robotLinkMeshes) {
-      allExtendedLinks.push({
-        name: link.name,
-        deviceName: dev.name,
-        deviceId: dev.id,
-        meshes: [...link.meshes],
-        stlEntries: [],
-      });
-    }
-  }
-
-  // Attach parented STLs to their respective device links
-  for (const stl of parentedSTLs) {
-    const { dev, linkName } = resolveParentLink(stl.parentLink);
-    if (dev && linkName) {
-      const extLink = allExtendedLinks.find(l => l.deviceId === dev.id && l.name === linkName);
-      if (extLink) {
-        extLink.meshes.push(stl.mesh);
-        extLink.stlEntries.push(stl);
-      }
-    }
-  }
+  const { worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks } = buildCollisionContext();
 
   const collisions = [];
   const hitPairs = new Set();
@@ -256,7 +465,6 @@ export function checkCollisions() {
     for (let j = i + 1; j < allExtendedLinks.length; j++) {
       const linkA = allExtendedLinks[i];
       const linkB = allExtendedLinks[j];
-      // Skip adjacency only within same device
       if (linkA.deviceId === linkB.deviceId) {
         const dev = State.devices.find(d => d.id === linkA.deviceId);
         if (dev && dev.adjPairs.has([linkA.name, linkB.name].sort().join('|'))) continue;
@@ -299,4 +507,22 @@ export function checkCollisions() {
     collisionInfoEl.classList.remove('hit');
     collisionTextEl.textContent = 'none';
   }
+}
+
+// ============================================================
+// checkCollisions — called every frame
+// ============================================================
+let _collisionFrame = 0;
+const COLLISION_THROTTLE = 6;
+
+export function checkCollisions() {
+  if (!State.collisionEnabled) return;
+  if (++_collisionFrame % COLLISION_THROTTLE !== 0) return;
+
+  if (workerReady && worker && !workerBusy) {
+    checkCollisionsOffThread();
+  } else if (!workerReady || !worker) {
+    checkCollisionsMainThread();
+  }
+  // If workerBusy, skip — last results still displayed
 }

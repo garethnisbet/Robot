@@ -44,7 +44,7 @@ import {
   addPrimitive,
   selectSTL, deselectSTL, setSTLTransformMode, setSTLParent,
 } from './stl.js';
-import { checkCollisions, clearCollisionHighlights } from './collision.js';
+import { checkCollisions, clearCollisionHighlights, initCollisionWorker } from './collision.js';
 import {
   wsConnect, registerSetActiveDevice, registerAvailableConfigs,
 } from './websocket.js';
@@ -54,6 +54,9 @@ import {
 import { configFiles } from './panel.js';
 registerSetActiveDevice(setActiveDevice);
 registerAvailableConfigs(configFiles);
+
+// Start collision Web Worker (falls back to main thread if unavailable)
+initCollisionWorker();
 
 // ============================================================
 // Raycaster (for click-to-select)
