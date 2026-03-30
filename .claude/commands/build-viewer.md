@@ -147,6 +147,13 @@ import bpy, os
 arm_obj = bpy.data.objects['ARMATURE_NAME']
 output_path = 'OUTPUT_PATH'  # e.g., '/path/to/robot_scene.glb'
 
+# Hide render-hidden meshes from viewport temporarily (auxiliary objects like samples, detectors, debug spheres)
+visibility_backup = []
+for obj in bpy.data.objects:
+    if obj.type == 'MESH' and obj.hide_render and not obj.hide_viewport:
+        visibility_backup.append(obj)
+        obj.hide_viewport = True
+
 # Backup and unparent bone-parented meshes to avoid skins in GLB
 parenting_backup = []
 for obj in bpy.data.objects:
@@ -180,8 +187,13 @@ for info in parenting_backup:
     obj.parent_type = info['parent_type']
     obj.matrix_world = info['matrix_world']
 
+# Restore visibility
+for obj in visibility_backup:
+    obj.hide_viewport = False
+
 print(f"Exported to {output_path}")
 print(f"Unparented/restored {len(parenting_backup)} bone-parented meshes")
+print(f"Hidden/restored {len(visibility_backup)} render-hidden meshes")
 ```
 
 ### Browser cache busting:
@@ -236,7 +248,7 @@ Array of joint angles in degrees, one per joint. Fixed joints should be `0`. Cho
 
 ## Step 8: Add Config to Model Selector
 
-The viewer has a model selector dropdown. To make the new config available, add its filename to the `configFiles` array in `threejs_scene.html`. Search for `configFiles` and add the new config filename.
+The viewer has a model selector dropdown. To make the new config available, add its filename to the `configFiles` array in `js/panel.js`. Search for `configFiles` in that file and append the new config filename to the array.
 
 ## Step 9: Start HTTP Server and Test
 
