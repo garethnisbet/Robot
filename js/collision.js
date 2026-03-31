@@ -89,7 +89,8 @@ function onWorkerMessage(e) {
       break;
     case 'results':
       workerBusy = false;
-      applyWorkerResults(msg.collisions);
+      applyWorkerResults(msg.collisions, _pendingFloorCollisions);
+      _pendingFloorCollisions = [];
       break;
     case 'error':
       console.warn('[Collision] Worker init failed, using main thread:', msg.message);
@@ -252,8 +253,12 @@ function checkCollisionsOffThread() {
     }
   }
 
+  // Collect floor collisions synchronously (cheap AABB check, no worker needed)
+  _pendingFloorCollisions = collectFloorCollisions(worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks);
+
   if (meshPairs.length === 0 && pcPairs.length === 0) {
-    applyWorkerResults([]);
+    applyWorkerResults([], _pendingFloorCollisions);
+    _pendingFloorCollisions = [];
     return;
   }
 
@@ -266,7 +271,7 @@ function checkCollisionsOffThread() {
   });
 }
 
-function applyWorkerResults(collisions) {
+function applyWorkerResults(collisions, floorCollisions = []) {
   clearCollisionHighlights();
 
   const collisionInfoEl = document.getElementById('collision-info');
@@ -278,6 +283,11 @@ function applyWorkerResults(collisions) {
     const meshA = meshByUUID.get(idA);
     const meshB = meshByUUID.get(idB);
     if (meshA && meshB) highlightCollisionMeshes(meshA, meshB);
+  }
+  for (const fc of floorCollisions) {
+    collisionList.push({ linkName: 'floor', stlName: fc.name });
+    const mesh = meshByUUID.get(fc.mesh.uuid);
+    if (mesh) _highlightObject(mesh);
   }
 
   // Remove stale pair spans
@@ -387,6 +397,11 @@ function testPointCloudCollision(pointsObj, meshObj) {
   return false;
 }
 
+function testFloorCollision(mesh) {
+  fastWorldAABB(mesh, _collBox1);
+  return _collBox1.min.y < 0;
+}
+
 function testMeshPairCollision(meshA, meshB) {
   fastWorldAABB(meshA, _collBox1);
   fastWorldAABB(meshB, _collBox2);
@@ -398,6 +413,33 @@ function testMeshPairCollision(meshA, meshB) {
     if (!bvhA.intersectsGeometry(meshB.geometry, _collMatrix)) return false;
   }
   return true;
+}
+
+// Pending floor collisions computed synchronously before worker check
+let _pendingFloorCollisions = [];
+
+function collectFloorCollisions(worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks) {
+  const results = [];
+  const seen = new Set();
+  function add(name, mesh) {
+    if (seen.has(name)) return;
+    seen.add(name);
+    results.push({ name, mesh });
+    meshByUUID.set(mesh.uuid, mesh);
+  }
+  for (const e of [...worldSTLs, ...parentedSTLs]) {
+    if (testFloorCollision(e.mesh)) add(e.name, e.mesh);
+  }
+  for (const pc of visiblePointClouds) {
+    if (testFloorCollision(pc.mesh)) add(pc.name, pc.mesh);
+  }
+  for (const link of allExtendedLinks) {
+    const displayName = State.devices.length > 1 ? `${link.deviceName}:${link.name}` : link.name;
+    for (const robotMesh of link.meshes) {
+      if (testFloorCollision(robotMesh)) { add(displayName, robotMesh); break; }
+    }
+  }
+  return results;
 }
 
 function checkCollisionsMainThread() {
@@ -483,6 +525,11 @@ function checkCollisionsMainThread() {
         if (found) break;
       }
     }
+  }
+
+  // 5) Floor collisions (imported objects + robot links below y=0)
+  for (const fc of collectFloorCollisions(worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks)) {
+    addCollision('floor', fc.name, fc.mesh, fc.mesh);
   }
 
   // Update UI
