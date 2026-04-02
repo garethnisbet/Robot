@@ -173,6 +173,12 @@ function buildCollisionContext() {
   return { worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks };
 }
 
+function meshDisplayName(link, mesh) {
+  const stlEntry = link.stlEntries.find(e => e.mesh === mesh);
+  if (stlEntry) return stlEntry.name;
+  return State.devices.length > 1 ? `${link.deviceName}:${link.name}` : link.name;
+}
+
 // ============================================================
 // Worker path: build pairs & send to worker
 // ============================================================
@@ -205,8 +211,8 @@ function checkCollisionsOffThread() {
   // 1) World STLs vs all device links
   for (const stlEntry of worldSTLs) {
     for (const link of allExtendedLinks) {
-      const displayName = State.devices.length > 1 ? `${link.deviceName}:${link.name}` : link.name;
       for (const robotMesh of link.meshes) {
+        const displayName = meshDisplayName(link, robotMesh);
         addPair(meshPairs, stlEntry.mesh, robotMesh, displayName, stlEntry.name);
       }
     }
@@ -217,8 +223,8 @@ function checkCollisionsOffThread() {
     const { dev: stlDev, linkName: stlLinkName } = resolveParentLink(stl.parentLink);
     for (const link of allExtendedLinks) {
       if (link.deviceId === (stlDev ? stlDev.id : null) && link.name === stlLinkName) continue;
-      const displayName = State.devices.length > 1 ? `${link.deviceName}:${link.name}` : link.name;
       for (const robotMesh of link.meshes) {
+        const displayName = meshDisplayName(link, robotMesh);
         addPair(meshPairs, stl.mesh, robotMesh, displayName, stl.name);
       }
     }
@@ -227,8 +233,8 @@ function checkCollisionsOffThread() {
   // 3) Point clouds vs all device links
   for (const pc of visiblePointClouds) {
     for (const link of allExtendedLinks) {
-      const displayName = State.devices.length > 1 ? `${link.deviceName}:${link.name}` : link.name;
       for (const robotMesh of link.meshes) {
+        const displayName = meshDisplayName(link, robotMesh);
         addPair(pcPairs, pc.mesh, robotMesh, displayName, pc.name);
       }
     }
@@ -243,10 +249,10 @@ function checkCollisionsOffThread() {
         const dev = State.devices.find(d => d.id === linkA.deviceId);
         if (dev && dev.adjPairs.has([linkA.name, linkB.name].sort().join('|'))) continue;
       }
-      const nameA = State.devices.length > 1 ? `${linkA.deviceName}:${linkA.name}` : linkA.name;
-      const nameB = State.devices.length > 1 ? `${linkB.deviceName}:${linkB.name}` : linkB.name;
       for (const meshA of linkA.meshes) {
+        const nameA = meshDisplayName(linkA, meshA);
         for (const meshB of linkB.meshes) {
+          const nameB = meshDisplayName(linkB, meshB);
           addPair(meshPairs, meshA, meshB, nameA, nameB);
         }
       }
@@ -434,9 +440,9 @@ function collectFloorCollisions(worldSTLs, parentedSTLs, visiblePointClouds, all
     if (testFloorCollision(pc.mesh)) add(pc.name, pc.mesh);
   }
   for (const link of allExtendedLinks) {
-    const displayName = State.devices.length > 1 ? `${link.deviceName}:${link.name}` : link.name;
     for (const robotMesh of link.meshes) {
-      if (testFloorCollision(robotMesh)) { add(displayName, robotMesh); break; }
+      const displayName = meshDisplayName(link, robotMesh);
+      if (testFloorCollision(robotMesh)) add(displayName, robotMesh);
     }
   }
   return results;
@@ -464,11 +470,10 @@ function checkCollisionsMainThread() {
   // 1) World STLs vs all device links
   for (const stlEntry of worldSTLs) {
     for (const link of allExtendedLinks) {
-      const displayName = State.devices.length > 1 ? `${link.deviceName}:${link.name}` : link.name;
       for (const robotMesh of link.meshes) {
+        const displayName = meshDisplayName(link, robotMesh);
         if (testMeshPairCollision(stlEntry.mesh, robotMesh)) {
           addCollision(displayName, stlEntry.name, stlEntry.mesh, robotMesh);
-          break;
         }
       }
     }
@@ -479,11 +484,10 @@ function checkCollisionsMainThread() {
     const { dev: stlDev, linkName: stlLinkName } = resolveParentLink(stl.parentLink);
     for (const link of allExtendedLinks) {
       if (link.deviceId === (stlDev ? stlDev.id : null) && link.name === stlLinkName) continue;
-      const displayName = State.devices.length > 1 ? `${link.deviceName}:${link.name}` : link.name;
       for (const robotMesh of link.meshes) {
+        const displayName = meshDisplayName(link, robotMesh);
         if (testMeshPairCollision(stl.mesh, robotMesh)) {
           addCollision(displayName, stl.name, stl.mesh, robotMesh);
-          break;
         }
       }
     }
@@ -492,11 +496,10 @@ function checkCollisionsMainThread() {
   // 3) Point clouds vs all device links
   for (const pc of visiblePointClouds) {
     for (const link of allExtendedLinks) {
-      const displayName = State.devices.length > 1 ? `${link.deviceName}:${link.name}` : link.name;
       for (const robotMesh of link.meshes) {
+        const displayName = meshDisplayName(link, robotMesh);
         if (testPointCloudCollision(pc.mesh, robotMesh)) {
           addCollision(displayName, pc.name, pc.mesh, robotMesh);
-          break;
         }
       }
     }
@@ -511,18 +514,14 @@ function checkCollisionsMainThread() {
         const dev = State.devices.find(d => d.id === linkA.deviceId);
         if (dev && dev.adjPairs.has([linkA.name, linkB.name].sort().join('|'))) continue;
       }
-      const nameA = State.devices.length > 1 ? `${linkA.deviceName}:${linkA.name}` : linkA.name;
-      const nameB = State.devices.length > 1 ? `${linkB.deviceName}:${linkB.name}` : linkB.name;
-      let found = false;
       for (const meshA of linkA.meshes) {
+        const nameA = meshDisplayName(linkA, meshA);
         for (const meshB of linkB.meshes) {
+          const nameB = meshDisplayName(linkB, meshB);
           if (testMeshPairCollision(meshA, meshB)) {
             addCollision(nameA, nameB, meshA, meshB);
-            found = true;
-            break;
           }
         }
-        if (found) break;
       }
     }
   }

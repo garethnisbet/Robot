@@ -131,10 +131,12 @@ def load_config(config_path):
         filename = os.path.basename(config_path)
         url = f"{_http_base_url}/{filename}"
         try:
-            with urllib.request.urlopen(url, timeout=5) as resp:
+            import ssl
+            ctx = ssl.create_default_context()
+            with urllib.request.urlopen(url, timeout=5, context=ctx) as resp:
                 return json.load(resp)
         except Exception as e:
-            print(f"  {_yellow('Warning')}: Could not load config {filename} from server: {e}")
+            print(f"  {_yellow('Warning')}: Could not fetch config {filename} from {url}: {e}")
             return None
 
     print(f"  {_yellow('Warning')}: Could not load config {config_path}")
