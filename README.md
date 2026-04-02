@@ -38,6 +38,8 @@ New devices can be added from Blender scenes using the `/build-viewer` skill (se
 - **Self-collision detection** — BVH-accelerated triangle-level intersection testing between device links, using kinematic adjacency to skip physically connected parts
 - **Collision detection** — intersection testing between device links and imported scene objects, with red highlight on colliding meshes
 - **Remote control API** — two-way WebSocket API for controlling any device from Python or any WebSocket client
+- **Session routing** — each browser tab gets a unique session ID; controllers can target a specific tab or broadcast to all
+- **Connection info panel** — click the API status indicator (top-left) to see the session ID, connection commands, and download the Python client
 
 ## Quick Start
 
@@ -52,7 +54,7 @@ Open `http://localhost:8000/threejs_scene.html` in a browser. Use the dropdown t
 pip3 install aiohttp websockets
 python3 server.py --config robot_config.json
 ```
-Open `http://localhost:8080` in a browser. The green dot in the top-left corner shows WebSocket connection status.
+Open `http://localhost:8080` in a browser. The status indicator in the top-left shows the WebSocket connection state and the session ID for this tab. Click it to open the connection info panel, which shows the full connection command, WebSocket URL, and a link to download `remote_control.py`.
 
 ## Adding New Devices
 
@@ -136,15 +138,39 @@ Self-collision between device links uses kinematic adjacency analysis — links 
 
 The WebSocket API at `ws://localhost:8080/ws` allows any client to control devices, manage multi-device scenes, manipulate objects, and control the camera in real time. All commands target the active device by default; include `"device": "<name>"` to target a specific device.
 
+### Session Routing
+
+Each browser tab that connects to the viewer is assigned a unique **session ID** (an 8-character hex string, e.g. `ab12cd34`). The ID is shown in the status bar (`API: connected [ab12cd34]`) and in the connection info panel.
+
+Controllers can target a specific viewer tab or broadcast to all:
+
+| Connection | Routes to |
+|-----------|-----------|
+| `ws://localhost:8080/ws` | All connected viewer tabs |
+| `ws://localhost:8080/ws?session=ab12cd34` | Only the tab with that session ID |
+
+Active sessions can be listed via the HTTP endpoint:
+```
+GET http://localhost:8080/sessions
+→ [{"id": "ab12cd34", "viewers": 1}, ...]
+```
+
 ### Interactive Client
 
 ```bash
-python3 remote_control.py --config robot_config.json       # Meca500
-python3 remote_control.py --config i16_config.json          # i16 diffractometer
-python3 remote_control.py --url ws://192.168.1.100:8080/ws  # remote server
+python3 remote_control.py --config robot_config.json                        # broadcast to all tabs
+python3 remote_control.py --config robot_config.json --session ab12cd34     # target a specific tab
+python3 remote_control.py --config i16_config.json --session ab12cd34       # i16 diffractometer
+python3 remote_control.py --url ws://192.168.1.100:8080/ws --session ab12cd34  # remote server
 ```
 
-The client reads the device config to determine joint names and count. The prompt, help text, and tab completion adapt to the loaded device.
+The client reads the device config to determine joint names and count. The prompt, help text, and tab completion adapt to the loaded device. The `remote_control.py` file can also be downloaded directly from the connection info panel in the viewer.
+
+**Session commands:**
+
+| Command | Example | Description |
+|---------|---------|-------------|
+| `sessions` | `sessions` | List viewer session IDs currently connected to the server |
 
 **Device commands:**
 
@@ -300,7 +326,8 @@ The `chi` field is only present for kappa-geometry devices (diffractometers).
 import asyncio, json, websockets
 
 async def main():
-    async with websockets.connect("ws://localhost:8080/ws") as ws:
+    # Target a specific viewer tab by session ID (omit ?session=... to broadcast to all)
+    async with websockets.connect("ws://localhost:8080/ws?session=ab12cd34") as ws:
         # Set joint angles
         await ws.send(json.dumps({"cmd": "setJoints", "angles": [0, -30, 60, 0, 45, 90]}))
         state = json.loads(await ws.recv())

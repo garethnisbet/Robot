@@ -9,7 +9,33 @@
 <body>
 <div id="loading">Loading robot model...</div>
 <canvas id="nav-gizmo"></canvas>
-<div id="ws-status"><span class="dot off" id="ws-dot"></span><span id="ws-text">API: not connected</span></div>
+<div id="ws-status" title="Click for connection info"><span class="dot off" id="ws-dot"></span><span id="ws-text">API: not connected</span></div>
+<div id="ws-info-panel" hidden>
+  <div class="wsi-row">
+    <span class="wsi-label">Session ID</span>
+    <code id="wsi-session" class="wsi-val"></code>
+    <button class="wsi-copy" data-copy="wsi-session" title="Copy">⎘</button>
+  </div>
+  <div class="wsi-row">
+    <span class="wsi-label">Terminal</span>
+    <code id="wsi-cmd" class="wsi-val"></code>
+    <button class="wsi-copy" data-copy="wsi-cmd" title="Copy">⎘</button>
+  </div>
+  <div class="wsi-row">
+    <span class="wsi-label">WebSocket</span>
+    <code id="wsi-wsurl" class="wsi-val"></code>
+    <button class="wsi-copy" data-copy="wsi-wsurl" title="Copy">⎘</button>
+  </div>
+  <div class="wsi-row">
+    <span class="wsi-label">Sessions API</span>
+    <code id="wsi-apiurl" class="wsi-val"></code>
+    <button class="wsi-copy" data-copy="wsi-apiurl" title="Copy">⎘</button>
+  </div>
+  <div class="wsi-divider"></div>
+  <a id="wsi-download" href="/remote_control.py" download="remote_control.py">
+    ↓ Download remote_control.py
+  </a>
+</div>
 <div id="panel">
   <div id="device-manager">
     <div id="primary-model-row">

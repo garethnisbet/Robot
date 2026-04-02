@@ -26,13 +26,76 @@ const deg2rad = Math.PI / 180;
 const rad2deg = 180 / Math.PI;
 
 // ============================================================
+// Session ID — persists within the browser session so reconnects
+// reuse the same ID and the server can route to this specific tab.
+// ============================================================
+function getSessionId() {
+  let id = sessionStorage.getItem('sessionId');
+  if (!id) {
+    id = Math.random().toString(16).slice(2, 10);
+    sessionStorage.setItem('sessionId', id);
+  }
+  return id;
+}
+
+export function getWsSessionId() { return getSessionId(); }
+
+// ============================================================
+// Info panel — shown when the status bar is clicked
+// ============================================================
+export function initWsInfoPanel() {
+  if (location.protocol === 'file:') return;
+
+  const statusEl = document.getElementById('ws-status');
+  const panel    = document.getElementById('ws-info-panel');
+  if (!statusEl || !panel) return;
+
+  const sid    = getSessionId();
+  const proto  = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl  = `${proto}//${location.host}/ws?session=${sid}`;
+  const apiUrl = `${location.protocol}//${location.host}/sessions`;
+  const cmd    = `python remote_control.py --session ${sid}`;
+
+  document.getElementById('wsi-session').textContent = sid;
+  document.getElementById('wsi-cmd').textContent     = cmd;
+  document.getElementById('wsi-wsurl').textContent   = wsUrl;
+  document.getElementById('wsi-apiurl').textContent  = apiUrl;
+
+  // Toggle panel on status-bar click
+  statusEl.addEventListener('click', () => {
+    panel.hidden = !panel.hidden;
+  });
+
+  // Dismiss on outside click
+  document.addEventListener('click', (e) => {
+    if (!panel.hidden && !panel.contains(e.target) && !statusEl.contains(e.target)) {
+      panel.hidden = true;
+    }
+  });
+
+  // Copy buttons
+  panel.addEventListener('click', (e) => {
+    const btn = e.target.closest('.wsi-copy');
+    if (!btn) return;
+    const srcId = btn.dataset.copy;
+    const text  = document.getElementById(srcId)?.textContent || '';
+    navigator.clipboard.writeText(text).then(() => {
+      btn.classList.add('copied');
+      btn.textContent = '✓';
+      setTimeout(() => { btn.classList.remove('copied'); btn.textContent = '⎘'; }, 1500);
+    });
+  });
+}
+
+// ============================================================
 // Status indicator
 // ============================================================
 export function wsSetStatus(state) {
   const wsDot  = document.getElementById('ws-dot');
   const wsText = document.getElementById('ws-text');
   wsDot.className = 'dot ' + (state === 'on' ? 'on' : state === 'err' ? 'err' : 'off');
-  wsText.textContent = state === 'on'  ? 'API: connected'     :
+  const sid = getSessionId();
+  wsText.textContent = state === 'on'  ? `API: connected [${sid}]` :
                         state === 'err' ? 'API: error' : 'API: not connected';
 }
 
@@ -752,7 +815,7 @@ export function wsConnect() {
   if (location.protocol === 'file:') return;
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url   = `${proto}//${location.host}/ws?role=viewer`;
+  const url   = `${proto}//${location.host}/ws?role=viewer&session=${getSessionId()}`;
 
   const socket = new WebSocket(url);
   State.setWs(socket);

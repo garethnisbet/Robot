@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Robot/Device — Remote Control Terminal
 
@@ -21,6 +22,7 @@ import select
 import sys
 import termios
 import tty
+import urllib.request
 
 import websockets
 
@@ -72,6 +74,7 @@ COMMANDS = [
     "state", "home", "fk", "ik", "joints", "joint", "pos", "move", "target",
     "collision", "collisions", "objects", "obj", "objpos", "objrot",
     "objscale", "objvis", "objresetrot", "objresetscale", "devices", "device",
+    "sessions",
     "demo", "plan", "scan", "clear", "history", "help",
     "quit", "exit",
 ]
@@ -159,7 +162,12 @@ def _print_help(device_name, movable_joints):
     sections = [
         (header, None),
         ("NAME", f"    {device_name.lower()} - interactive remote control terminal for {device_name} viewer"),
-        ("SYNOPSIS", f"    python remote_control.py [--url ws://HOST:PORT/ws] [--config CONFIG.json]"),
+        ("SYNOPSIS", f"    python remote_control.py [--url ws://HOST:PORT/ws] [--config CONFIG.json] [--session SESSION_ID]"),
+        ("SESSION COMMANDS", f"""\
+    {_bold('sessions') if _COLORS else 'sessions'}
+        List viewer sessions currently connected to the server, with their
+        session IDs.  Use a session ID with --session to target a specific
+        browser tab.  The session ID is also shown in the viewer status bar."""),
         ("DEVICE COMMANDS", f"""\
     {_bold('devices') if _COLORS else 'devices'}
         List all devices loaded in the viewer, showing which is active.
@@ -968,6 +976,23 @@ async def interactive(url, config_path):
                 elif cmd == "devices":
                     await ws.send(json.dumps({"cmd": "listDevices"}))
 
+                elif cmd == "sessions":
+                    http_url = url.replace("ws://", "http://").replace("wss://", "https://")
+                    http_url = http_url.split("?")[0]          # strip query string
+                    http_url = http_url.rsplit("/ws", 1)[0] + "/sessions"
+                    try:
+                        with urllib.request.urlopen(http_url, timeout=3) as resp:
+                            data = json.loads(resp.read())
+                        if not data:
+                            print(f"  {_dim('No active viewer sessions.')}")
+                        else:
+                            print(f"  {_bold('Active sessions')}:")
+                            for s in data:
+                                viewers_label = _dim(f"({s['viewers']} viewer{'s' if s['viewers'] != 1 else ''})")
+                                print(f"    {_bcyan(s['id'])}  {viewers_label}")
+                    except Exception as e:
+                        print(f"  {_red('Could not fetch sessions')}: {e}")
+
                 elif cmd == "device":
                     if len(parts) < 2:
                         print(f"  {_yellow('Usage')}: device {_cyan('<name>')}")
@@ -1385,14 +1410,23 @@ def main():
         epilog="Examples:\n"
                "  python remote_control.py\n"
                "  python remote_control.py --config i16_config.json\n"
-               "  python remote_control.py --url ws://192.168.1.100:8080/ws --config robot_config.json\n",
+               "  python remote_control.py --url ws://192.168.1.100:8080/ws --config robot_config.json\n"
+               "  python remote_control.py --session ab12cd34\n",
     )
     parser.add_argument("--url", default="ws://localhost:8080/ws",
                         help="WebSocket URL (default: ws://localhost:8080/ws)")
     parser.add_argument("--config", default="robot_config.json",
                         help="Path to device config JSON (default: robot_config.json)")
+    parser.add_argument("--session", default=None,
+                        help="Session ID of the viewer instance to connect to. "
+                             "Omit to broadcast to all viewers. "
+                             "Run 'sessions' command to list active sessions.")
     args = parser.parse_args()
-    asyncio.run(interactive(args.url, args.config))
+    url = args.url
+    if args.session:
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}session={args.session}"
+    asyncio.run(interactive(url, args.config))
 
 
 if __name__ == "__main__":

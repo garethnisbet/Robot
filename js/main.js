@@ -46,7 +46,7 @@ import {
 } from './stl.js';
 import { checkCollisions, clearCollisionHighlights, initCollisionWorker } from './collision.js';
 import {
-  wsConnect, registerSetActiveDevice, registerAvailableConfigs,
+  wsConnect, initWsInfoPanel, registerSetActiveDevice, registerAvailableConfigs,
 } from './websocket.js';
 
 // Register callbacks for websocket.js
@@ -883,3 +883,4 @@ animate();
 
 // Start WebSocket
 wsConnect();
+initWsInfoPanel();
