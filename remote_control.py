@@ -108,15 +108,37 @@ class Completer:
 
 # ── Config loading ──────────────────────────────────────────────────────────
 
+_http_base_url = None   # set from the WS URL at startup
+
+def _ws_url_to_http(ws_url):
+    """Convert ws(s)://host:port/ws?... → http(s)://host:port"""
+    from urllib.parse import urlparse
+    p = urlparse(ws_url)
+    scheme = "https" if p.scheme == "wss" else "http"
+    return f"{scheme}://{p.hostname}:{p.port}" if p.port else f"{scheme}://{p.hostname}"
+
 def load_config(config_path):
-    """Load the robot/device config to get joint info."""
+    """Load the robot/device config — try local file first, then fetch from server."""
+    # Try local file
     try:
         with open(config_path) as f:
-            config = json.load(f)
-        return config
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"  {_yellow('Warning')}: Could not load config {config_path}: {e}")
-        return None
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    # Try fetching from server
+    if _http_base_url:
+        filename = os.path.basename(config_path)
+        url = f"{_http_base_url}/{filename}"
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                return json.load(resp)
+        except Exception as e:
+            print(f"  {_yellow('Warning')}: Could not load config {filename} from server: {e}")
+            return None
+
+    print(f"  {_yellow('Warning')}: Could not load config {config_path}")
+    return None
 
 def get_movable_joints(config):
     """Return list of (index, name) for movable (non-fixed) joints."""
@@ -872,6 +894,8 @@ def _parse_obj_ref(token):
 # ── Main interactive loop ────────────────────────────────────────────────────
 
 async def interactive(url, config_path):
+    global _http_base_url
+    _http_base_url = _ws_url_to_http(url)
     config = load_config(config_path)
     device_name = config["name"] if config else "Robot"
     num_joints = len(config["joints"]) if config else 6
