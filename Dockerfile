@@ -21,7 +21,7 @@ RUN echo "=== Copying venv from build stage ==="
 COPY --from=build /app/.venv /app/.venv
 
 RUN echo "=== Copying application files ==="
-COPY server.py threejs_scene.html viewer.css *.glb ./
+COPY server.py remote_control.py threejs_scene.html viewer.css *.glb ./
 COPY js/ ./js/
 COPY *.json ./
 
