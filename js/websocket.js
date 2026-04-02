@@ -51,15 +51,12 @@ export function initWsInfoPanel() {
   if (!statusEl || !panel) return;
 
   const sid    = getSessionId();
-  const proto  = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl  = `${proto}//${location.host}/ws?session=${sid}`;
-  const apiUrl = `${location.protocol}//${location.host}/sessions`;
-  const cmd    = `python remote_control.py --session ${sid}`;
+  const proto  = 'wss:';
+  const wsUrl  = `${proto}//${location.hostname}:443/ws?session=${sid}`;
+  const cmd    = `python3 remote_control.py --session ${sid} --url ${wsUrl}`;
 
   document.getElementById('wsi-session').textContent = sid;
   document.getElementById('wsi-cmd').textContent     = cmd;
-  document.getElementById('wsi-wsurl').textContent   = wsUrl;
-  document.getElementById('wsi-apiurl').textContent  = apiUrl;
 
   // Toggle panel on status-bar click
   statusEl.addEventListener('click', () => {
