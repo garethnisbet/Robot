@@ -109,7 +109,8 @@ export function buildState(dev) {
   return {
     type: 'state',
     device: dev.name,
-    joints: dev.jointAngles.map((a, i) => +(dev.apiSign[i] * a * rad2deg).toFixed(2)),
+    joints: dev.sliderJointMap.map(ji => +(dev.apiSign[ji] * dev.jointAngles[ji] * rad2deg).toFixed(2)),
+    jointNames: dev.sliderJointMap.map(ji => dev.config.joints[ji].name),
     eePosition:    [+(eePos.x * 1000).toFixed(2), +(eePos.z * 1000).toFixed(2), +(eePos.y * 1000).toFixed(2)],
     eeOrientation: [+(euler.y * rad2deg).toFixed(2), +(euler.z * rad2deg).toFixed(2), +(euler.x * rad2deg).toFixed(2)],
     mode: dev.ikMode ? 'IK' : 'FK',
@@ -203,8 +204,9 @@ function buildDeviceInfo(dev) {
     name: dev.name,
     config: dev.configFile,
     active: dev === State.activeDevice,
-    numJoints: dev.numJoints,
-    joints: dev.jointAngles.map((a, i) => +(dev.apiSign[i] * a * rad2deg).toFixed(2)),
+    numJoints: dev.sliderJointMap.length,
+    joints: dev.sliderJointMap.map(ji => +(dev.apiSign[ji] * dev.jointAngles[ji] * rad2deg).toFixed(2)),
+    jointNames: dev.sliderJointMap.map(ji => dev.config.joints[ji].name),
     position: [+(rg.position.x * 1000).toFixed(2), +(rg.position.z * 1000).toFixed(2), +(rg.position.y * 1000).toFixed(2)],
     rotation: [+(rg.rotation.x * rad2deg).toFixed(2), +(rg.rotation.z * rad2deg).toFixed(2), +(rg.rotation.y * rad2deg).toFixed(2)],
     parent: dev.parentLink || null,
@@ -351,8 +353,11 @@ export function handleCommand(data) {
   } else if (cmd === 'setJoints') {
     if (!dev) return;
     const angles = data.angles;
-    if (Array.isArray(angles) && angles.length === dev.numJoints) {
-      for (let i = 0; i < dev.numJoints; i++) dev.jointAngles[i] = dev.apiSign[i] * angles[i] * deg2rad;
+    if (Array.isArray(angles) && angles.length === dev.sliderJointMap.length) {
+      for (let si = 0; si < dev.sliderJointMap.length; si++) {
+        const ji = dev.sliderJointMap[si];
+        dev.jointAngles[ji] = dev.apiSign[ji] * angles[si] * deg2rad;
+      }
       clampJoints(dev);
       updateFK(dev);
       updateSliders(dev);
@@ -372,8 +377,9 @@ export function handleCommand(data) {
     if (!dev) return;
     const idx   = data.index;
     const angle = data.angle;
-    if (idx >= 0 && idx < dev.numJoints && typeof angle === 'number') {
-      dev.jointAngles[idx] = dev.apiSign[idx] * angle * deg2rad;
+    if (idx >= 0 && idx < dev.sliderJointMap.length && typeof angle === 'number') {
+      const ji = dev.sliderJointMap[idx];
+      dev.jointAngles[ji] = dev.apiSign[ji] * angle * deg2rad;
       clampJoints(dev);
       updateFK(dev);
       updateSliders(dev);

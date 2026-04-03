@@ -143,10 +143,20 @@ def load_config(config_path):
     return None
 
 def get_movable_joints(config):
-    """Return list of (index, name) for movable (non-fixed) joints."""
+    """Return list of (slider_index, name) for movable (non-fixed) joints.
+
+    slider_index is the 0-based position among movable joints, matching the
+    API's joint numbering (which skips fixed joints).
+    """
     if not config:
         return []
-    return [(i, j["name"]) for i, j in enumerate(config["joints"]) if not j.get("fixed")]
+    movable = []
+    si = 0
+    for j in config["joints"]:
+        if not j.get("fixed"):
+            movable.append((si, j["name"]))
+            si += 1
+    return movable
 
 # ── Prompt ───────────────────────────────────────────────────────────────────
 
@@ -354,11 +364,10 @@ async def print_incoming(ws, ctx):
                 mode = data.get("mode", "?")
                 err = data.get("ikError")
 
-                # Show only movable joint values with names
+                # Show joint values with names (API returns movable joints only)
                 if movable_joints:
                     j_parts = []
-                    for idx, name in movable_joints:
-                        val = all_joints[idx] if idx < len(all_joints) else 0
+                    for (si, name), val in zip(movable_joints, all_joints):
                         j_parts.append(f"{name}={val:.1f}")
                     j_str = ", ".join(j_parts)
                 else:
@@ -470,16 +479,16 @@ async def print_incoming(ws, ctx):
 
 # ── Demo sequence ────────────────────────────────────────────────────────────
 
-async def demo_sequence(ws, config, num_joints):
+async def demo_sequence(ws, config):
     """Run the demo pose from the config, then return home."""
-    demo_pose = config.get("demoPose") if config else None
-    if not demo_pose:
+    is_kappa = config and any(j.get("name") == "kappa" for j in config.get("joints", []))
+    if not config or (not config.get("demoPose") and not is_kappa):
         print(f"  {_yellow('No demoPose defined in config')}")
         return
 
     poses = [
         ("Home position", {"cmd": "home"}),
-        ("Demo pose", {"cmd": "setJoints", "angles": demo_pose}),
+        ("Demo pose", {"cmd": "demoPose"}),
     ]
 
     for i, (desc, cmd) in enumerate(poses, 1):
@@ -622,7 +631,7 @@ def _build_axis_vals(start, end, step):
     return vals
 
 
-async def scan_sequence(ws, movable_joints, num_joints, grid_axes,
+async def scan_sequence(ws, movable_joints, grid_axes,
                         coupled_axes=None, step_ms=80):
     """
     N-dimensional grid scan, or 1D coupled (lockstep) scan.
@@ -634,6 +643,7 @@ async def scan_sequence(ws, movable_joints, num_joints, grid_axes,
                    of points is determined by the primary axis.
     """
     import itertools
+    n_movable = len(movable_joints)
 
     # ── Fetch current joint state ─────────────────────────────────────────
     event = asyncio.Event()
@@ -648,11 +658,11 @@ async def scan_sequence(ws, movable_joints, num_joints, grid_axes,
     finally:
         _ws_pending.pop("state", None)
 
-    # Build base as full joint array (all joints including fixed)
+    # Build base as movable-joint array (API returns movable joints only)
     if state_data:
         base = list(state_data["joints"])
     else:
-        base = [0.0] * num_joints
+        base = [0.0] * n_movable
 
     coupled_axes = coupled_axes or []
 
@@ -774,7 +784,7 @@ async def _fetch_device_configs(ws, device_names):
     return result
 
 
-async def multi_scan_sequence(ws, device_axes, step_ms=80):
+async def multi_scan_sequence(ws, device_axes, dev_configs=None, step_ms=80):
     """
     Multi-device scan: axes on different devices scanned simultaneously.
 
@@ -801,7 +811,8 @@ async def multi_scan_sequence(ws, device_axes, step_ms=80):
             print(f"  {_yellow('Warning')}: timed out fetching state for {dname}")
         finally:
             _ws_pending.pop("state", None)
-        bases[dname] = list(state_data["joints"]) if state_data else [0.0] * 20
+        n_movable = len(dev_configs[dname]["movable_joints"]) if dev_configs and dname in dev_configs else 6
+        bases[dname] = list(state_data["joints"]) if state_data else [0.0] * n_movable
 
     # Separate grid and coupled axes
     grid_ranges = []    # [(device, joint_idx, [vals], label)]
@@ -1090,12 +1101,8 @@ async def interactive(url, config_path):
                         print(f"  {_yellow('Usage')}: joints {_cyan(names + suffix)}")
                         print(f"  Expected {_bold(str(n_movable))} values (movable joints only)")
                     else:
-                        # Build full joint angles array (all joints, including fixed at 0)
                         movable_vals = [float(x) for x in parts[1:]]
-                        all_angles = [0.0] * num_joints
-                        for (joint_idx, _name), val in zip(movable_joints, movable_vals):
-                            all_angles[joint_idx] = val
-                        await ws.send(json.dumps({"cmd": "setJoints", "angles": all_angles}))
+                        await ws.send(json.dumps({"cmd": "setJoints", "angles": movable_vals}))
 
                 elif cmd in ("joint", "pos"):
                     if len(parts) < 3:
@@ -1208,7 +1215,7 @@ async def interactive(url, config_path):
                         await ws.send(json.dumps({"cmd": "resetObjectScale", **ref}))
 
                 elif cmd == "demo":
-                    await demo_sequence(ws, config, num_joints)
+                    await demo_sequence(ws, config)
 
                 elif cmd == "plan":
                     # plan --start <axes> --end <axes> [--stepsize <deg>] [--steptime <ms>]
@@ -1378,7 +1385,7 @@ async def interactive(url, config_path):
                                 break
                         if not valid:
                             continue
-                        await multi_scan_sequence(ws, device_axes, step_ms=step_ms)
+                        await multi_scan_sequence(ws, device_axes, dev_configs=dev_configs, step_ms=step_ms)
 
                     else:
                         # ── Single-device scan (existing) ────────────
@@ -1406,7 +1413,7 @@ async def interactive(url, config_path):
                                 break
                         if not valid:
                             continue
-                        await scan_sequence(ws, movable_joints, num_joints,
+                        await scan_sequence(ws, movable_joints,
                                             grid_axes, coupled_axes=coupled_axes,
                                             step_ms=step_ms)
 

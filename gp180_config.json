@@ -8,7 +8,8 @@
       "restQuat": [0.70711, 0.70711, 0, 0],
       "axis": [0, 0, 1],
       "limits": [-180, 180],
-      "parent": -1
+      "parent": -1,
+      "apiSign": -1
     },
     {
       "name": "offset_1",
