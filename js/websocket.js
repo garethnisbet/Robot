@@ -53,7 +53,7 @@ export function initWsInfoPanel() {
   const sid    = getSessionId();
   const proto  = 'wss:';
   const wsUrl  = `${proto}//${location.hostname}:443/ws?session=${sid}`;
-  const cmd    = `python3 remote_control.py --session ${sid} --url ${wsUrl}`;
+  const cmd    = `python3 robot_ipython.py --session ${sid} --url ${wsUrl}`;
 
   document.getElementById('wsi-session').textContent = sid;
   document.getElementById('wsi-cmd').textContent     = cmd;

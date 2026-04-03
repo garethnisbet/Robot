@@ -39,7 +39,7 @@ New devices can be added from Blender scenes using the `/build-viewer` skill (se
 - **Collision detection** — intersection testing between device links and imported scene objects, with red highlight on colliding meshes
 - **Remote control API** — two-way WebSocket API for controlling any device from Python or any WebSocket client
 - **Session routing** — each browser tab gets a unique session ID; controllers can target a specific tab or broadcast to all
-- **Connection info panel** — click the API status indicator (top-left) to see the session ID, connection commands, and download the Python client
+- **Connection info panel** — click the API status indicator (top-left) to see the session ID, connection command, and download the IPython client
 
 ## Quick Start
 
@@ -51,10 +51,10 @@ Open `http://localhost:8000/threejs_scene.html` in a browser. Use the dropdown t
 
 **With remote control API:**
 ```bash
-pip3 install aiohttp websockets
+pip3 install aiohttp websockets ipython
 python3 server.py --config robot_config.json
 ```
-Open `http://localhost:8080` in a browser. The status indicator in the top-left shows the WebSocket connection state and the session ID for this tab. Click it to open the connection info panel, which shows the full connection command, WebSocket URL, and a link to download `remote_control.py`.
+Open `http://localhost:8080` in a browser. The status indicator in the top-left shows the WebSocket connection state and the session ID for this tab. Click it to open the connection info panel, which shows the full connection command, WebSocket URL, and a link to download `robot_ipython.py`.
 
 ## Adding New Devices
 
@@ -155,69 +155,93 @@ GET http://localhost:8080/sessions
 → [{"id": "ab12cd34", "viewers": 1}, ...]
 ```
 
-### Interactive Client
+### Interactive Client (IPython)
 
 ```bash
-python3 remote_control.py --config robot_config.json                        # broadcast to all tabs
-python3 remote_control.py --config robot_config.json --session ab12cd34     # target a specific tab
-python3 remote_control.py --config i16_config.json --session ab12cd34       # i16 diffractometer
-python3 remote_control.py --url ws://192.168.1.100:8080/ws --session ab12cd34  # remote server
+python3 robot_ipython.py --config robot_config.json                        # broadcast to all tabs
+python3 robot_ipython.py --config robot_config.json --session ab12cd34     # target a specific tab
+python3 robot_ipython.py --config i16_config.json --session ab12cd34       # i16 diffractometer
+python3 robot_ipython.py --url ws://192.168.1.100:8080/ws --session ab12cd34  # remote server
 ```
 
-The client reads the device config to determine joint names and count. The prompt, help text, and tab completion adapt to the loaded device. The `remote_control.py` file can also be downloaded directly from the connection info panel in the viewer.
+The client launches an IPython terminal with a pre-connected `robot` object. It supports two syntaxes — **Python method calls** for full programmatic control, and **space-separated commands** (via IPython magics) for quick interactive use. The prompt, help text, and tab completion adapt to the loaded device. The `robot_ipython.py` file can also be downloaded from the connection info panel in the viewer.
 
-**Session commands:**
+**Both syntaxes work side by side:**
 
-| Command | Example | Description |
+```python
+meca500 [1]: home                                    # space-separated
+meca500 [2]: robot.home()                            # Python method
+meca500 [3]: joints 0 30 60 0 45 90                  # space-separated
+meca500 [4]: robot.joints(0, 30, 60, 0, 45, 90)     # Python method
+meca500 [5]: for a in range(0, 91, 10):              # full Python syntax
+         ...:     robot.joint('J1', a)
+         ...:     time.sleep(0.1)
+```
+
+**Position queries** (return values for programmatic use):
+
+| Property / Method | Example | Description |
 |---------|---------|-------------|
-| `sessions` | `sessions` | List viewer session IDs currently connected to the server |
+| `robot.pos` | `x, y, z = robot.pos` | End-effector position [x, y, z] mm |
+| `robot.ori` | `robot.ori` | End-effector orientation [a, b, g] degrees |
+| `robot.angles` | `robot.angles` | All joint angles (list) |
+| `robot.get_joint('J1')` | `a = robot.get_joint('J1')` | Single joint angle by name |
+| `robot.mode` | `robot.mode` | Current mode ('FK' or 'IK') |
+| `robot.get_device_pos('GP225')` | `d = robot.get_device_pos()` | Any device: pos, rot, joints, EE |
+| `robot.get_obj_pos('cube_1')` | `o = robot.get_obj_pos(0)` | Any object: pos, rot, scale, BB |
 
 **Device commands:**
 
-| Command | Example | Description |
+| Space-separated | Python | Description |
 |---------|---------|-------------|
-| `state` | `state` | Request current device state |
-| `devices` | `devices` | List all loaded devices |
-| `device` | `device i16` | Switch active device by name |
-| `home` | `home` | All joints to 0 |
-| `fk` | `fk` | Switch to FK mode |
-| `ik` | `ik` | Switch to IK mode |
-| `joints` | `joints 45 -90 0 0 30 0` | Set all movable joint angles (degrees) |
-| `joint` | `joint gamma 45` | Set a single joint by name (tab-completes) |
-| `move` | `move 150 100 300 45 0 0` | Switch to IK and move to position (mm) + orientation (deg) |
-| `target` | `target 190 0 308` | Set IK target without switching mode |
-| `demo` | `demo` | Run the config's demo pose |
+| `state` | `robot.state()` | Request current device state |
+| `devices` | `robot.devices()` | List all loaded devices |
+| `device i16` | `robot.device('i16')` | Switch active device by name |
+| `sessions` | `robot.sessions()` | List viewer session IDs |
+| `home` | `robot.home()` | All joints to 0 |
+| `fk` | `robot.fk()` | Switch to FK mode |
+| `ik` | `robot.ik()` | Switch to IK mode |
+| `joints 45 -90 0 0 30 0` | `robot.joints(45, -90, 0, 0, 30, 0)` | Set all movable joint angles (degrees) |
+| `joint gamma 45` | `robot.joint('gamma', 45)` | Set a single joint by name |
+| `move 150 100 300 45 0 0` | `robot.move(150, 100, 300, 45, 0, 0)` | IK move to position (mm) + orientation (deg) |
+| `target 190 0 308` | `robot.target(190, 0, 308)` | Set IK target without switching mode |
+| `demo` | `robot.demo()` | Run the config's demo pose |
 
 **Motion planning commands:**
 
-| Command | Example | Description |
+| Space-separated | Python | Description |
 |---------|---------|-------------|
-| `plan` | `plan --start 0 0 0 --end 45 90 0` | Linear interpolation between two poses |
-| `plan` | `plan --start mu=0 --end mu=45 --stepsize 1 --steptime 50` | Named axes with custom step |
-| `scan` | `scan theta 0 90 5` | 1D scan of a single axis |
-| `scan` | `scan theta 0 90 5 phi 0 30 2` | 2D grid scan |
-| `scan` | `scan theta 0 90 5 phi 0 1` | Coupled scan (phi steps with theta) |
-| `scan` | `scan DevA:theta 0 50 5 DevB:phi 0 30 5` | Multi-device scan |
+| `plan --start 0 0 0 --end 45 90 0` | `robot.plan([0,0,0], [45,90,0])` | Path plan between two poses |
+| `plan --start mu=0 --end mu=45` | `robot.plan({'mu': 0}, {'mu': 45})` | Named axes |
+| `scan theta 0 90 5` | `robot.scan(('theta', 0, 90, 5))` | 1D scan |
+| `scan theta 0 90 5 phi 0 30 2` | `robot.scan(('theta',0,90,5), ('phi',0,30,2))` | 2D grid scan |
+| `scan theta 0 90 5 phi 0 1` | `robot.scan(('theta',0,90,5), ('phi',0,1))` | Coupled scan |
+| `scan DevA:J1 0 50 5 DevB:J1 0 30 5` | `robot.scan(('DevA:J1',0,50,5), ('DevB:J1',0,30,5))` | Multi-device scan |
 
 **Object commands:**
 
-| Command | Example | Description |
+| Space-separated | Python | Description |
 |---------|---------|-------------|
-| `objects` | `objects` | List all imported objects with transforms |
-| `obj` | `obj MyPart` or `obj #0` | Get object details (by name or index) |
-| `objpos` | `objpos MyPart 100 50 0` | Set object position (mm) |
-| `objrot` | `objrot #0 0 0 45` | Set object rotation (degrees) |
-| `objscale` | `objscale MyPart 2` | Set uniform scale |
-| `objvis` | `objvis MyPart on` | Show/hide object |
-| `objresetrot` | `objresetrot MyPart` | Reset rotation |
-| `objresetscale` | `objresetscale #0` | Reset scale |
+| `objects` | `robot.objects()` | List all imported objects |
+| `obj MyPart` | `robot.obj('MyPart')` | Get object details |
+| `objpos MyPart 100 50 0` | `robot.objpos('MyPart', 100, 50, 0)` | Set object position (mm) |
+| `objrot #0 0 0 45` | `robot.objrot('#0', 0, 0, 45)` | Set object rotation (degrees) |
+| `objscale MyPart 2` | `robot.objscale('MyPart', 2)` | Set uniform scale |
+| `objvis MyPart on` | `robot.objvis('MyPart', True)` | Show/hide object |
+| `collision on` | `robot.collision(True)` | Enable/disable collision detection |
+| `collisions` | `robot.collisions()` | Get current collision pairs |
 
-**Collision commands:**
+**Visualization and camera:**
 
-| Command | Example | Description |
-|---------|---------|-------------|
-| `collision` | `collision on` | Enable/disable collision detection |
-| `collisions` | `collisions` | Get current collision pairs |
+| Python | Description |
+|--------|-------------|
+| `robot.labels()` / `robot.labels(False)` | Show/hide joint labels |
+| `robot.origins()` / `robot.origins(False)` | Show/hide joint origin axes |
+| `robot.chain()` / `robot.chain(False)` | Show/hide kinematic chain |
+| `robot.ortho()` / `robot.ortho(False)` | Orthographic/perspective camera |
+| `robot.camera(position=[500,500,500])` | Set camera position/target |
+| `robot.snap('iso')` | Snap to preset view |
+| `robot.virtual_angles(chi=45)` | Set kappa virtual angles (diffractometers) |
 
 ### API Protocol (JSON over WebSocket)
 
@@ -389,7 +413,7 @@ js/
   collision-worker.js    Background thread for collision math
   websocket.js           WebSocket client for remote control API
 server.py                WebSocket + HTTP server for remote control API
-remote_control.py        Interactive command-line remote control client (any device)
+robot_ipython.py         IPython remote control client (any device)
 robot_config.json        Meca500 R3 device config
 i16_config.json          i16 diffractometer device config
 gp225_config.json        Yaskawa GP225 device config

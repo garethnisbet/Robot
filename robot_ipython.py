@@ -1,0 +1,1825 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Robot/Device — IPython Remote Control Terminal
+
+Interactive IPython client for controlling the viewer via WebSocket API.
+Works with any device config (Meca500, i16 diffractometer, etc.).
+Exposes a `robot` object with methods for all commands — use full Python
+syntax (loops, variables, etc.) alongside robot control.
+
+Usage:
+    pip install websockets ipython
+    python robot_ipython.py [--url ws://localhost:8080/ws] [--config robot_config.json]
+"""
+
+import argparse
+import asyncio
+import atexit
+import itertools
+import json
+import math
+import os
+import ssl
+import sys
+import threading
+import time
+import urllib.request
+
+import websockets
+
+# ── ANSI colour helpers ──────────────────────────────────────────────────────
+
+_COLORS = os.getenv("NO_COLOR") is None and sys.stdout.isatty()
+
+def _c(code, text):
+    return f"\033[{code}m{text}\033[0m" if _COLORS else text
+
+def _bold(t):     return _c("1", t)
+def _dim(t):      return _c("2", t)
+def _red(t):      return _c("31", t)
+def _green(t):    return _c("32", t)
+def _yellow(t):   return _c("33", t)
+def _blue(t):     return _c("34", t)
+def _magenta(t):  return _c("35", t)
+def _cyan(t):     return _c("36", t)
+def _white(t):    return _c("37", t)
+def _bred(t):     return _c("1;31", t)
+def _bgreen(t):   return _c("1;32", t)
+def _byellow(t):  return _c("1;33", t)
+def _bcyan(t):    return _c("1;36", t)
+
+# ── Config loading ───────────────────────────────────────────────────────────
+
+_http_base_url = None
+
+def _ws_url_to_http(ws_url):
+    from urllib.parse import urlparse
+    p = urlparse(ws_url)
+    scheme = "https" if p.scheme == "wss" else "http"
+    return f"{scheme}://{p.hostname}:{p.port}" if p.port else f"{scheme}://{p.hostname}"
+
+def _load_config(config_path):
+    try:
+        with open(config_path) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    if _http_base_url:
+        filename = os.path.basename(config_path)
+        url = f"{_http_base_url}/{filename}"
+        try:
+            ctx = ssl.create_default_context()
+            with urllib.request.urlopen(url, timeout=5, context=ctx) as resp:
+                return json.load(resp)
+        except Exception as e:
+            print(f"  {_yellow('Warning')}: Could not fetch config {filename} from {url}: {e}")
+            return None
+    print(f"  {_yellow('Warning')}: Could not load config {config_path}")
+    return None
+
+def _get_movable_joints(config):
+    if not config:
+        return []
+    movable = []
+    si = 0
+    for j in config["joints"]:
+        if not j.get("fixed"):
+            movable.append((si, j["name"]))
+            si += 1
+    return movable
+
+# ── Path planning helpers ────────────────────────────────────────────────────
+
+def _densify_path(path, step_deg):
+    dense = [path[0]]
+    for i in range(len(path) - 1):
+        q0 = path[i]
+        q1 = path[i + 1]
+        max_delta = max(abs(a - b) for a, b in zip(q0, q1))
+        n_steps = max(1, math.ceil(max_delta / step_deg))
+        for k in range(1, n_steps + 1):
+            t = k / n_steps
+            dense.append([a + t * (b - a) for a, b in zip(q0, q1)])
+    return dense
+
+def _build_axis_vals(start, end, step):
+    step = abs(step)
+    direction = 1.0 if end >= start else -1.0
+    n_steps = int(math.floor(abs(end - start) / step)) + 1
+    vals = []
+    for i in range(n_steps):
+        val = start + i * step * direction
+        if direction > 0 and val > end:
+            val = end
+        elif direction < 0 and val < end:
+            val = end
+        vals.append(val)
+    if not vals or vals[-1] != end:
+        vals.append(end)
+    return vals
+
+def _resolve_axis_for_device(name, movable_joints):
+    nl = name.lower()
+    for mi, (_, jname) in enumerate(movable_joints):
+        if jname.lower() == nl:
+            return mi
+        if jname.lower().split()[0] == nl:
+            return mi
+    try:
+        n = int(name)
+        if 1 <= n <= len(movable_joints):
+            return n - 1
+    except ValueError:
+        pass
+    return None
+
+# ── Object reference parsing ─────────────────────────────────────────────────
+
+def _parse_obj_ref(token):
+    if isinstance(token, int):
+        return {"index": token}
+    token = str(token)
+    if token.startswith("#") and token[1:].isdigit():
+        return {"index": int(token[1:])}
+    return {"object": token}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  RobotClient — the main API class
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class RobotClient:
+    """Interactive robot/device controller for IPython.
+
+    All methods are synchronous — they submit async work to a background
+    event loop thread and block for the result. No ``await`` needed.
+    """
+
+    def __init__(self, url="ws://localhost:8080/ws", config="robot_config.json",
+                 session=None, connect=True):
+        global _http_base_url
+        self._url = url
+        _http_base_url = _ws_url_to_http(url)
+        self._config_path = config
+        self._session = session
+
+        # Background event loop
+        self._loop = None
+        self._thread = None
+        self._ws = None
+        self._listener_task = None
+        self._ws_pending = {}
+
+        # Print control
+        self._print_state = True
+
+        # Device state
+        self._config = _load_config(config)
+        self._device_name = self._config["name"] if self._config else "Robot"
+        self._movable_joints = _get_movable_joints(self._config)
+        self._n_movable = len(self._movable_joints)
+        self._joint_name_to_idx = {name.lower(): idx for idx, name in self._movable_joints}
+        self._device_names_cache = []
+
+        if connect:
+            self.connect()
+
+    # ── Background loop management ───────────────────────────────────────
+
+    def _start_loop(self):
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        self._thread.start()
+
+    def _run(self, coro, timeout=5.0):
+        """Submit a coroutine to the background loop and block for the result."""
+        if not self._loop or not self._loop.is_running():
+            raise RuntimeError("Background event loop not running. Call connect() first.")
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result(timeout=timeout)
+
+    def _send(self, msg):
+        """Send a JSON message over the WebSocket (fire-and-forget)."""
+        async def _impl():
+            if self._ws:
+                await self._ws.send(json.dumps(msg))
+        self._run(_impl(), timeout=3.0)
+
+    def _send_and_wait(self, msg, response_type, timeout=3.0):
+        """Send a message and wait for a specific response type."""
+        async def _impl():
+            event = asyncio.Event()
+            self._ws_pending[response_type] = {"event": event, "data": None}
+            try:
+                await self._ws.send(json.dumps(msg))
+                await asyncio.wait_for(event.wait(), timeout=timeout)
+                return self._ws_pending[response_type]["data"]
+            except asyncio.TimeoutError:
+                return None
+            finally:
+                self._ws_pending.pop(response_type, None)
+        return self._run(_impl(), timeout=timeout + 2.0)
+
+    # ── Connection lifecycle ─────────────────────────────────────────────
+
+    def connect(self):
+        """Connect to the WebSocket server."""
+        if self._loop is None:
+            self._start_loop()
+
+        async def _impl():
+            self._ws = await websockets.connect(self._url)
+            self._listener_task = asyncio.ensure_future(self._print_incoming())
+
+        print(f"  Connecting to {_dim(self._url)} ...")
+        try:
+            self._run(_impl(), timeout=10.0)
+        except Exception as e:
+            print(f"  {_bred('Connection failed')}: {e}")
+            print(f"  Is the server running?  python server.py --config {self._config_path}")
+            return
+        print(f"  {_bgreen('Connected!')}")
+        atexit.register(self.disconnect)
+
+    def disconnect(self):
+        """Close the WebSocket connection and stop the background thread."""
+        if self._ws:
+            try:
+                self._run(self._ws.close(), timeout=3.0)
+            except Exception:
+                pass
+            self._ws = None
+        if self._loop and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+        self._loop = None
+        self._thread = None
+        print(f"  {_dim('Disconnected.')}")
+
+    def reconnect(self):
+        """Disconnect and reconnect."""
+        if self._ws:
+            try:
+                self._run(self._ws.close(), timeout=3.0)
+            except Exception:
+                pass
+            self._ws = None
+        if self._listener_task:
+            self._listener_task.cancel()
+            self._listener_task = None
+
+        async def _impl():
+            self._ws = await websockets.connect(self._url)
+            self._listener_task = asyncio.ensure_future(self._print_incoming())
+
+        print(f"  Reconnecting to {_dim(self._url)} ...")
+        try:
+            self._run(_impl(), timeout=10.0)
+            print(f"  {_bgreen('Connected!')}")
+        except Exception as e:
+            print(f"  {_bred('Connection failed')}: {e}")
+
+    # ── Background listener ──────────────────────────────────────────────
+
+    async def _print_incoming(self):
+        """Background task: listen for messages and print/dispatch them."""
+        try:
+            async for message in self._ws:
+                data = json.loads(message)
+                resp_type = data.get("type")
+
+                # Check pending responses first
+                pending = self._ws_pending.get(resp_type)
+                if pending:
+                    pending["data"] = data
+                    pending["event"].set()
+                    continue
+
+                if not self._print_state:
+                    continue
+
+                output = self._format_message(data)
+                if output:
+                    print(output, flush=True)
+        except websockets.ConnectionClosed:
+            print(f"\n  {_bred('Connection lost.')}", flush=True)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"\n  {_bred('Listener error')}: {e}", flush=True)
+
+    def _format_message(self, data):
+        """Format a WebSocket message for display. Returns a string or None."""
+        msg_type = data.get("type")
+        lines = []
+
+        if msg_type == "state":
+            all_joints = data["joints"]
+            ee = data["eePosition"]
+            ori = data.get("eeOrientation", [0, 0, 0])
+            mode = data.get("mode", "?")
+            err = data.get("ikError")
+
+            if self._movable_joints:
+                j_parts = []
+                for (si, name), val in zip(self._movable_joints, all_joints):
+                    j_parts.append(f"{name}={val:.1f}")
+                j_str = ", ".join(j_parts)
+            else:
+                j_str = ", ".join(f"{a:7.1f}" for a in all_joints)
+
+            mode_c = _bgreen(mode) if mode == "FK" else _bcyan(mode)
+            lines.append(f"  {_bold('STATE')} | mode={mode_c}")
+            lines.append(f"         joints: {_white(j_str)}")
+            lines.append(
+                f"         ee=({_cyan(f'{ee[0]:.1f}')}, {_cyan(f'{ee[1]:.1f}')}, {_cyan(f'{ee[2]:.1f}')})mm  "
+                f"ori=({_magenta(f'{ori[0]:.1f}')}, {_magenta(f'{ori[1]:.1f}')}, {_magenta(f'{ori[2]:.1f}')})deg  "
+                f"err={_yellow(f'{err:.2f}mm') if err is not None else _dim('-')}"
+            )
+            coll_on = data.get("collisionEnabled", False)
+            collisions = data.get("collisions", [])
+            if coll_on:
+                if collisions:
+                    pairs = ", ".join(f"{_bred(c['link'])}<>{_bred(c['object'])}" for c in collisions)
+                    lines.append(f"         collision: {_bred('YES')} [{pairs}]")
+                else:
+                    lines.append(f"         collision: {_green('none')}")
+
+        elif msg_type == "collisions":
+            enabled = data.get("enabled", False)
+            pairs = data.get("pairs", [])
+            status = _bgreen("ON") if enabled else _dim("OFF")
+            lines.append(f"  {_bold('COLLISION')} detection: {status}")
+            if enabled:
+                if pairs:
+                    for p in pairs:
+                        lines.append(f"    {_red(p['link'])} <> {_red(p['object'])}")
+                else:
+                    lines.append(f"    {_green('No collisions')}")
+
+        elif msg_type == "objects":
+            objs = data.get("objects", [])
+            lines.append(f"  {_bold('OBJECTS')} ({len(objs)} imported)")
+            for o in objs:
+                p, r, s = o["position"], o["rotation"], o["scale"]
+                vis = _green("visible") if o.get("visible", True) else _dim("hidden")
+                idx = _dim(f"[{o['index']}]")
+                lines.append(f"    {idx} {_bold(o['name'])}  {vis}")
+                lines.append(
+                    f"        pos=({p[0]:.1f}, {p[1]:.1f}, {p[2]:.1f})mm  "
+                    f"rot=({r[0]:.1f}, {r[1]:.1f}, {r[2]:.1f})deg  "
+                    f"scale=({s[0]:.3f}, {s[1]:.3f}, {s[2]:.3f})"
+                )
+
+        elif msg_type == "object":
+            o = data
+            p, r, s = o["position"], o["rotation"], o["scale"]
+            vis = _green("visible") if o.get("visible", True) else _dim("hidden")
+            idx_str = o["index"]
+            lines.append(f"  {_dim(f'[{idx_str}]')} {_bold(o['name'])}  {vis}")
+            lines.append(f"    pos  = ({_cyan(f'{p[0]:.1f}')}, {_cyan(f'{p[1]:.1f}')}, {_cyan(f'{p[2]:.1f}')}) mm")
+            lines.append(f"    rot  = ({_magenta(f'{r[0]:.1f}')}, {_magenta(f'{r[1]:.1f}')}, {_magenta(f'{r[2]:.1f}')}) deg")
+            lines.append(f"    scale= ({s[0]:.3f}, {s[1]:.3f}, {s[2]:.3f})")
+
+        elif msg_type == "devices":
+            devs = data.get("devices", [])
+            self._device_names_cache = [d["name"] for d in devs]
+            lines.append(f"  {_bold('DEVICES')} ({len(devs)} loaded)")
+            for d in devs:
+                active = d.get("active", False)
+                marker = _bgreen("*") if active else " "
+                dname = _bold(d["name"]) if active else d["name"]
+                cfg = _dim(d.get("config", "?"))
+                kappa = f" {_dim('[kappa]')}" if d.get("isKappa") else ""
+                lines.append(
+                    f"    {marker} {dname}  {cfg}  "
+                    f"{d.get('numJoints', '?')} joints  {d.get('mode', '?')}{kappa}"
+                )
+
+        elif msg_type == "device":
+            d = data
+            kappa = f" {_dim('[kappa]')}" if d.get("isKappa") else ""
+            lines.append(
+                f"  {_bold('DEVICE')} {_bold(d.get('name', '?'))}  "
+                f"{_dim(d.get('config', '?'))}  "
+                f"{d.get('numJoints', '?')} joints  mode={d.get('mode', '?')}{kappa}"
+            )
+
+        elif msg_type == "error" or "error" in data:
+            lines.append(f"  {_bred('ERROR')}: {_red(data.get('error', 'unknown error'))}")
+
+        return "\n".join(lines) if lines else None
+
+    # ── Properties ───────────────────────────────────────────────────────
+
+    @property
+    def name(self):
+        """Current device name."""
+        return self._device_name
+
+    @property
+    def joint_names(self):
+        """List of movable joint names."""
+        return [name for _, name in self._movable_joints]
+
+    @property
+    def url(self):
+        """WebSocket URL."""
+        return self._url
+
+    @property
+    def connected(self):
+        """Whether WebSocket is connected."""
+        return self._ws is not None and self._ws.protocol is not None
+
+    @property
+    def quiet(self):
+        """Whether background state printing is suppressed."""
+        return not self._print_state
+
+    @quiet.setter
+    def quiet(self, value):
+        self._print_state = not value
+
+    # ── Axis name resolution ─────────────────────────────────────────────
+
+    def _resolve_axis_name(self, name):
+        nl = name.lower()
+        for mi, (_, jname) in enumerate(self._movable_joints):
+            if jname.lower() == nl:
+                return mi
+            if jname.lower().split()[0] == nl:
+                return mi
+        try:
+            n = int(name)
+            if 1 <= n <= self._n_movable:
+                return n - 1
+        except ValueError:
+            pass
+        return None
+
+    def _angles_from_spec(self, spec):
+        """Convert an angle spec (list or dict) to a flat list of floats."""
+        if isinstance(spec, (list, tuple)):
+            return [float(x) for x in spec]
+        if isinstance(spec, dict):
+            vals = [0.0] * self._n_movable
+            for name, val in spec.items():
+                idx = self._resolve_axis_name(str(name))
+                if idx is None:
+                    names = ", ".join(n for _, n in self._movable_joints)
+                    raise ValueError(f"Unknown axis {name!r}. Available: {names}")
+                vals[idx] = float(val)
+            return vals
+        raise TypeError(f"Expected list, tuple, or dict, got {type(spec).__name__}")
+
+    # ── Device state update ──────────────────────────────────────────────
+
+    def _update_device_state(self, new_config, new_config_path, new_name):
+        self._config = new_config
+        self._config_path = new_config_path
+        self._device_name = new_name
+        self._movable_joints = _get_movable_joints(new_config)
+        self._n_movable = len(self._movable_joints)
+        self._joint_name_to_idx = {name.lower(): idx for idx, name in self._movable_joints}
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  PUBLIC API — State & Mode
+    # ═════════════════════════════════════════════════════════════════════
+
+    def state(self):
+        """Request current device state. Prints it and returns the dict."""
+        data = self._send_and_wait({"cmd": "getState"}, "state")
+        if data:
+            output = self._format_message(data)
+            if output:
+                print(output)
+        return data
+
+    def home(self):
+        """Move all joints to 0 degrees."""
+        self._send({"cmd": "home"})
+
+    def fk(self):
+        """Switch to Forward Kinematics mode."""
+        self._send({"cmd": "setMode", "mode": "FK"})
+
+    def ik(self):
+        """Switch to Inverse Kinematics mode."""
+        self._send({"cmd": "setMode", "mode": "IK"})
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  PUBLIC API — Position Queries
+    # ═════════════════════════════════════════════════════════════════════
+
+    def _get_state_silent(self):
+        """Fetch state without printing."""
+        old = self._print_state
+        self._print_state = False
+        try:
+            return self._send_and_wait({"cmd": "getState"}, "state")
+        finally:
+            self._print_state = old
+
+    @property
+    def pos(self):
+        """Current end-effector position [x, y, z] in mm.
+
+        Usage: robot.pos        -> [190.0, 0.0, 308.0]
+               x, y, z = robot.pos
+        """
+        data = self._get_state_silent()
+        return data["eePosition"] if data else None
+
+    @property
+    def ori(self):
+        """Current end-effector orientation [a, b, g] in degrees (ZYX Euler).
+
+        Usage: robot.ori        -> [0.0, 0.0, 0.0]
+        """
+        data = self._get_state_silent()
+        return data.get("eeOrientation", [0, 0, 0]) if data else None
+
+    @property
+    def angles(self):
+        """Current joint angles as a list of floats (degrees).
+
+        Usage: robot.angles     -> [0.0, -30.0, 60.0, 0.0, 45.0, 90.0]
+        """
+        data = self._get_state_silent()
+        return data["joints"] if data else None
+
+    def get_joint(self, name):
+        """Get the current angle of a single joint by name.
+
+        Usage: robot.get_joint('J1')       -> 45.0
+               robot.get_joint('J1 Base')  -> 45.0
+        """
+        data = self._get_state_silent()
+        if not data:
+            return None
+        nl = name.lower()
+        if nl not in self._joint_name_to_idx:
+            matches = [(n, idx) for n, idx in self._joint_name_to_idx.items() if n.startswith(nl)]
+            if len(matches) == 1:
+                nl = matches[0][0]
+            else:
+                print(f"  {_yellow('Unknown joint')}: {name}")
+                print(f"  Available: {', '.join(n for _, n in self._movable_joints)}")
+                return None
+        joint_idx = self._joint_name_to_idx[nl]
+        return data["joints"][joint_idx]
+
+    @property
+    def mode(self):
+        """Current mode ('FK' or 'IK')."""
+        data = self._get_state_silent()
+        return data.get("mode") if data else None
+
+    def get_device_pos(self, name=None):
+        """Get position/rotation/joints for any device.
+
+        Returns dict with 'position', 'rotation', 'joints', 'eePosition',
+        'eeOrientation', 'mode', etc.
+
+        Usage: robot.get_device_pos()          # active device
+               robot.get_device_pos('GP225')   # specific device
+        """
+        old = self._print_state
+        self._print_state = False
+        try:
+            # Get device origin info
+            msg = {"cmd": "getDevice"}
+            if name:
+                msg["device"] = name
+            dev_data = self._send_and_wait(msg, "device", timeout=3.0)
+
+            # Get EE position via state
+            state_msg = {"cmd": "getState"}
+            if name:
+                state_msg["device"] = name
+            state_data = self._send_and_wait(state_msg, "state", timeout=3.0)
+        finally:
+            self._print_state = old
+
+        if not dev_data and not state_data:
+            return None
+
+        result = {}
+        if dev_data:
+            result["name"] = dev_data.get("name")
+            result["position"] = dev_data.get("position")
+            result["rotation"] = dev_data.get("rotation")
+            result["joints"] = dev_data.get("joints")
+            result["jointNames"] = dev_data.get("jointNames")
+            result["mode"] = dev_data.get("mode")
+            result["parent"] = dev_data.get("parent")
+            result["links"] = dev_data.get("links")
+        if state_data:
+            result["eePosition"] = state_data.get("eePosition")
+            result["eeOrientation"] = state_data.get("eeOrientation")
+            result["joints"] = state_data.get("joints")
+            result["mode"] = state_data.get("mode")
+        return result
+
+    def get_obj_pos(self, name_or_index):
+        """Get position/rotation/scale for any scene object.
+
+        Returns dict with 'position', 'rotation', 'scale', 'visible',
+        'worldBB', etc.
+
+        Usage: robot.get_obj_pos('cube_1')
+               robot.get_obj_pos(0)
+               robot.get_obj_pos('#0')
+        """
+        old = self._print_state
+        self._print_state = False
+        try:
+            ref = _parse_obj_ref(name_or_index)
+            data = self._send_and_wait({"cmd": "getObject", **ref}, "object", timeout=3.0)
+        finally:
+            self._print_state = old
+        return data
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  PUBLIC API — Joint Control
+    # ═════════════════════════════════════════════════════════════════════
+
+    def joints(self, *angles):
+        """Set all movable joint angles in degrees.
+
+        Usage: robot.joints(0, 30, 60, 0, 45, 90)
+        """
+        if len(angles) == 1 and isinstance(angles[0], (list, tuple)):
+            angles = angles[0]
+        if len(angles) != self._n_movable:
+            names = ", ".join(f"<{n}>" for _, n in self._movable_joints)
+            print(f"  {_yellow('Expected')} {_bold(str(self._n_movable))} values ({names}), got {len(angles)}")
+            return
+        self._send({"cmd": "setJoints", "angles": [float(a) for a in angles]})
+
+    def joint(self, name, angle):
+        """Set a single joint by name.
+
+        Usage: robot.joint('J1', 45)
+               robot.joint('J1 Base', 45)
+        """
+        nl = name.lower()
+        if nl not in self._joint_name_to_idx:
+            matches = [(n, idx) for n, idx in self._joint_name_to_idx.items() if n.startswith(nl)]
+            if len(matches) == 1:
+                nl = matches[0][0]
+            else:
+                print(f"  {_yellow('Unknown joint')}: {name}")
+                print(f"  Available: {', '.join(n for _, n in self._movable_joints)}")
+                return
+        joint_idx = self._joint_name_to_idx[nl]
+        self._send({"cmd": "setSingleJoint", "index": joint_idx, "angle": float(angle)})
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  PUBLIC API — IK
+    # ═════════════════════════════════════════════════════════════════════
+
+    def move(self, x, y, z, a=0, b=0, g=0):
+        """Switch to IK and move to position (mm) with orientation (degrees).
+
+        Usage: robot.move(150, 100, 300)
+               robot.move(150, 100, 300, 45, 0, 0)
+        """
+        self._send({"cmd": "moveTo",
+                     "position": [float(x), float(y), float(z)],
+                     "orientation": [float(a), float(b), float(g)]})
+
+    def target(self, x, y, z, a=0, b=0, g=0):
+        """Set IK target position/orientation without switching mode."""
+        self._send({"cmd": "setIKTarget",
+                     "position": [float(x), float(y), float(z)],
+                     "orientation": [float(a), float(b), float(g)]})
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  PUBLIC API — Collision
+    # ═════════════════════════════════════════════════════════════════════
+
+    def collision(self, enabled=None):
+        """Toggle or set collision detection.
+
+        Usage: robot.collision()       # toggle
+               robot.collision(True)   # enable
+               robot.collision(False)  # disable
+        """
+        msg = {"cmd": "setCollision"}
+        if enabled is not None:
+            msg["enabled"] = bool(enabled)
+        self._send(msg)
+
+    def collisions(self):
+        """Get current collision pairs."""
+        self._send({"cmd": "getCollisions"})
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  PUBLIC API — Objects
+    # ═════════════════════════════════════════════════════════════════════
+
+    def objects(self):
+        """List all imported mesh objects."""
+        self._send({"cmd": "listObjects"})
+
+    def obj(self, name_or_index):
+        """Get details for an object by name or index.
+
+        Usage: robot.obj('cube_1')  or  robot.obj(0)  or  robot.obj('#0')
+        """
+        ref = _parse_obj_ref(name_or_index)
+        self._send({"cmd": "getObject", **ref})
+
+    def objpos(self, name_or_index, x, y, z):
+        """Set object position in mm."""
+        ref = _parse_obj_ref(name_or_index)
+        self._send({"cmd": "setObject", **ref, "position": [float(x), float(y), float(z)]})
+
+    def objrot(self, name_or_index, rx, ry, rz):
+        """Set object rotation in degrees."""
+        ref = _parse_obj_ref(name_or_index)
+        self._send({"cmd": "setObject", **ref, "rotation": [float(rx), float(ry), float(rz)]})
+
+    def objscale(self, name_or_index, *args):
+        """Set object scale. Single value for uniform, three for per-axis.
+
+        Usage: robot.objscale('cube_1', 2.0)
+               robot.objscale('cube_1', 1.0, 2.0, 0.5)
+        """
+        ref = _parse_obj_ref(name_or_index)
+        if len(args) == 1:
+            self._send({"cmd": "setObject", **ref, "scale": float(args[0])})
+        elif len(args) >= 3:
+            self._send({"cmd": "setObject", **ref, "scale": [float(a) for a in args[:3]]})
+        else:
+            print(f"  {_yellow('Usage')}: robot.objscale(name, s) or robot.objscale(name, sx, sy, sz)")
+
+    def objvis(self, name_or_index, visible):
+        """Show or hide an object.
+
+        Usage: robot.objvis('cube_1', True)
+               robot.objvis('cube_1', False)
+        """
+        ref = _parse_obj_ref(name_or_index)
+        self._send({"cmd": "setObject", **ref, "visible": bool(visible)})
+
+    def objresetrot(self, name_or_index):
+        """Reset object rotation to (0, 0, 0)."""
+        ref = _parse_obj_ref(name_or_index)
+        self._send({"cmd": "resetObjectRotation", **ref})
+
+    def objresetscale(self, name_or_index):
+        """Reset object scale to (1, 1, 1)."""
+        ref = _parse_obj_ref(name_or_index)
+        self._send({"cmd": "resetObjectScale", **ref})
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  PUBLIC API — Devices & Sessions
+    # ═════════════════════════════════════════════════════════════════════
+
+    def devices(self):
+        """List all devices loaded in the viewer."""
+        self._send({"cmd": "listDevices"})
+
+    def device(self, name):
+        """Switch active device by name. Updates prompt and joint names.
+
+        Usage: robot.device('GP225')
+        """
+        # Switch active device and wait for state confirmation
+        state_data = self._send_and_wait(
+            {"cmd": "setActiveDevice", "device": name}, "state", timeout=2.0
+        )
+        if not state_data:
+            print(f"  {_yellow('No response')} — is the device loaded?")
+            return
+
+        new_name = state_data.get("device", name)
+
+        # Fetch device info to get config path
+        dev_data = self._send_and_wait({"cmd": "getDevice"}, "device", timeout=2.0)
+        new_config_path = dev_data.get("config") if dev_data else None
+
+        if new_config_path:
+            new_config = _load_config(new_config_path)
+            if new_config:
+                self._update_device_state(new_config, new_config_path, new_name)
+                names = ", ".join(n for _, n in self._movable_joints)
+                print(f"  {_bgreen('Switched to')} {_bold(new_name)}")
+                print(f"  Joints ({self._n_movable}): {_dim(names)}")
+            else:
+                self._device_name = new_name
+                print(f"  {_bgreen('Switched to')} {_bold(new_name)} "
+                      f"{_yellow('(config not available locally)')}")
+        else:
+            self._device_name = new_name
+            print(f"  {_bgreen('Switched to')} {_bold(new_name)}")
+
+    def sessions(self):
+        """List active viewer sessions."""
+        http_url = self._url.replace("ws://", "http://").replace("wss://", "https://")
+        http_url = http_url.split("?")[0]
+        http_url = http_url.rsplit("/ws", 1)[0] + "/sessions"
+        try:
+            with urllib.request.urlopen(http_url, timeout=3) as resp:
+                data = json.loads(resp.read())
+            if not data:
+                print(f"  {_dim('No active viewer sessions.')}")
+                return []
+            print(f"  {_bold('Active sessions')}:")
+            for s in data:
+                viewers_label = _dim(f"({s['viewers']} viewer{'s' if s['viewers'] != 1 else ''})")
+                print(f"    {_bcyan(s['id'])}  {viewers_label}")
+            return data
+        except Exception as e:
+            print(f"  {_red('Could not fetch sessions')}: {e}")
+            return []
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  PUBLIC API — Demo
+    # ═════════════════════════════════════════════════════════════════════
+
+    def demo(self):
+        """Run the demo pose from the config, then return home."""
+        is_kappa = self._config and any(
+            j.get("name") == "kappa" for j in self._config.get("joints", [])
+        )
+        if not self._config or (not self._config.get("demoPose") and not is_kappa):
+            print(f"  {_yellow('No demoPose defined in config')}")
+            return
+
+        poses = [
+            ("Home position", {"cmd": "home"}),
+            ("Demo pose", {"cmd": "demoPose"}),
+        ]
+        for i, (desc, cmd) in enumerate(poses, 1):
+            print(f"  {_dim(f'[{i}/{len(poses)}]')} {_cyan(desc)}")
+            self._send(cmd)
+            time.sleep(1.5)
+        print(f"  {_bgreen('Demo complete!')}")
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  PUBLIC API — Path Planning
+    # ═════════════════════════════════════════════════════════════════════
+
+    def plan(self, start, end, stepsize=5.0, steptime=80):
+        """Run RRT-Connect path planner and stream waypoints to the viewer.
+
+        Args:
+            start: list of angles or dict like {'J1': 30, 'mu': 45}
+            end:   list of angles or dict like {'J1': 60, 'mu': 90}
+            stepsize: RRT step size in degrees (default 5.0)
+            steptime: delay between waypoints in ms (default 80)
+
+        Usage:
+            robot.plan([0,0,0,0,0,0], [30,-45,60,0,30,0])
+            robot.plan({'J1': 0}, {'J1': 90, 'J2': -45})
+        """
+        try:
+            from planner import RobotPlanner
+        except ImportError:
+            print(f"  {_bred('Error')}: planner.py not found")
+            return
+
+        start_vals = self._angles_from_spec(start)
+        end_vals = self._angles_from_spec(end)
+
+        if len(start_vals) != self._n_movable or len(end_vals) != self._n_movable:
+            print(f"  {_yellow('Error')}: expected {self._n_movable} axis values, "
+                  f"got start={len(start_vals)} end={len(end_vals)}")
+            return
+
+        # Fetch scene objects for collision obstacles
+        objects_data = self._send_and_wait({"cmd": "listObjects"}, "objects", timeout=3.0)
+        obj_list = objects_data.get("objects", []) if objects_data else []
+
+        planner = RobotPlanner(self._config_path, step_deg=stepsize)
+        n_obs = planner.sync_from_viewer_objects(obj_list)
+        if n_obs:
+            print(f"  {_dim(f'Using {n_obs} scene object(s) as collision obstacles')}")
+
+        msg = f'Planning... (step size {stepsize}\u00b0)'
+        print(f"  {_dim(msg)}")
+        path = planner.plan(start_vals, end_vals)
+
+        if path is None:
+            print(f"  {_bred('No path found.')}")
+            return
+
+        dense = _densify_path(path, stepsize)
+        detail = f'{steptime} ms/step, {stepsize}\u00b0 resolution'
+        print(f"  {_bgreen('Executing')} {len(dense)} steps "
+              f"({_dim(detail)})  "
+              f"{_dim('Ctrl+C to stop')}")
+
+        try:
+            for wp in dense:
+                self._send({"cmd": "setJoints", "angles": [round(a, 4) for a in wp]})
+                time.sleep(steptime / 1000.0)
+        except KeyboardInterrupt:
+            print(f"\n  {_yellow('Motion stopped.')}")
+        else:
+            print(f"  {_bgreen('Done.')}")
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  PUBLIC API — Scanning
+    # ═════════════════════════════════════════════════════════════════════
+
+    def scan(self, *axis_specs, steptime=80):
+        """Scan one or more axes.
+
+        Each axis_spec is a tuple:
+          (axis_name, start, end, step) — grid scan
+          (axis_name, start, step)      — coupled scan (lockstep with primary)
+
+        The first spec must always have 4 values (start, end, step).
+        Supports Device:Axis syntax for multi-device scans.
+
+        Usage:
+            robot.scan(('J1', 0, 90, 5))
+            robot.scan(('J1', 0, 90, 5), ('J2', 0, 45, 5))             # grid
+            robot.scan(('J1', 0, 90, 5), ('J2', 0, 2))                  # coupled
+            robot.scan(('Meca500:J1', 0, 90, 5), ('GP225:J2', 0, 45, 5))  # multi-device
+        """
+        if not axis_specs:
+            first = self._movable_joints[0][1].split()[0].lower() if self._movable_joints else "J1"
+            second = self._movable_joints[1][1].split()[0].lower() if len(self._movable_joints) > 1 else "J2"
+            ex1 = f"robot.scan(('{first}', 0, 50, 5))"
+            ex2 = f"robot.scan(('{first}', 10, 20, 1), ('{second}', 20, 2))"
+            ex3 = f"robot.scan(('{first}', 0, 20, 1), ('{second}', 0, 30, 2))"
+            print(f"  {_yellow('Usage')}: robot.scan((axis, start, end, step), ...)")
+            print(f"  1D:      {_dim(ex1)}")
+            print(f"  Coupled: {_dim(ex2)}")
+            print(f"  Grid:    {_dim(ex3)}")
+            return
+
+        if len(axis_specs[0]) != 4:
+            print(f"  {_yellow('Error')}: first axis needs 4 values (axis, start, end, step)")
+            return
+
+        # Check for multi-device syntax
+        is_multi = any(":" in str(s[0]) for s in axis_specs)
+
+        if is_multi:
+            self._scan_multi_device(axis_specs, steptime)
+        else:
+            self._scan_single_device(axis_specs, steptime)
+
+    def _scan_single_device(self, axis_specs, step_ms):
+        """Run a single-device scan (grid or coupled)."""
+        # Fetch current joint state
+        state_data = self._send_and_wait({"cmd": "getState"}, "state", timeout=3.0)
+        base = list(state_data["joints"]) if state_data else [0.0] * self._n_movable
+
+        grid_axes = []
+        coupled_axes = []
+        for gi, spec in enumerate(axis_specs):
+            axis_name = str(spec[0])
+            nums = [float(x) for x in spec[1:]]
+            axis_idx = self._resolve_axis_name(axis_name)
+            if axis_idx is None:
+                names = ", ".join(n for _, n in self._movable_joints)
+                print(f"  {_yellow('Error')}: unknown axis {axis_name!r}. Available: {names}")
+                return
+            if gi == 0 or len(nums) == 3:
+                if len(nums) != 3:
+                    print(f"  {_yellow('Error')}: axis {axis_name!r} needs 3 values (start, end, step)")
+                    return
+                grid_axes.append((axis_idx, nums[0], nums[1], nums[2]))
+            elif len(nums) == 2:
+                coupled_axes.append((axis_idx, nums[0], nums[1]))
+            else:
+                print(f"  {_yellow('Error')}: axis {axis_name!r} needs 3 values "
+                      f"(start, end, step) or 2 (start, step), got {len(nums)}")
+                return
+
+        # Build per-axis value ranges
+        grid_ranges = []
+        for axis_idx, start, end, step in grid_axes:
+            if abs(step) < 1e-6:
+                print(f"  {_bred('Error')}: step size must be > 0")
+                return
+            vals = _build_axis_vals(start, end, step)
+            actual_joint_idx = self._movable_joints[axis_idx][0]
+            grid_ranges.append((actual_joint_idx, vals))
+
+        # Build waypoints
+        if coupled_axes:
+            primary_vals = grid_ranges[0][1]
+            n_points = len(primary_vals)
+            coupled_ranges = []
+            for axis_idx, c_start, c_step in coupled_axes:
+                actual_joint_idx = self._movable_joints[axis_idx][0]
+                vals = [c_start + i * c_step for i in range(n_points)]
+                coupled_ranges.append((actual_joint_idx, vals))
+            all_ranges = grid_ranges + coupled_ranges
+            waypoints = []
+            for i in range(n_points):
+                angles = list(base)
+                for joint_idx, vals in all_ranges:
+                    angles[joint_idx] = vals[i]
+                waypoints.append(angles)
+        else:
+            all_val_lists = [vals for _, vals in grid_ranges]
+            joint_indices = [idx for idx, _ in grid_ranges]
+            waypoints = []
+            for combo in itertools.product(*all_val_lists):
+                angles = list(base)
+                for joint_idx, val in zip(joint_indices, combo):
+                    angles[joint_idx] = val
+                waypoints.append(angles)
+
+        # Print summary
+        axis_descs = []
+        for axis_idx, start, end, step in grid_axes:
+            name = self._movable_joints[axis_idx][1]
+            axis_descs.append(f"{_bold(name)}: {start} \u2192 {end} (step {abs(step)})")
+        for axis_idx, c_start, c_step in coupled_axes:
+            name = self._movable_joints[axis_idx][1]
+            n_points = len(grid_ranges[0][1])
+            c_end = c_start + (n_points - 1) * c_step
+            axis_descs.append(f"{_bold(name)}: {c_start} \u2192 {c_end} (step {c_step})")
+        mode_str = _dim("coupled") if coupled_axes else (_dim("grid") if len(grid_axes) > 1 else "")
+        mode_suffix = f"  {mode_str}" if mode_str else ""
+        print(f"  {_bgreen('Scanning')} {', '.join(axis_descs)}{mode_suffix}")
+        print(f"  {len(waypoints)} points, {step_ms} ms/step  {_dim('Ctrl+C to stop')}")
+
+        self._run_waypoints(waypoints, step_ms)
+
+    def _scan_multi_device(self, axis_specs, step_ms):
+        """Run a multi-device scan."""
+        parsed = []
+        for spec in axis_specs:
+            axis_name = str(spec[0])
+            nums = [float(x) for x in spec[1:]]
+            if ":" in axis_name:
+                dp, ap = axis_name.split(":", 1)
+            else:
+                dp, ap = self._device_name, axis_name
+            parsed.append((dp, ap, nums))
+
+        dev_names_used = list(dict.fromkeys(g[0] for g in parsed))
+        dev_configs = self._fetch_device_configs(dev_names_used)
+        if dev_configs is None:
+            print(f"  {_bred('Error')}: could not load config for one or more devices.")
+            return
+
+        device_axes = []
+        for gi, (dp, ap, nums) in enumerate(parsed):
+            dc = dev_configs[dp]
+            mi = _resolve_axis_for_device(ap, dc["movable_joints"])
+            if mi is None:
+                names = ", ".join(n for _, n in dc["movable_joints"])
+                print(f"  {_yellow('Error')}: unknown axis {ap!r} on {dp}. Available: {names}")
+                return
+            jidx = dc["movable_joints"][mi][0]
+            label = f"{dp}:{dc['movable_joints'][mi][1]}"
+            if gi == 0 or len(nums) == 3:
+                device_axes.append((dp, jidx, "grid", nums[0], nums[1], nums[2], label))
+            elif len(nums) == 2:
+                device_axes.append((dp, jidx, "coupled", nums[0], nums[1], label))
+            else:
+                print(f"  {_yellow('Error')}: axis {ap!r} needs 3 or 2 values, got {len(nums)}")
+                return
+
+        # Fetch current state for each device
+        bases = {}
+        for dname in dev_names_used:
+            state_data = self._send_and_wait(
+                {"cmd": "getState", "device": dname}, "state", timeout=3.0
+            )
+            n_movable = len(dev_configs[dname]["movable_joints"])
+            bases[dname] = list(state_data["joints"]) if state_data else [0.0] * n_movable
+
+        # Separate grid and coupled
+        grid_ranges = []
+        coupled_info = []
+        for a in device_axes:
+            dname, joint_idx, mode = a[0], a[1], a[2]
+            if mode == "grid":
+                start, end, step, label = a[3], a[4], a[5], a[6]
+                if abs(step) < 1e-6:
+                    print(f"  {_bred('Error')}: step size must be > 0")
+                    return
+                vals = _build_axis_vals(start, end, step)
+                grid_ranges.append((dname, joint_idx, vals, label))
+            else:
+                coupled_info.append((dname, joint_idx, a[3], a[4], a[5]))
+
+        # Build waypoints
+        if coupled_info:
+            primary_vals = grid_ranges[0][2]
+            n_points = len(primary_vals)
+            coupled_ranges = []
+            for dname, joint_idx, c_start, c_step, _lbl in coupled_info:
+                vals = [c_start + i * c_step for i in range(n_points)]
+                coupled_ranges.append((dname, joint_idx, vals))
+            all_ranges = [(d, j, v) for d, j, v, _ in grid_ranges] + coupled_ranges
+            waypoints = []
+            for i in range(n_points):
+                wp = {d: list(bases[d]) for d in dev_names_used}
+                for dname, joint_idx, vals in all_ranges:
+                    wp[dname][joint_idx] = vals[i]
+                waypoints.append(wp)
+        else:
+            all_val_lists = [v for _, _, v, _ in grid_ranges]
+            waypoints = []
+            for combo in itertools.product(*all_val_lists):
+                wp = {d: list(bases[d]) for d in dev_names_used}
+                for (dname, joint_idx, _, _), val in zip(grid_ranges, combo):
+                    wp[dname][joint_idx] = val
+                waypoints.append(wp)
+
+        # Print summary
+        axis_descs = []
+        for a in device_axes:
+            if a[2] == "grid":
+                label, start, end, step = a[6], a[3], a[4], a[5]
+                axis_descs.append(f"{_bold(label)}: {start} \u2192 {end} (step {abs(step)})")
+            else:
+                label, c_start, c_step = a[5], a[3], a[4]
+                n_points = len(grid_ranges[0][2])
+                c_end = c_start + (n_points - 1) * c_step
+                axis_descs.append(f"{_bold(label)}: {c_start} \u2192 {c_end} (step {c_step})")
+        mode_str = _dim("coupled") if coupled_info else (_dim("grid") if len(grid_ranges) > 1 else "")
+        mode_suffix = f"  {mode_str}" if mode_str else ""
+        print(f"  {_bgreen('Scanning')} {', '.join(axis_descs)}  {_dim('multi-device')}{mode_suffix}")
+        print(f"  {len(waypoints)} points, {step_ms} ms/step  {_dim('Ctrl+C to stop')}")
+
+        self._run_waypoints_multi(waypoints, step_ms)
+
+    def _run_waypoints(self, waypoints, step_ms):
+        """Stream single-device waypoints with Ctrl+C interrupt."""
+        try:
+            for wp in waypoints:
+                self._send({"cmd": "setJoints", "angles": [round(a, 4) for a in wp]})
+                time.sleep(step_ms / 1000.0)
+        except KeyboardInterrupt:
+            print(f"\n  {_yellow('Scan stopped.')}")
+        else:
+            print(f"  {_bgreen('Scan complete.')}")
+
+    def _run_waypoints_multi(self, waypoints, step_ms):
+        """Stream multi-device waypoints with Ctrl+C interrupt."""
+        try:
+            for wp in waypoints:
+                for dname, angles in wp.items():
+                    self._send({"cmd": "setJoints", "device": dname,
+                                "angles": [round(a, 4) for a in angles]})
+                time.sleep(step_ms / 1000.0)
+        except KeyboardInterrupt:
+            print(f"\n  {_yellow('Scan stopped.')}")
+        else:
+            print(f"  {_bgreen('Scan complete.')}")
+
+    def _fetch_device_configs(self, device_names):
+        """Fetch device list and load configs for named devices."""
+        resp = self._send_and_wait({"cmd": "listDevices"}, "devices", timeout=3.0)
+        if not resp:
+            return None
+        devs = resp.get("devices", [])
+        result = {}
+        for dname in device_names:
+            dev = next((d for d in devs if d["name"] == dname), None)
+            if not dev:
+                return None
+            cfg_path = dev.get("config")
+            if not cfg_path:
+                return None
+            config = _load_config(cfg_path)
+            if not config:
+                return None
+            result[dname] = {
+                "config": config,
+                "movable_joints": _get_movable_joints(config),
+            }
+        return result
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  PUBLIC API — Kappa Virtual Angles
+    # ═════════════════════════════════════════════════════════════════════
+
+    def virtual_angles(self, chi=None, theta=None, phi=None):
+        """Get or set kappa virtual angles.
+
+        Usage: robot.virtual_angles()                    # get
+               robot.virtual_angles(chi=45, theta=30)    # set
+        """
+        if chi is None and theta is None and phi is None:
+            self._send({"cmd": "getVirtualAngles"})
+        else:
+            msg = {"cmd": "setVirtualAngles"}
+            if chi is not None:
+                msg["chi"] = float(chi)
+            if theta is not None:
+                msg["theta"] = float(theta)
+            if phi is not None:
+                msg["phi"] = float(phi)
+            self._send(msg)
+
+    def kappa_sign(self, positive):
+        """Set kappa sign convention.
+
+        Usage: robot.kappa_sign(True)   # positive
+               robot.kappa_sign(False)  # negative
+        """
+        self._send({"cmd": "setKappaSign", "positive": bool(positive)})
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  PUBLIC API — Visualization
+    # ═════════════════════════════════════════════════════════════════════
+
+    def labels(self, enabled=True):
+        """Show or hide joint labels."""
+        self._send({"cmd": "setLabels", "enabled": bool(enabled)})
+
+    def origins(self, enabled=True):
+        """Show or hide joint origin axes."""
+        self._send({"cmd": "setOrigins", "enabled": bool(enabled)})
+
+    def chain(self, enabled=True, device=None):
+        """Show or hide kinematic chain visualization."""
+        msg = {"cmd": "setChain", "enabled": bool(enabled)}
+        if device:
+            msg["device"] = device
+        self._send(msg)
+
+    def ortho(self, enabled=True):
+        """Switch to orthographic (True) or perspective (False) camera."""
+        self._send({"cmd": "setOrtho", "enabled": bool(enabled)})
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  PUBLIC API — Camera
+    # ═════════════════════════════════════════════════════════════════════
+
+    def camera(self, position=None, target=None):
+        """Get or set camera position/target.
+
+        Usage: robot.camera()                                        # get
+               robot.camera(position=[500, 500, 500])                # set position
+               robot.camera(position=[500,500,500], target=[0,0,0])  # set both
+        """
+        if position is None and target is None:
+            self._send({"cmd": "getCamera"})
+        else:
+            msg = {"cmd": "setCamera"}
+            if position is not None:
+                msg["position"] = [float(x) for x in position]
+            if target is not None:
+                msg["target"] = [float(x) for x in target]
+            self._send(msg)
+
+    def snap(self, view):
+        """Snap camera to a preset view.
+
+        Views: +X, -X, +Y, -Y, +Z, -Z, top, bottom, front, back, left, right, iso
+        """
+        self._send({"cmd": "snapCamera", "view": view})
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  PUBLIC API — Scene
+    # ═════════════════════════════════════════════════════════════════════
+
+    def scene_state(self):
+        """Get full scene state (devices, objects, camera)."""
+        self._send({"cmd": "getSceneState"})
+
+    def save_scene(self):
+        """Trigger browser download of scene JSON."""
+        self._send({"cmd": "saveScene"})
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  Help
+    # ═════════════════════════════════════════════════════════════════════
+
+    def help(self):
+        """Show available commands."""
+        sections = [
+            ("State & Mode", [
+                ("robot.state()", "Get current device state"),
+                ("robot.home()", "Move all joints to 0\u00b0"),
+                ("robot.fk()", "Switch to Forward Kinematics"),
+                ("robot.ik()", "Switch to Inverse Kinematics"),
+                ("robot.demo()", "Run demo pose sequence"),
+            ]),
+            ("Joint Control", [
+                ("robot.joints(j1, j2, ...)", "Set all movable joint angles (\u00b0)"),
+                ("robot.joint('name', angle)", "Set a single joint by name"),
+            ]),
+            ("Inverse Kinematics", [
+                ("robot.move(x, y, z [, a, b, g])", "IK move to position (mm) + orientation (\u00b0)"),
+                ("robot.target(x, y, z [, a, b, g])", "Set IK target without switching mode"),
+            ]),
+            ("Collision", [
+                ("robot.collision([True|False])", "Toggle or set collision detection"),
+                ("robot.collisions()", "Get current collision pairs"),
+            ]),
+            ("Objects", [
+                ("robot.objects()", "List imported mesh objects"),
+                ("robot.obj(name_or_idx)", "Get object details"),
+                ("robot.objpos(name, x, y, z)", "Set object position (mm)"),
+                ("robot.objrot(name, rx, ry, rz)", "Set object rotation (\u00b0)"),
+                ("robot.objscale(name, s)", "Set uniform or per-axis scale"),
+                ("robot.objvis(name, True|False)", "Show/hide object"),
+            ]),
+            ("Devices & Sessions", [
+                ("robot.devices()", "List all loaded devices"),
+                ("robot.device('name')", "Switch active device"),
+                ("robot.sessions()", "List active viewer sessions"),
+            ]),
+            ("Scanning", [
+                ("robot.scan(('J1', 0, 90, 5))", "1D scan"),
+                ("robot.scan((...), (...))", "Grid or coupled scan"),
+                ("robot.scan(('Dev:J1', ...))", "Multi-device scan"),
+            ]),
+            ("Path Planning", [
+                ("robot.plan(start, end)", "RRT-Connect path planner"),
+                ("  start/end: list or dict", "e.g. [0,0,0,0,0,0] or {'J1': 30}"),
+            ]),
+            ("Visualization", [
+                ("robot.labels([True])", "Show/hide joint labels"),
+                ("robot.origins([True])", "Show/hide joint origin axes"),
+                ("robot.chain([True])", "Show/hide kinematic chain"),
+                ("robot.ortho([True])", "Orthographic/perspective camera"),
+                ("robot.camera()", "Get/set camera position"),
+                ("robot.snap('iso')", "Snap to preset view"),
+            ]),
+            ("Kappa (Diffractometers)", [
+                ("robot.virtual_angles(chi=, theta=, phi=)", "Get/set virtual angles"),
+                ("robot.kappa_sign(True|False)", "Set kappa sign convention"),
+            ]),
+            ("Position Queries", [
+                ("robot.pos", "Active device EE position [x, y, z] mm"),
+                ("robot.ori", "Active device EE orientation [a, b, g] deg"),
+                ("robot.angles", "Active device joint angles (list)"),
+                ("robot.get_joint('J1')", "Single joint angle by name"),
+                ("robot.mode", "Current mode ('FK' or 'IK')"),
+                ("robot.get_device_pos(['name'])", "Any device: pos, rot, joints, EE"),
+                ("robot.get_obj_pos(name_or_idx)", "Any object: pos, rot, scale, BB"),
+            ]),
+            ("Properties", [
+                ("robot.name", "Current device name"),
+                ("robot.joint_names", "List of movable joint names"),
+                ("robot.connected", "Connection status"),
+                ("robot.quiet = True", "Suppress background state output"),
+            ]),
+            ("Connection", [
+                ("robot.reconnect()", "Reconnect to server"),
+                ("robot.disconnect()", "Close connection"),
+            ]),
+        ]
+
+        print()
+        for heading, cmds in sections:
+            print(f"  {_byellow(heading)}")
+            for sig, desc in cmds:
+                print(f"    {_bold(sig):<45s} {_dim(desc)}")
+            print()
+
+    def __repr__(self):
+        status = _bgreen("connected") if self.connected else _red("disconnected")
+        return f"RobotClient({self._device_name}, {status})"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  IPython Integration
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _build_banner(robot):
+    """Build the startup banner string."""
+    name = robot.name
+    lines = []
+    if _COLORS:
+        lines.append(_cyan(f"\n  \u2554{'=' * 42}\u2557"))
+        lines.append(_cyan(f"  \u2551") + _bold(f"  {name:^38s}") + _cyan(f"  \u2551"))
+        lines.append(_cyan(f"  \u255a{'=' * 42}\u255d"))
+    else:
+        lines.append(f"\n  {name}")
+        lines.append(f"  {'=' * len(name)}")
+
+    lines.append(f"\n  Remote Control Terminal v3.0 (IPython)")
+    lines.append(f"  Server: {_bold(robot.url) if _COLORS else robot.url}")
+
+    if robot._movable_joints:
+        names = ", ".join(name for _, name in robot._movable_joints)
+        lines.append(f"  Joints ({robot._n_movable}): {_dim(names)}")
+
+    lines.append(f"\n  Python: {_bold('robot.<Tab>')}  |  Space-separated: {_bold('home')}, {_bold('joints 0 30 60 0 45 90')}, ...")
+    lines.append(f"  Type {_bold('robot.help()')} or {_bold('rhelp')} for full docs.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+from IPython.terminal.prompts import Prompts
+
+
+class _RobotPrompts(Prompts):
+    """Custom IPython prompts showing the device name."""
+
+    def __init__(self, shell):
+        super().__init__(shell)
+
+    def in_prompt_tokens(self):
+        from pygments.token import Token
+        robot = self.shell.user_ns.get("robot")
+        name = robot.name.lower().replace(" ", "_") if robot else "robot"
+        return [
+            (Token.Prompt, f"{name} "),
+            (Token.Prompt, "["),
+            (Token.PromptNum, str(self.shell.execution_count)),
+            (Token.Prompt, "]: "),
+        ]
+
+    def out_prompt_tokens(self):
+        from pygments.token import Token
+        return [
+            (Token.OutPrompt, "Out"),
+            (Token.OutPromptNum, f"[{self.shell.execution_count}]"),
+            (Token.OutPrompt, ": "),
+        ]
+
+    def continuation_prompt_tokens(self, width=None):
+        from pygments.token import Token
+        if width is None:
+            width = self._width()
+        spaces = " " * (width - 5)
+        return [
+            (Token.Prompt, f"{spaces}...: "),
+        ]
+
+    def rewrite_prompt_tokens(self):
+        from pygments.token import Token
+        return [
+            (Token.Prompt, ""),
+        ]
+
+    def _width(self):
+        robot = self.shell.user_ns.get("robot")
+        name = robot.name.lower().replace(" ", "_") if robot else "robot"
+        count_str = str(self.shell.execution_count)
+        return len(name) + 1 + len(count_str) + 4  # "name [N]: "
+
+
+# ── Line magics (space-separated syntax) ─────────────────────────────────────
+
+def _register_magics(ipython, robot):
+    """Register line magics so the original space-separated syntax works.
+
+    With automagic (on by default), the % prefix is optional:
+        joints 0 30 60 0 45 90
+        joint J1 45
+        move 150 100 300
+        scan J1 0 90 5
+    """
+    reg = ipython.register_magic_function
+
+    # ── Simple commands ──────────────────────────────────────────────
+
+    def _m_state(line):
+        robot.state()
+    reg(_m_state, magic_name='state')
+
+    def _m_home(line):
+        robot.home()
+    reg(_m_home, magic_name='home')
+
+    def _m_fk(line):
+        robot.fk()
+    reg(_m_fk, magic_name='fk')
+
+    def _m_ik(line):
+        robot.ik()
+    reg(_m_ik, magic_name='ik')
+
+    def _m_demo(line):
+        robot.demo()
+    reg(_m_demo, magic_name='demo')
+
+    # ── Joint commands ───────────────────────────────────────────────
+
+    def _m_joints(line):
+        """joints 0 30 60 0 45 90"""
+        parts = line.split()
+        if not parts:
+            robot.state()
+            return
+        robot.joints(*[float(x) for x in parts])
+    reg(_m_joints, magic_name='joints')
+
+    def _m_joint(line):
+        """joint J1 45"""
+        parts = line.split()
+        if len(parts) < 2:
+            print(f"  {_yellow('Usage')}: joint <name> <angle>")
+            return
+        robot.joint(parts[0], float(parts[1]))
+    reg(_m_joint, magic_name='joint')
+    reg(_m_joint, magic_name='pos')  # alias
+
+    # ── IK commands ──────────────────────────────────────────────────
+
+    def _m_move(line):
+        """move x y z [a b g]"""
+        parts = line.split()
+        if len(parts) < 3:
+            print(f"  {_yellow('Usage')}: move x y z [a b g]")
+            return
+        robot.move(*[float(x) for x in parts[:6]])
+    reg(_m_move, magic_name='move')
+
+    def _m_target(line):
+        """target x y z [a b g]"""
+        parts = line.split()
+        if len(parts) < 3:
+            print(f"  {_yellow('Usage')}: target x y z [a b g]")
+            return
+        robot.target(*[float(x) for x in parts[:6]])
+    reg(_m_target, magic_name='target')
+
+    # ── Collision ────────────────────────────────────────────────────
+
+    def _m_collision(line):
+        """collision [on|off]"""
+        arg = line.strip().lower()
+        if arg == "on":
+            robot.collision(True)
+        elif arg == "off":
+            robot.collision(False)
+        else:
+            robot.collision()
+    reg(_m_collision, magic_name='collision')
+
+    def _m_collisions(line):
+        robot.collisions()
+    reg(_m_collisions, magic_name='collisions')
+
+    # ── Object commands ──────────────────────────────────────────────
+
+    def _m_objects(line):
+        robot.objects()
+    reg(_m_objects, magic_name='objects')
+
+    def _m_obj(line):
+        """obj <name|#idx>"""
+        arg = line.strip()
+        if not arg:
+            print(f"  {_yellow('Usage')}: obj <name|#idx>")
+            return
+        robot.obj(arg)
+    reg(_m_obj, magic_name='obj')
+
+    def _m_objpos(line):
+        """objpos <name|#idx> x y z"""
+        parts = line.split()
+        if len(parts) < 4:
+            print(f"  {_yellow('Usage')}: objpos <name|#idx> x y z")
+            return
+        robot.objpos(parts[0], float(parts[1]), float(parts[2]), float(parts[3]))
+    reg(_m_objpos, magic_name='objpos')
+
+    def _m_objrot(line):
+        """objrot <name|#idx> rx ry rz"""
+        parts = line.split()
+        if len(parts) < 4:
+            print(f"  {_yellow('Usage')}: objrot <name|#idx> rx ry rz")
+            return
+        robot.objrot(parts[0], float(parts[1]), float(parts[2]), float(parts[3]))
+    reg(_m_objrot, magic_name='objrot')
+
+    def _m_objscale(line):
+        """objscale <name|#idx> s [sy sz]"""
+        parts = line.split()
+        if len(parts) < 2:
+            print(f"  {_yellow('Usage')}: objscale <name|#idx> s  or  <name|#idx> sx sy sz")
+            return
+        robot.objscale(parts[0], *[float(x) for x in parts[1:]])
+    reg(_m_objscale, magic_name='objscale')
+
+    def _m_objvis(line):
+        """objvis <name|#idx> on|off"""
+        parts = line.split()
+        if len(parts) < 2 or parts[1].lower() not in ("on", "off"):
+            print(f"  {_yellow('Usage')}: objvis <name|#idx> on|off")
+            return
+        robot.objvis(parts[0], parts[1].lower() == "on")
+    reg(_m_objvis, magic_name='objvis')
+
+    def _m_objresetrot(line):
+        """objresetrot <name|#idx>"""
+        arg = line.strip()
+        if not arg:
+            print(f"  {_yellow('Usage')}: objresetrot <name|#idx>")
+            return
+        robot.objresetrot(arg)
+    reg(_m_objresetrot, magic_name='objresetrot')
+
+    def _m_objresetscale(line):
+        """objresetscale <name|#idx>"""
+        arg = line.strip()
+        if not arg:
+            print(f"  {_yellow('Usage')}: objresetscale <name|#idx>")
+            return
+        robot.objresetscale(arg)
+    reg(_m_objresetscale, magic_name='objresetscale')
+
+    # ── Device / session commands ────────────────────────────────────
+
+    def _m_devices(line):
+        robot.devices()
+    reg(_m_devices, magic_name='devices')
+
+    def _m_device(line):
+        """device <name>"""
+        arg = line.strip()
+        if not arg:
+            print(f"  {_yellow('Usage')}: device <name>")
+            print(f"  Type {_bold('devices')} to list available devices.")
+            return
+        robot.device(arg)
+    reg(_m_device, magic_name='device')
+
+    def _m_sessions(line):
+        robot.sessions()
+    reg(_m_sessions, magic_name='sessions')
+
+    # ── Plan ─────────────────────────────────────────────────────────
+
+    def _m_plan(line):
+        """plan --start <axes> --end <axes> [--stepsize d] [--steptime ms]"""
+        raw = line.split()
+        if not raw:
+            names_eg = ' '.join(
+                f'{n.split()[0].lower()}=0' for _, n in robot._movable_joints[:3]
+            )
+            print(f"  {_yellow('Usage')}: plan "
+                  f"{_cyan('--start')} {_cyan('<axes>')} "
+                  f"{_cyan('--end')} {_cyan('<axes>')} "
+                  f"[{_cyan('--stepsize')} {_cyan('<deg>')}] "
+                  f"[{_cyan('--steptime')} {_cyan('<ms>')}]")
+            print(f"  Positional: {_dim(' '.join(['0'] * robot._n_movable))}")
+            print(f"  Named:      {_dim(names_eg + ' ...')}")
+            return
+
+        def _get_flag(flag, default=None):
+            nonlocal raw
+            if flag in raw:
+                i = raw.index(flag)
+                val = raw[i + 1]
+                raw = raw[:i] + raw[i+2:]
+                return val
+            return default
+
+        def _get_angle_list(flag):
+            nonlocal raw
+            if flag not in raw:
+                return None
+            i = raw.index(flag)
+            tokens = []
+            j = i + 1
+            while j < len(raw) and not raw[j].startswith('--'):
+                tokens.append(raw[j])
+                j += 1
+            raw = raw[:i] + raw[j:]
+            if not tokens:
+                return None
+            if any('=' in t for t in tokens):
+                vals = [0.0] * robot._n_movable
+                for t in tokens:
+                    if '=' not in t:
+                        raise ValueError(f"Mix of positional and named axes: {t!r}")
+                    name, val = t.split('=', 1)
+                    idx = robot._resolve_axis_name(name.strip())
+                    if idx is None:
+                        names = ', '.join(n for _, n in robot._movable_joints)
+                        raise ValueError(f"Unknown axis {name!r}. Available: {names}")
+                    vals[idx] = float(val)
+                return vals
+            else:
+                return [float(t) for t in tokens]
+
+        try:
+            stepsize_str = _get_flag('--stepsize')
+            steptime_str = _get_flag('--steptime')
+            start_vals = _get_angle_list('--start')
+            end_vals = _get_angle_list('--end')
+        except ValueError as e:
+            print(f"  {_bred('Error')}: {e}")
+            return
+
+        if start_vals is None or end_vals is None:
+            print(f"  {_yellow('Error')}: --start and --end are required")
+            return
+
+        stepsize = float(stepsize_str) if stepsize_str is not None else 5.0
+        steptime = int(steptime_str) if steptime_str is not None else 80
+        robot.plan(start_vals, end_vals, stepsize=stepsize, steptime=steptime)
+    reg(_m_plan, magic_name='plan')
+
+    # ── Scan ─────────────────────────────────────────────────────────
+
+    def _m_scan(line):
+        """scan <axis> <start> <end> <step> [<axis> ...] [--steptime ms]"""
+        raw = line.split()
+        if not raw:
+            robot.scan()
+            return
+
+        steptime = 80
+        if '--steptime' in raw:
+            i = raw.index('--steptime')
+            steptime = int(raw[i + 1])
+            raw = raw[:i] + raw[i+2:]
+
+        if len(raw) < 4:
+            robot.scan()
+            return
+
+        def _is_number(s):
+            try:
+                float(s)
+                return True
+            except ValueError:
+                return False
+
+        groups = []
+        i = 0
+        while i < len(raw):
+            axis_name = raw[i]
+            i += 1
+            nums = []
+            while i < len(raw) and _is_number(raw[i]):
+                nums.append(float(raw[i]))
+                i += 1
+            groups.append(tuple([axis_name] + nums))
+
+        robot.scan(*groups, steptime=steptime)
+    reg(_m_scan, magic_name='scan')
+
+    # ── Help ─────────────────────────────────────────────────────────
+
+    def _m_rhelp(line):
+        robot.help()
+    reg(_m_rhelp, magic_name='rhelp')
+
+
+# ── Entry point ──────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Robot/Device IPython Remote Control Terminal",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Examples:\n"
+               "  python robot_ipython.py\n"
+               "  python robot_ipython.py --config i16_config.json\n"
+               "  python robot_ipython.py --url ws://192.168.1.100:8080/ws --config robot_config.json\n"
+               "  python robot_ipython.py --session ab12cd34\n",
+    )
+    parser.add_argument("--url", default="ws://localhost:8080/ws",
+                        help="WebSocket URL (default: ws://localhost:8080/ws)")
+    parser.add_argument("--config", default="robot_config.json",
+                        help="Path to device config JSON (default: robot_config.json)")
+    parser.add_argument("--session", default=None,
+                        help="Session ID of the viewer instance to connect to.")
+    args = parser.parse_args()
+
+    url = args.url
+    if args.session:
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}session={args.session}"
+
+    robot = RobotClient(url=url, config=args.config)
+
+    banner = _build_banner(robot)
+
+    import IPython
+    from traitlets.config import Config
+
+    c = Config()
+    c.TerminalInteractiveShell.banner1 = banner
+    c.TerminalInteractiveShell.banner2 = ""
+    c.TerminalInteractiveShell.confirm_exit = False
+    c.TerminalInteractiveShell.prompts_class = _RobotPrompts
+    c.InteractiveShellApp.exec_lines = [
+        "_register_magics(get_ipython(), robot)",
+    ]
+
+    IPython.start_ipython(
+        argv=[],
+        user_ns={
+            "robot": robot,
+            "r": robot,
+            "time": time,
+            "_register_magics": _register_magics,
+        },
+        config=c,
+    )
+
+    robot.disconnect()
+
+
+if __name__ == "__main__":
+    main()
