@@ -119,6 +119,19 @@ def _build_axis_vals(start, end, step):
         vals.append(end)
     return vals
 
+def _is_array_like(obj):
+    """Return True if obj looks like a 2D array (list of lists, numpy array, etc.)."""
+    if callable(obj):
+        return False
+    if isinstance(obj, str):
+        return False
+    try:
+        iter(obj)
+        return True
+    except TypeError:
+        return False
+
+
 def _resolve_axis_for_device(name, movable_joints):
     nl = name.lower()
     for mi, (_, jname) in enumerate(movable_joints):
@@ -939,11 +952,16 @@ class RobotClient:
         The first spec must always have 4 values (start, end, step).
         Supports Device:Axis syntax for multi-device scans.
 
+        Array scan: pass axis names (strings) followed by a callable or 2D array.
+        The callable/array provides waypoint values — one column per axis.
+
         Usage:
             robot.scan(('J1', 0, 90, 5))
             robot.scan(('J1', 0, 90, 5), ('J2', 0, 45, 5))             # grid
             robot.scan(('J1', 0, 90, 5), ('J2', 0, 2))                  # coupled
             robot.scan(('Meca500:J1', 0, 90, 5), ('GP225:J2', 0, 45, 5))  # multi-device
+            robot.scan('J1', 'J2', my_func)                              # array scan
+            robot.scan('Dev:J1', 'Dev:J2', my_func)                      # multi-device array
         """
         if not axis_specs:
             first = self._movable_joints[0][1].split()[0].lower() if self._movable_joints else "J1"
@@ -951,10 +969,26 @@ class RobotClient:
             ex1 = f"robot.scan(('{first}', 0, 50, 5))"
             ex2 = f"robot.scan(('{first}', 10, 20, 1), ('{second}', 20, 2))"
             ex3 = f"robot.scan(('{first}', 0, 20, 1), ('{second}', 0, 30, 2))"
+            ex4 = f"robot.scan('{first}', '{second}', my_array_func)"
             print(f"  {_yellow('Usage')}: robot.scan((axis, start, end, step), ...)")
             print(f"  1D:      {_dim(ex1)}")
             print(f"  Coupled: {_dim(ex2)}")
             print(f"  Grid:    {_dim(ex3)}")
+            print(f"  Array:   {_dim(ex4)}")
+            return
+
+        # Detect array scan: last arg is callable or array-like, preceding args are strings
+        last = axis_specs[-1]
+        is_array_scan = (
+            len(axis_specs) >= 2
+            and (callable(last) or _is_array_like(last))
+            and all(isinstance(a, str) for a in axis_specs[:-1])
+        )
+
+        if is_array_scan:
+            axis_names = list(axis_specs[:-1])
+            data = last() if callable(last) else last
+            self._scan_from_array(axis_names, data, steptime)
             return
 
         if len(axis_specs[0]) != 4:
@@ -1152,6 +1186,120 @@ class RobotClient:
 
         self._run_waypoints_multi(waypoints, step_ms)
 
+    def _scan_from_array(self, axis_names, data, step_ms):
+        """Run a scan from a 2D array of waypoint values.
+
+        axis_names: list of axis name strings (may include Device:Axis syntax).
+        data: 2D iterable — each row has one value per axis.
+        """
+        # Convert to list of lists
+        try:
+            rows = [list(row) for row in data]
+        except TypeError:
+            print(f"  {_bred('Error')}: array data must be a 2D iterable (list of lists, numpy array, etc.)")
+            return
+
+        if not rows:
+            print(f"  {_yellow('Error')}: array is empty")
+            return
+
+        n_axes = len(axis_names)
+        for ri, row in enumerate(rows):
+            if len(row) != n_axes:
+                print(f"  {_yellow('Error')}: row {ri} has {len(row)} values, expected {n_axes} (one per axis)")
+                return
+
+        is_multi = any(":" in name for name in axis_names)
+
+        if is_multi:
+            self._scan_from_array_multi(axis_names, rows, step_ms)
+        else:
+            self._scan_from_array_single(axis_names, rows, step_ms)
+
+    def _scan_from_array_single(self, axis_names, rows, step_ms):
+        """Array scan for a single device."""
+        state_data = self._send_and_wait({"cmd": "getState"}, "state", timeout=3.0)
+        base = list(state_data["joints"]) if state_data else [0.0] * self._n_movable
+
+        # Resolve axis names to joint indices
+        resolved = []
+        for name in axis_names:
+            idx = self._resolve_axis_name(name)
+            if idx is None:
+                names = ", ".join(n for _, n in self._movable_joints)
+                print(f"  {_yellow('Error')}: unknown axis {name!r}. Available: {names}")
+                return
+            resolved.append((idx, self._movable_joints[idx][0], name))
+
+        # Build waypoints
+        waypoints = []
+        for row in rows:
+            angles = list(base)
+            for (mi, joint_idx, _), val in zip(resolved, row):
+                angles[joint_idx] = float(val)
+            waypoints.append(angles)
+
+        # Print summary
+        labels = [_bold(self._movable_joints[mi][1]) for mi, _, _ in resolved]
+        print(f"  {_bgreen('Array scan')} {', '.join(labels)}")
+        print(f"  {len(waypoints)} points, {step_ms} ms/step  {_dim('Ctrl+C to stop')}")
+
+        self._run_waypoints(waypoints, step_ms)
+
+    def _scan_from_array_multi(self, axis_names, rows, step_ms):
+        """Array scan across multiple devices."""
+        # Parse Device:Axis pairs
+        parsed = []
+        for name in axis_names:
+            if ":" in name:
+                dp, ap = name.split(":", 1)
+            else:
+                dp, ap = self._device_name, name
+            parsed.append((dp, ap))
+
+        dev_names_used = list(dict.fromkeys(dp for dp, _ in parsed))
+        dev_configs = self._fetch_device_configs(dev_names_used)
+        if dev_configs is None:
+            print(f"  {_bred('Error')}: could not load config for one or more devices.")
+            return
+
+        # Resolve each axis
+        resolved = []
+        for dp, ap in parsed:
+            dc = dev_configs[dp]
+            mi = _resolve_axis_for_device(ap, dc["movable_joints"])
+            if mi is None:
+                names = ", ".join(n for _, n in dc["movable_joints"])
+                print(f"  {_yellow('Error')}: unknown axis {ap!r} on {dp}. Available: {names}")
+                return
+            jidx = dc["movable_joints"][mi][0]
+            label = f"{dp}:{dc['movable_joints'][mi][1]}"
+            resolved.append((dp, jidx, label))
+
+        # Fetch current state for each device
+        bases = {}
+        for dname in dev_names_used:
+            state_data = self._send_and_wait(
+                {"cmd": "getState", "device": dname}, "state", timeout=3.0
+            )
+            n_movable = len(dev_configs[dname]["movable_joints"])
+            bases[dname] = list(state_data["joints"]) if state_data else [0.0] * n_movable
+
+        # Build waypoints
+        waypoints = []
+        for row in rows:
+            wp = {d: list(bases[d]) for d in dev_names_used}
+            for (dp, jidx, _), val in zip(resolved, row):
+                wp[dp][jidx] = float(val)
+            waypoints.append(wp)
+
+        # Print summary
+        labels = [_bold(lbl) for _, _, lbl in resolved]
+        print(f"  {_bgreen('Array scan')} {', '.join(labels)}  {_dim('multi-device')}")
+        print(f"  {len(waypoints)} points, {step_ms} ms/step  {_dim('Ctrl+C to stop')}")
+
+        self._run_waypoints_multi(waypoints, step_ms)
+
     def _run_waypoints(self, waypoints, step_ms):
         """Stream single-device waypoints with Ctrl+C interrupt."""
         try:
@@ -1335,6 +1483,7 @@ class RobotClient:
                 ("robot.scan(('J1', 0, 90, 5))", "1D scan"),
                 ("robot.scan((...), (...))", "Grid or coupled scan"),
                 ("robot.scan(('Dev:J1', ...))", "Multi-device scan"),
+                ("robot.scan('J1', 'J2', func)", "Array scan (func/array)"),
             ]),
             ("Path Planning", [
                 ("robot.plan(start, end)", "RRT-Connect path planner"),
@@ -1391,7 +1540,7 @@ class RobotClient:
 
 def _build_banner(robot):
     """Build the startup banner string."""
-    name = robot.name
+    name = "DLS Collision Model"
     lines = []
     if _COLORS:
         lines.append(_cyan(f"\n  \u2554{'=' * 42}\u2557"))
@@ -1474,6 +1623,7 @@ def _register_magics(ipython, robot):
         joint J1 45
         move 150 100 300
         scan J1 0 90 5
+        scan J1 J2 polar_func()
     """
     reg = ipython.register_magic_function
 
@@ -1722,7 +1872,8 @@ def _register_magics(ipython, robot):
     # ── Scan ─────────────────────────────────────────────────────────
 
     def _m_scan(line):
-        """scan <axis> <start> <end> <step> [<axis> ...] [--steptime ms]"""
+        """scan <axis> <start> <end> <step> [<axis> ...] [--steptime ms]
+        scan <axis> [<axis> ...] func_or_expr() [--steptime ms]"""
         raw = line.split()
         if not raw:
             robot.scan()
@@ -1734,16 +1885,38 @@ def _register_magics(ipython, robot):
             steptime = int(raw[i + 1])
             raw = raw[:i] + raw[i+2:]
 
-        if len(raw) < 4:
-            robot.scan()
-            return
-
         def _is_number(s):
             try:
                 float(s)
                 return True
             except ValueError:
                 return False
+
+        # Detect array scan: last token ends with "()" or "(args)"
+        # e.g. "scan delta gamma polar_func()" or "scan delta gamma my_func(10)"
+        last_token = raw[-1] if raw else ""
+        paren_idx = last_token.find("(")
+        if paren_idx > 0 and last_token.endswith(")"):
+            # Array scan mode: tokens before the func call are axis names
+            axis_names = raw[:-1]
+            func_expr = last_token
+            if len(axis_names) < 1:
+                print(f"  {_yellow('Error')}: array scan needs at least one axis name before the function")
+                return
+            # Evaluate the function expression in the IPython namespace
+            from IPython import get_ipython
+            ip = get_ipython()
+            try:
+                data = ip.ev(func_expr)
+            except Exception as e:
+                print(f"  {_bred('Error')}: failed to evaluate {func_expr!r}: {e}")
+                return
+            robot.scan(*axis_names, data, steptime=steptime)
+            return
+
+        if len(raw) < 4:
+            robot.scan()
+            return
 
         groups = []
         i = 0

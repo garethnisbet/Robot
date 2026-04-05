@@ -59,7 +59,7 @@ export function buildAdjacencyPairs(config) {
 // loadDevice
 // ============================================================
 export async function loadDevice(configFile) {
-  const config = await fetch(configFile).then(r => r.json());
+  const config = await fetch(configFile + '?_=' + Date.now()).then(r => r.json());
   const id = State.incrementDeviceId();
   const numJoints = config.joints.length;
 

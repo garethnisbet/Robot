@@ -50,7 +50,8 @@
       "restQuat": [1, 0, 0, 0],
       "axis": [0, 0, 1],
       "limits": [-360, 360],
-      "parent": 4
+      "parent": 4,
+      "apiSign": -1
     },
     {
       "name": "J5 Wrist Pitch",
@@ -66,7 +67,8 @@
       "restQuat": [1, 0, 0, 0],
       "axis": [0, 0, 1],
       "limits": [-360, 360],
-      "parent": 6
+      "parent": 6,
+      "apiSign": -1
     }
   ],
   "links": [
