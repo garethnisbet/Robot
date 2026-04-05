@@ -25,8 +25,11 @@ import sys
 import threading
 import time
 import urllib.request
-
 import websockets
+import numpy as np
+from GNKinematics import kinematics
+from RobotDefinitions import Meca500_kin, GP225_kin, GP180_120_kin, GP280_kin
+
 
 # ── ANSI colour helpers ──────────────────────────────────────────────────────
 
@@ -48,6 +51,7 @@ def _bred(t):     return _c("1;31", t)
 def _bgreen(t):   return _c("1;32", t)
 def _byellow(t):  return _c("1;33", t)
 def _bcyan(t):    return _c("1;36", t)
+
 
 # ── Config loading ───────────────────────────────────────────────────────────
 
@@ -832,6 +836,28 @@ class RobotClient:
             self._device_name = new_name
             print(f"  {_bgreen('Switched to')} {_bold(new_name)}")
 
+    def session(self, session_id=None):
+        """Switch to a different viewer session by ID.
+
+        Usage: robot.session('ab12cd34')
+               robot.session()   # show current session
+        """
+        if session_id is None:
+            print(f"  {_bold('Current session')}: {_bcyan(self._session or 'default')}")
+            return
+
+        session_id = str(session_id).strip()
+        # Build new URL: strip any existing session param, then append the new one
+        base_url = self._url.split("?")[0]
+        if session_id:
+            self._url = f"{base_url}?session={session_id}"
+        else:
+            self._url = base_url
+        self._session = session_id or None
+
+        # Reconnect with the new URL
+        self.reconnect()
+
     def sessions(self):
         """List active viewer sessions."""
         http_url = self._url.replace("ws://", "http://").replace("wss://", "https://")
@@ -1478,6 +1504,7 @@ class RobotClient:
                 ("robot.devices()", "List all loaded devices"),
                 ("robot.device('name')", "Switch active device"),
                 ("robot.sessions()", "List active viewer sessions"),
+                ("robot.session('id')", "Switch to a viewer session"),
             ]),
             ("Scanning", [
                 ("robot.scan(('J1', 0, 90, 5))", "1D scan"),
@@ -1792,6 +1819,15 @@ def _register_magics(ipython, robot):
         robot.device(arg)
     reg(_m_device, magic_name='device')
 
+    def _m_session(line):
+        """session [id]"""
+        arg = line.strip()
+        if not arg:
+            robot.session()
+        else:
+            robot.session(arg)
+    reg(_m_session, magic_name='session')
+
     def _m_sessions(line):
         robot.sessions()
     reg(_m_sessions, magic_name='sessions')
@@ -1969,6 +2005,7 @@ def main():
     banner = _build_banner(robot)
 
     import IPython
+
     from traitlets.config import Config
 
     c = Config()
@@ -1986,6 +2023,12 @@ def main():
             "robot": robot,
             "r": robot,
             "time": time,
+            "np": np,
+            "kinematics": kinematics,
+            "Meca500_kin": Meca500_kin,
+            "GP225_kin": GP225_kin,
+            "GP180_120_kin": GP180_120_kin,
+            "GP280_kin": GP280_kin,
             "_register_magics": _register_magics,
         },
         config=c,
