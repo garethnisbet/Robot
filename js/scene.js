@@ -177,21 +177,90 @@ scene.add(new THREE.AmbientLight(0x404060, 0.7));
 scene.add(new THREE.HemisphereLight(0x8888bb, 0x333344, 0.4));
 
 // ============================================================
-// Ground + grid
+// Ground + grid  (Blender-style shader grid)
 // ============================================================
-const groundMat = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.9 });
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(4, 4), groundMat);
-ground.rotation.x = -Math.PI / 2;
-ground.position.y = 0;
-ground.receiveShadow = true;
-scene.add(ground);
-scene.add(new THREE.GridHelper(2, 40, 0x333355, 0x222244));
+const GRID_INIT = 4;
+
+// Shadow-catching plane (invisible but receives shadows)
+const shadowMat = new THREE.ShadowMaterial({ opacity: 0.25 });
+const shadowPlane = new THREE.Mesh(new THREE.PlaneGeometry(GRID_INIT * 2, GRID_INIT * 2), shadowMat);
+shadowPlane.rotation.x = -Math.PI / 2;
+shadowPlane.receiveShadow = true;
+scene.add(shadowPlane);
+
+// Blender-style grid
+const gridMaterial = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+  uniforms: {},
+  vertexShader: /* glsl */ `
+    varying vec3 vWorldPos;
+    void main() {
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      vWorldPos = wp.xyz;
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }`,
+  fragmentShader: /* glsl */ `
+    varying vec3 vWorldPos;
+
+    float grid(float coord, float step, float fw) {
+      float halfLine = fw * 0.75;
+      float d = abs(fract(coord / step + 0.5) - 0.5) * step;
+      return 1.0 - smoothstep(0.0, halfLine, d);
+    }
+
+    void main() {
+      vec2 p  = vWorldPos.xz;
+
+      // per-axis screen-space pixel width in world units
+      vec2 fw = fwidth(p);
+
+      // minor grid  (10 cm)
+      float minor = max(grid(p.x, 0.1, fw.x), grid(p.y, 0.1, fw.y));
+      // major grid  (1 m)
+      float major = max(grid(p.x, 1.0, fw.x * 2.0), grid(p.y, 1.0, fw.y * 2.0));
+
+      // axis lines – reuse grid() so they anti-alias the same as the grid
+      float xAx = grid(p.y, 10000.0, fw.y * 3.0);   // X-axis (z=0)
+      float zAx = grid(p.x, 10000.0, fw.x * 3.0);   // Z-axis (x=0)
+
+      // compose colour & alpha
+      vec3  col = vec3(0.30, 0.30, 0.40);
+      float a   = minor * 0.18;
+
+      // major overrides minor
+      col = mix(col, vec3(0.38, 0.38, 0.50), major);
+      a   = max(a, major * 0.35);
+
+      // axis overrides all  (X = red, Z = green – matches nav gizmo)
+      col = mix(col, vec3(1.0, 0.27, 0.33), xAx);
+      a   = max(a, xAx * 0.7);
+      col = mix(col, vec3(0.33, 0.87, 0.33), zAx);
+      a   = max(a, zAx * 0.7);
+
+      if (a < 0.002) discard;
+      gl_FragColor = vec4(col, a);
+    }`,
+});
+
+const gridPlane = new THREE.Mesh(
+  new THREE.PlaneGeometry(GRID_INIT * 2, GRID_INIT * 2),
+  gridMaterial
+);
+gridPlane.rotation.x = -Math.PI / 2;
+gridPlane.position.y = 0.005;
+scene.add(gridPlane);
 
 export function setFloorSize(radius) {
   State.setFloorSize(radius);
-  const size = radius * 2;
-  ground.geometry.dispose();
-  ground.geometry = new THREE.PlaneGeometry(size * 2, size * 2);
+  const ext = radius * 2;
+
+  shadowPlane.geometry.dispose();
+  shadowPlane.geometry = new THREE.PlaneGeometry(ext * 2, ext * 2);
+
+  gridPlane.geometry.dispose();
+  gridPlane.geometry = new THREE.PlaneGeometry(ext * 2, ext * 2);
 }
 
 // ============================================================
