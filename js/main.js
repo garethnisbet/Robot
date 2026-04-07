@@ -244,10 +244,15 @@ document.getElementById('labelBtn').addEventListener('click', () => {
     if (!State.activeDevice) return;
     const deg = parseFloat(e.target.value);
     document.getElementById(id.replace('ik', 'ikv')).textContent = Math.round(deg);
-    const comp = id.charAt(2);
-    const axis = comp === 'a' ? 'y' : comp === 'b' ? 'z' : 'x';
-    State.activeDevice.ikTargetEuler[axis] = deg * deg2rad;
-    State.activeDevice.ikTargetQuat.setFromEuler(State.activeDevice.ikTargetEuler);
+    // Read all three user-convention slider values
+    const aDeg = parseFloat(document.getElementById('ika').value);
+    const bDeg = parseFloat(document.getElementById('ikb').value);
+    const cDeg = parseFloat(document.getElementById('ikc').value);
+    // Convert from user euler (home-relative, beta-90) to absolute quaternion
+    const relEuler = new THREE.Euler(aDeg * deg2rad, cDeg * deg2rad, (90 - bDeg) * deg2rad, 'YZX');
+    const relQuat = new THREE.Quaternion().setFromEuler(relEuler);
+    State.activeDevice.ikTargetQuat.copy(relQuat).multiply(State.activeDevice.homeQuaternion);
+    State.activeDevice.ikTargetEuler.setFromQuaternion(State.activeDevice.ikTargetQuat, 'YZX');
     State.activeDevice.ikTarget.quaternion.copy(State.activeDevice.ikTargetQuat);
   });
 });

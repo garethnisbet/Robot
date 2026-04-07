@@ -27,7 +27,7 @@ State (sent FROM the viewer):
     "type": "state",
     "joints": [j1..jN],          # degrees (all joints)
     "eePosition": [x, y, z],    # mm, Z-up
-    "eeOrientation": [a, b, g], # degrees, ZYX Euler
+    "eeOrientation": [a, b, g], # degrees, Euler (a=Rx, b=Ry, g=Rz) relative to home (home = [0, 90, 0])
     "mode": "FK" | "IK",
     "ikError": null | <mm>
   }

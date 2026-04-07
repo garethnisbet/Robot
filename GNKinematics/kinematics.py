@@ -196,6 +196,14 @@ class kinematics:
         self.new_offset = [0, 0, 0]
         self.motor_pos = np.array([0, 0, 0, 0, 0, 0])
 
+        # Compute the home EE rotation (all joints = 0) for euler convention
+        home_angles = np.zeros(6) + self.motor_offsets
+        v5h = self._rotate_through_joints_raw(L_vects[5, :], axis_vects, home_angles, 5)
+        v6h = self._rotate_through_joints_raw(L_vects[6, :], axis_vects, home_angles, 5)
+        v7h = self._rotate_through_joints_raw(L_vects[7, :], axis_vects, home_angles, 5)
+        self._home_rot = np.concatenate((v5h, v6h, v7h), 0)
+        self._home_rot_inv = self._home_rot.T  # orthogonal matrix: inverse = transpose
+
     def setStrategy(self, strategy):
         self.strategy = strategy
 
@@ -220,16 +228,23 @@ class kinematics:
     def storeCurrentPosition(self, set_pos):
         self.motor_pos = set_pos
 
-    def _rotate_through_joints(self, vec, angles, from_joint):
-        """Rotate vec through the joint chain from from_joint down to joint 0."""
+    @staticmethod
+    def _rotate_through_joints_raw(vec, axis_vects, angles, from_joint):
+        """Rotate vec through a joint chain (static version for use during init)."""
         v = np.atleast_2d(vec)
         for j in range(from_joint, -1, -1):
-            v = rotxyz(v, self.axis_vects[j, :], angles[j])
+            v = rotxyz(v, axis_vects[j, :], angles[j])
         return v
+
+    def _rotate_through_joints(self, vec, angles, from_joint):
+        """Rotate vec through the joint chain from from_joint down to joint 0."""
+        return self._rotate_through_joints_raw(vec, self.axis_vects, angles, from_joint)
 
     def setEulerTarget(self, xyz, r_alpha, r_beta, r_gamma):
         vx, vy, vz = np.identity(3)
-        em = rotmat(vx, r_alpha) @ rotmat(vy, r_beta) @ rotmat(vz, r_gamma)
+        # Convert from user euler (home-relative, beta offset by 90°) to absolute
+        em_rel = rotmat(vx, r_alpha) @ rotmat(vy, 90 - r_beta) @ rotmat(vz, r_gamma)
+        em = em_rel @ self._home_rot_inv
         targetmatrix = np.array([em @ vx, em @ vy, em @ vz])
         tool = np.asarray(self.tool_offset) @ targetmatrix
         xyz = np.array(xyz) + tool
@@ -252,11 +267,13 @@ class kinematics:
         self._t_off = self._rotate_through_joints(self.tool_offset, angles, 5)
         new_centre = rotxyz(np.atleast_2d(self.centre_offset), self.axis_vects[0, :], angles[0])
 
-        # Convert back to Euler angles
+        # Convert back to Euler angles (relative to home orientation)
+        # Convention: alpha=Rx, beta=Ry (home=90°), gamma=Rz
         rmatrix = np.concatenate((self.v5, self.v6, self.v7), 0)
-        rmatrix[np.abs(rmatrix) < 1e-5] = 0
-        alpha, beta, gamma = rotationMatrixToEulerZYX(rmatrix)
-        self.al_be_gam = np.array([[alpha, beta, gamma]])
+        rmatrix_rel = self._home_rot_inv @ rmatrix
+        rmatrix_rel[np.abs(rmatrix_rel) < 1e-5] = 0
+        alpha, beta, gamma = rotationMatrixToEulerZYX(rmatrix_rel)
+        self.al_be_gam = np.array([[alpha, np.pi / 2 - beta, gamma]])
         self.position = self.v4 - self._t_off + new_centre
 
         return np.concatenate((self.v0, self.v1, self.v2, self.v3, self.v4,

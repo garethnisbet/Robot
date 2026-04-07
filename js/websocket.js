@@ -105,14 +105,15 @@ export function buildState(dev) {
   State.scene.updateMatrixWorld(true);
   const eePos  = getEEWorldPosition(dev);
   const eeQuat = getEEWorldQuaternion(dev);
-  const euler  = new THREE.Euler().setFromQuaternion(eeQuat, 'YZX');
+  const relQuat = eeQuat.clone().multiply(dev.homeQuaternionInv);
+  const euler  = new THREE.Euler().setFromQuaternion(relQuat, 'YZX');
   return {
     type: 'state',
     device: dev.name,
     joints: dev.sliderJointMap.map(ji => +(dev.apiSign[ji] * dev.jointAngles[ji] * rad2deg).toFixed(2)),
     jointNames: dev.sliderJointMap.map(ji => dev.config.joints[ji].name),
     eePosition:    [+(eePos.x * 1000).toFixed(2), +(eePos.z * 1000).toFixed(2), +(eePos.y * 1000).toFixed(2)],
-    eeOrientation: [+(euler.y * rad2deg).toFixed(2), +(euler.z * rad2deg).toFixed(2), +(euler.x * rad2deg).toFixed(2)],
+    eeOrientation: [+(euler.x * rad2deg).toFixed(2), +(90 - euler.z * rad2deg).toFixed(2), +(euler.y * rad2deg).toFixed(2)],
     mode: dev.ikMode ? 'IK' : 'FK',
     ikError: dev.ikMode ? +((getEEWorldPosition(dev).distanceTo(dev.ikTarget.position)) * 1000).toFixed(3) : null,
     collisionEnabled: State.collisionEnabled,
@@ -234,8 +235,10 @@ export function applyIKTarget(dev, data) {
     dev.ikTarget.position.set(data.position[0] / 1000, data.position[2] / 1000, data.position[1] / 1000);
   }
   if (Array.isArray(data.orientation) && data.orientation.length === 3) {
-    dev.ikTargetEuler.set(data.orientation[2] * deg2rad, data.orientation[0] * deg2rad, data.orientation[1] * deg2rad, 'YZX');
-    dev.ikTargetQuat.setFromEuler(dev.ikTargetEuler);
+    const relEuler = new THREE.Euler(data.orientation[0] * deg2rad, data.orientation[2] * deg2rad, (90 - data.orientation[1]) * deg2rad, 'YZX');
+    const relQuat = new THREE.Quaternion().setFromEuler(relEuler);
+    dev.ikTargetQuat.copy(relQuat).multiply(dev.homeQuaternion);
+    dev.ikTargetEuler.setFromQuaternion(dev.ikTargetQuat, 'YZX');
     dev.ikTarget.quaternion.copy(dev.ikTargetQuat);
   }
   syncIKSliders(dev);

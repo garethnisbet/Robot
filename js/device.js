@@ -387,6 +387,11 @@ export async function loadDevice(configFile) {
         }
       }
 
+      // Capture home EE quaternion (all joints at 0)
+      State.scene.updateMatrixWorld(true);
+      dev.homeQuaternion = getEEWorldQuaternion(dev);
+      dev.homeQuaternionInv = dev.homeQuaternion.clone().invert();
+
       dev.loaded = true;
       resolve();
     }, (progress) => {
@@ -462,9 +467,11 @@ export function syncIKSliders(dev) {
   document.getElementById('ikz').value = zmm;
   document.getElementById('ikvz').textContent = zmm;
 
-  const ad = Math.round(dev.ikTargetEuler.y * rad2deg);
-  const bd = Math.round(dev.ikTargetEuler.z * rad2deg);
-  const cd = Math.round(dev.ikTargetEuler.x * rad2deg);
+  const relQuat = dev.ikTargetQuat.clone().multiply(dev.homeQuaternionInv);
+  const relEuler = new THREE.Euler().setFromQuaternion(relQuat, 'YZX');
+  const ad = Math.round(relEuler.x * rad2deg);
+  const bd = Math.round(90 - relEuler.z * rad2deg);
+  const cd = Math.round(relEuler.y * rad2deg);
   document.getElementById('ika').value = ad;
   document.getElementById('ikva').textContent = ad;
   document.getElementById('ikb').value = bd;
