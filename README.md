@@ -19,7 +19,7 @@ New devices can be added from Blender scenes using the `/build-viewer` skill (se
 - **Config-driven viewer** — a single generic `threejs_scene.html` viewer loads any device via JSON config
 - **Multi-device scene** — load multiple devices simultaneously from the add-device dropdown; click a device in the list or click its mesh to switch active device
 - **Device renaming** — double-click a device name in the device list to rename it
-- **Device origin transform** — move and rotate device origins with translate/rotate gizmo modes
+- **Device origin transform** — move and rotate device origins with translate/rotate gizmo modes; World/Local space toggle for gizmo axis alignment
 - **Device parenting** — parent a device to a link on another device so it follows the kinematic chain
 - **Auto-fit camera** — camera automatically frames the loaded model on startup
 - **Forward Kinematics** — joint angle sliders for all movable joints (fixed kinematic links are hidden)
@@ -33,7 +33,7 @@ New devices can be added from Blender scenes using the `/build-viewer` skill (se
 - **Primitive objects** — add cube, sphere, and cylinder primitives directly from the toolbar
 - **Object duplication** — duplicate any imported or primitive object with a single click
 - **Persistent objects** — imported and primitive objects are automatically saved to IndexedDB and restored on page reload
-- **Object manipulation** — click objects to select, then move, rotate, or scale with transform gizmos (keyboard: T/R/S, Escape to deselect)
+- **Object manipulation** — click objects to select, then move, rotate, or scale with transform gizmos (keyboard: T/R/S, Escape to deselect); World/Local space toggle for gizmo axis alignment
 - **Parent-child linking** — attach objects to device links so they follow the kinematic chain
 - **Self-collision detection** — BVH-accelerated triangle-level intersection testing between device links, using kinematic adjacency to skip physically connected parts
 - **Collision detection** — intersection testing between device links and imported scene objects, with red highlight on colliding meshes
@@ -121,6 +121,8 @@ Click **Cube**, **Sphere**, or **Cylinder** to add a primitive shape. Primitives
 | `S` | Scale |
 | `Esc` | Deselect |
 
+Both device and object gizmos have a **World/Local** toggle button. In World mode the gizmo axes align with the scene axes; in Local mode they align with the object's own axes. The toggle resets to World when the gizmo is deactivated.
+
 ### Parent-Child Linking
 
 Use the **Parent** dropdown to attach objects to device links. Parented objects follow the kinematic chain. Local transforms are preserved when reparenting.
@@ -207,6 +209,13 @@ meca500 [5]: for a in range(0, 91, 10):              # full Python syntax
 | `target 190 0 308` | `robot.target(190, 0, 308)` | Set IK target without switching mode |
 | `demo` | `robot.demo()` | Run the config's demo pose |
 
+**Device transform commands:**
+
+| Python | Description |
+|--------|-------------|
+| `robot.devtranslate(dx, dy, dz, space='parent')` | Translate device origin by delta (mm) in parent/local/world frame |
+| `robot.devrotate(rx, ry, rz, space='parent')` | Rotate device origin by delta (deg) in parent/local/world frame |
+
 **Motion planning commands:**
 
 | Space-separated | Python | Description |
@@ -217,6 +226,12 @@ meca500 [5]: for a in range(0, 91, 10):              # full Python syntax
 | `scan theta 0 90 5 phi 0 30 2` | `robot.scan(('theta',0,90,5), ('phi',0,30,2))` | 2D grid scan |
 | `scan theta 0 90 5 phi 0 1` | `robot.scan(('theta',0,90,5), ('phi',0,1))` | Coupled scan |
 | `scan DevA:J1 0 50 5 DevB:J1 0 30 5` | `robot.scan(('DevA:J1',0,50,5), ('DevB:J1',0,30,5))` | Multi-device scan |
+| — | `robot.scan(('@Cube:tx', 0, 100, 10))` | Object translation scan |
+| — | `robot.scan(('@Cube:rz', 0, 360, 10))` | Object rotation scan |
+| — | `robot.scan(('@Cube:tx',0,100,10), space='world')` | Object scan in world coords |
+| — | `robot.scan(('J1',0,90,5), ('@Cube:tz',0,50,5))` | Mixed joint + object scan |
+
+Object scan axes use `@ObjectName:component` syntax where component is `tx`, `ty`, `tz`, `rx`, `ry`, or `rz`. The `space` parameter (`'local'` or `'world'`) controls the coordinate frame for object transforms (default: `'local'`).
 
 **Object commands:**
 
@@ -230,6 +245,13 @@ meca500 [5]: for a in range(0, 91, 10):              # full Python syntax
 | `objvis MyPart on` | `robot.objvis('MyPart', True)` | Show/hide object |
 | `collision on` | `robot.collision(True)` | Enable/disable collision detection |
 | `collisions` | `robot.collisions()` | Get current collision pairs |
+
+Object transforms accept a `space` parameter (`'parent'`, `'local'`, or `'world'`):
+
+| Python | Description |
+|--------|-------------|
+| `robot.objtranslate('Cube', dx, dy, dz, space='parent')` | Translate object by delta (mm) |
+| `robot.objrotate('Cube', rx, ry, rz, space='parent')` | Rotate object by delta (deg) |
 
 **Visualization and camera:**
 
@@ -257,6 +279,8 @@ All positions are in mm, angles in degrees, using Z-up robot convention. Most co
 {"cmd": "renameDevice", "name": "MyRobot"}
 {"cmd": "setActiveDevice", "device": "i16"}
 {"cmd": "setDeviceOrigin", "position": [100, 0, 0], "rotation": [0, 0, 45]}
+{"cmd": "translateDevice", "delta": [10, 0, 0], "space": "parent"}
+{"cmd": "rotateDevice", "delta": [0, 0, 45], "space": "local"}
 {"cmd": "setDeviceParent", "parent": "dev_0:L3"}
 {"cmd": "listConfigs"}
 ```
@@ -288,13 +312,18 @@ All positions are in mm, angles in degrees, using Z-up robot convention. Most co
 {"cmd": "listObjects"}
 {"cmd": "getObject", "object": "MyPart"}
 {"cmd": "setObject", "object": "MyPart", "position": [100, 50, 0], "rotation": [0, 0, 45]}
+{"cmd": "setObject", "object": "MyPart", "position": [100, 50, 0], "space": "world"}
 {"cmd": "setObject", "object": "MyPart", "color": "#ff0000", "parent": "dev_0:L3"}
+{"cmd": "translateObject", "name": "MyPart", "delta": [10, 0, 0], "space": "parent"}
+{"cmd": "rotateObject", "name": "MyPart", "delta": [0, 0, 45], "space": "local"}
 {"cmd": "addPrimitive", "type": "cube"}
 {"cmd": "removeObject", "object": "MyPart"}
 {"cmd": "duplicateObject", "object": "MyPart"}
 {"cmd": "resetObjectRotation", "object": "MyPart"}
 {"cmd": "resetObjectScale", "index": 0}
 ```
+
+`setObject`, `translateObject`, and `rotateObject` accept `"space": "parent"|"local"|"world"` (default: `"parent"`). The `getObject` response includes both local (`position`, `rotation`) and world-frame (`worldPosition`, `worldRotation`) coordinates. `translateDevice` and `rotateDevice` use the same space convention.
 
 **Collision commands:**
 ```json
@@ -372,6 +401,12 @@ async def main():
         await ws.send(json.dumps({"cmd": "setActiveDevice", "device": "i16"}))
         await ws.recv()
         await ws.send(json.dumps({"cmd": "setVirtualAngles", "chi": 45, "theta": 10}))
+
+        # Translate a device in world coordinates
+        await ws.send(json.dumps({"cmd": "translateDevice", "delta": [100, 0, 0], "space": "world"}))
+
+        # Move an object in world space
+        await ws.send(json.dumps({"cmd": "translateObject", "name": "Cube", "delta": [50, 0, 0], "space": "world"}))
 
         # Enable collision detection
         await ws.send(json.dumps({"cmd": "setCollision", "enabled": True}))

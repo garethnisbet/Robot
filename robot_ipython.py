@@ -225,6 +225,9 @@ class RobotClient:
 
     def _send_and_wait(self, msg, response_type, timeout=3.0):
         """Send a message and wait for a specific response type."""
+        if not self._ws:
+            print(f"  {_bred('Error')}: not connected. Call robot.connect() first.")
+            return None
         async def _impl():
             event = asyncio.Event()
             self._ws_pending[response_type] = {"event": event, "data": None}
@@ -794,6 +797,68 @@ class RobotClient:
         ref = _parse_obj_ref(name_or_index)
         self._send({"cmd": "resetObjectScale", **ref})
 
+    def objtranslate(self, name_or_index, dx, dy, dz, space='parent'):
+        """Translate object by (dx, dy, dz) mm in the given reference frame.
+
+        space: 'parent' — parent object's axes (default)
+               'local'  — object's own rotated axes
+               'world'  — world/scene axes
+
+        Usage: robot.objtranslate('Cube', 10, 0, 0)                # +10mm X in parent frame
+               robot.objtranslate('Cube', 0, 0, 50, space='local') # +50mm Z along object's own Z
+               robot.objtranslate('Cube', 0, 100, 0, space='world')
+        """
+        ref = _parse_obj_ref(name_or_index)
+        self._send({"cmd": "translateObject", **ref, "delta": [float(dx), float(dy), float(dz)], "space": space})
+
+    def objrotate(self, name_or_index, rx, ry, rz, space='parent'):
+        """Rotate object by (rx, ry, rz) degrees in the given reference frame.
+
+        space: 'parent' — parent object's axes (default)
+               'local'  — object's own rotated axes
+               'world'  — world/scene axes
+
+        Usage: robot.objrotate('Cube', 0, 0, 45)                    # +45° around parent's Z
+               robot.objrotate('Cube', 90, 0, 0, space='local')     # +90° around object's own X
+               robot.objrotate('Cube', 0, 0, 30, space='world')
+        """
+        ref = _parse_obj_ref(name_or_index)
+        self._send({"cmd": "rotateObject", **ref, "delta": [float(rx), float(ry), float(rz)], "space": space})
+
+    def devtranslate(self, dx, dy, dz, space='parent', device=None):
+        """Translate device origin by (dx, dy, dz) mm in the given reference frame.
+
+        space: 'parent' — parent object's axes (default)
+               'local'  — device's own rotated axes
+               'world'  — world/scene axes
+
+        Usage: robot.devtranslate(100, 0, 0)                         # +100mm X in parent frame
+               robot.devtranslate(0, 0, 50, space='local')           # +50mm along device's own Z
+               robot.devtranslate(0, 0, 200, space='world')
+               robot.devtranslate(50, 0, 0, device='GP225')          # specific device
+        """
+        msg = {"cmd": "translateDevice", "delta": [float(dx), float(dy), float(dz)], "space": space}
+        if device:
+            msg["device"] = device
+        self._send(msg)
+
+    def devrotate(self, rx, ry, rz, space='parent', device=None):
+        """Rotate device origin by (rx, ry, rz) degrees in the given reference frame.
+
+        space: 'parent' — parent object's axes (default)
+               'local'  — device's own rotated axes
+               'world'  — world/scene axes
+
+        Usage: robot.devrotate(0, 0, 45)                             # +45° around parent's Z
+               robot.devrotate(90, 0, 0, space='local')              # +90° around device's own X
+               robot.devrotate(0, 0, 30, space='world')
+               robot.devrotate(0, 0, 90, device='GP225')             # specific device
+        """
+        msg = {"cmd": "rotateDevice", "delta": [float(rx), float(ry), float(rz)], "space": space}
+        if device:
+            msg["device"] = device
+        self._send(msg)
+
     # ═════════════════════════════════════════════════════════════════════
     #  PUBLIC API — Devices & Sessions
     # ═════════════════════════════════════════════════════════════════════
@@ -968,8 +1033,8 @@ class RobotClient:
     #  PUBLIC API — Scanning
     # ═════════════════════════════════════════════════════════════════════
 
-    def scan(self, *axis_specs, steptime=80):
-        """Scan one or more axes.
+    def scan(self, *axis_specs, steptime=80, space='local'):
+        """Scan one or more axes (joints and/or object transforms).
 
         Each axis_spec is a tuple:
           (axis_name, start, end, step) — grid scan
@@ -978,8 +1043,15 @@ class RobotClient:
         The first spec must always have 4 values (start, end, step).
         Supports Device:Axis syntax for multi-device scans.
 
+        Object axes use '@' prefix — components: tx,ty,tz (mm), rx,ry,rz (deg):
+            ('@Cube:tx', 0, 100, 10)   — scan object X translation
+            ('@Cube:rz', 0, 360, 10)   — scan object Z rotation
+
+        space parameter (for object axes):
+            'local'  — parent-relative coordinates (default)
+            'world'  — world coordinates
+
         Array scan: pass axis names (strings) followed by a callable or 2D array.
-        The callable/array provides waypoint values — one column per axis.
 
         Usage:
             robot.scan(('J1', 0, 90, 5))
@@ -987,7 +1059,9 @@ class RobotClient:
             robot.scan(('J1', 0, 90, 5), ('J2', 0, 2))                  # coupled
             robot.scan(('Meca500:J1', 0, 90, 5), ('GP225:J2', 0, 45, 5))  # multi-device
             robot.scan('J1', 'J2', my_func)                              # array scan
-            robot.scan('Dev:J1', 'Dev:J2', my_func)                      # multi-device array
+            robot.scan(('@Cube:tx', 0, 100, 10))                         # object scan
+            robot.scan(('@Cube:tx', 0, 100, 10), space='world')          # world coords
+            robot.scan(('J1', 0, 90, 5), ('@Cube:tz', 0, 50, 5))        # mixed
         """
         if not axis_specs:
             first = self._movable_joints[0][1].split()[0].lower() if self._movable_joints else "J1"
@@ -996,11 +1070,13 @@ class RobotClient:
             ex2 = f"robot.scan(('{first}', 10, 20, 1), ('{second}', 20, 2))"
             ex3 = f"robot.scan(('{first}', 0, 20, 1), ('{second}', 0, 30, 2))"
             ex4 = f"robot.scan('{first}', '{second}', my_array_func)"
+            ex5 = "robot.scan(('@Cube:tx', 0, 100, 10), space='world')"
             print(f"  {_yellow('Usage')}: robot.scan((axis, start, end, step), ...)")
             print(f"  1D:      {_dim(ex1)}")
             print(f"  Coupled: {_dim(ex2)}")
             print(f"  Grid:    {_dim(ex3)}")
             print(f"  Array:   {_dim(ex4)}")
+            print(f"  Object:  {_dim(ex5)}")
             return
 
         # Detect array scan: last arg is callable or array-like, preceding args are strings
@@ -1019,6 +1095,13 @@ class RobotClient:
 
         if len(axis_specs[0]) != 4:
             print(f"  {_yellow('Error')}: first axis needs 4 values (axis, start, end, step)")
+            return
+
+        # Separate joint axes and object axes
+        has_objects = any(str(s[0]).startswith('@') for s in axis_specs)
+
+        if has_objects:
+            self._scan_with_objects(axis_specs, steptime, space)
             return
 
         # Check for multi-device syntax
@@ -1350,6 +1433,226 @@ class RobotClient:
         else:
             print(f"  {_bgreen('Scan complete.')}")
 
+    def _run_commands(self, steps, step_ms):
+        """Stream a list of command-lists with Ctrl+C interrupt."""
+        try:
+            for cmds in steps:
+                for cmd in cmds:
+                    self._send(cmd)
+                time.sleep(step_ms / 1000.0)
+        except KeyboardInterrupt:
+            print(f"\n  {_yellow('Scan stopped.')}")
+        else:
+            print(f"  {_bgreen('Scan complete.')}")
+
+    # ── Object / mixed scanning ─────────────────────────────────────────
+
+    _OBJ_COMPONENTS = {'tx', 'ty', 'tz', 'rx', 'ry', 'rz'}
+
+    def _parse_obj_axis(self, raw_name):
+        """Parse '@ObjName:tx' → (obj_name, component, axis_idx, is_translation) or None."""
+        name = raw_name.lstrip('@')
+        parts = name.split(':', 1)
+        if len(parts) != 2:
+            return None
+        obj_name, comp = parts[0], parts[1].lower()
+        if comp not in self._OBJ_COMPONENTS:
+            return None
+        return obj_name, comp, {'x': 0, 'y': 1, 'z': 2}[comp[1]], comp[0] == 't'
+
+    def _scan_with_objects(self, axis_specs, step_ms, space):
+        """Scan with object axes (possibly mixed with joint axes)."""
+        # ── Parse all axes ──────────────────────────────────────────
+        joint_axes = []   # (mode, axis_idx, start, end, step, label)
+        obj_axes = []     # (mode, obj_name, comp, axis_idx, is_trans, start, end, step, label)
+        for gi, spec in enumerate(axis_specs):
+            raw = str(spec[0])
+            nums = [float(x) for x in spec[1:]]
+            is_grid = gi == 0 or len(nums) == 3
+
+            if raw.startswith('@'):
+                parsed = self._parse_obj_axis(raw)
+                if not parsed:
+                    print(f"  {_yellow('Error')}: invalid object axis {raw!r}. "
+                          f"Format: @ObjectName:tx|ty|tz|rx|ry|rz")
+                    return
+                obj_name, comp, ai, is_trans = parsed
+                unit = 'mm' if is_trans else '\u00b0'
+                label = f"@{obj_name}:{comp}"
+                if is_grid:
+                    if len(nums) != 3:
+                        print(f"  {_yellow('Error')}: {raw} needs (start, end, step)")
+                        return
+                    obj_axes.append(('grid', obj_name, comp, ai, is_trans,
+                                     nums[0], nums[1], nums[2], label))
+                else:
+                    if len(nums) != 2:
+                        print(f"  {_yellow('Error')}: {raw} needs (start, step) for coupled")
+                        return
+                    obj_axes.append(('coupled', obj_name, comp, ai, is_trans,
+                                     nums[0], nums[1], None, label))
+            else:
+                axis_idx = self._resolve_axis_name(raw)
+                if axis_idx is None:
+                    names = ", ".join(n for _, n in self._movable_joints)
+                    print(f"  {_yellow('Error')}: unknown joint {raw!r}. Available: {names}")
+                    return
+                jname = self._movable_joints[axis_idx][1]
+                joint_idx = self._movable_joints[axis_idx][0]
+                if is_grid:
+                    if len(nums) != 3:
+                        print(f"  {_yellow('Error')}: {raw} needs (start, end, step)")
+                        return
+                    joint_axes.append(('grid', joint_idx, nums[0], nums[1], nums[2], jname))
+                else:
+                    if len(nums) != 2:
+                        print(f"  {_yellow('Error')}: {raw} needs (start, step) for coupled")
+                        return
+                    joint_axes.append(('coupled', joint_idx, nums[0], nums[1], None, jname))
+
+        # ── Fetch base state ────────────────────────────────────────
+        old_ps = self._print_state
+        self._print_state = False
+        try:
+            base_joints = None
+            if joint_axes:
+                st = self._send_and_wait({"cmd": "getState"}, "state", timeout=3.0)
+                base_joints = list(st["joints"]) if st else [0.0] * self._n_movable
+
+            obj_states = {}
+            for oa in obj_axes:
+                oname = oa[1]
+                if oname not in obj_states:
+                    d = self._send_and_wait(
+                        {"cmd": "getObject", "object": oname}, "object", timeout=3.0)
+                    if not d:
+                        print(f"  {_bred('Error')}: object '{oname}' not found")
+                        return
+                    obj_states[oname] = d
+        finally:
+            self._print_state = old_ps
+
+        # ── Build value ranges ──────────────────────────────────────
+        grid_ranges = []   # (kind, key, vals)   kind='joint'|'obj'
+        coupled_info = []
+
+        for ja in joint_axes:
+            mode, jidx = ja[0], ja[1]
+            if mode == 'grid':
+                start, end, step = ja[2], ja[3], ja[4]
+                if abs(step) < 1e-6:
+                    print(f"  {_bred('Error')}: step size must be > 0")
+                    return
+                grid_ranges.append(('joint', jidx, _build_axis_vals(start, end, step)))
+            else:
+                coupled_info.append(('joint', jidx, ja[2], ja[3]))
+
+        for oa in obj_axes:
+            mode, oname, comp, ai, is_trans = oa[0], oa[1], oa[2], oa[3], oa[4]
+            key = (oname, comp, ai, is_trans)
+            if mode == 'grid':
+                start, end, step = oa[5], oa[6], oa[7]
+                if abs(step) < 1e-6:
+                    print(f"  {_bred('Error')}: step size must be > 0")
+                    return
+                grid_ranges.append(('obj', key, _build_axis_vals(start, end, step)))
+            else:
+                coupled_info.append(('obj', key, oa[5], oa[6]))
+
+        # ── Determine base object positions/rotations ───────────────
+        pos_key = 'worldPosition' if space == 'world' else 'position'
+        rot_key = 'worldRotation' if space == 'world' else 'rotation'
+        base_pos = {n: list(d.get(pos_key, d['position'])) for n, d in obj_states.items()}
+        base_rot = {n: list(d.get(rot_key, d['rotation'])) for n, d in obj_states.items()}
+
+        # ── Build waypoints ─────────────────────────────────────────
+        def _make_step(value_map):
+            """Build command list from a dict mapping axis keys to values."""
+            angles = list(base_joints) if base_joints is not None else None
+            pos = {n: list(v) for n, v in base_pos.items()}
+            rot = {n: list(v) for n, v in base_rot.items()}
+            for key, val in value_map.items():
+                if isinstance(key, int):
+                    # joint index
+                    angles[key] = val
+                else:
+                    oname, comp, ai, is_trans = key
+                    if is_trans:
+                        pos[oname][ai] = val
+                    else:
+                        rot[oname][ai] = val
+            cmds = []
+            if angles is not None:
+                cmds.append({"cmd": "setJoints",
+                             "angles": [round(a, 4) for a in angles]})
+            for oname in obj_states:
+                cmd = {"cmd": "setObject", "object": oname,
+                       "position": [round(v, 2) for v in pos[oname]],
+                       "rotation": [round(v, 2) for v in rot[oname]]}
+                if space == 'world':
+                    cmd["space"] = "world"
+                cmds.append(cmd)
+            return cmds
+
+        # Unpack grid + coupled into value sequences
+        all_grid_keys = []
+        all_grid_vals = []
+        for kind, key, vals in grid_ranges:
+            k = key if kind == 'obj' else key   # int for joints, tuple for objects
+            all_grid_keys.append(k)
+            all_grid_vals.append(vals)
+
+        all_coupled = []
+        for kind, key, c_start, c_step in coupled_info:
+            k = key if kind == 'obj' else key
+            all_coupled.append((k, c_start, c_step))
+
+        steps = []
+        if all_coupled:
+            primary_vals = all_grid_vals[0]
+            n_points = len(primary_vals)
+            for i in range(n_points):
+                vm = {}
+                for k, vals in zip(all_grid_keys, all_grid_vals):
+                    vm[k] = vals[i]
+                for k, c_start, c_step in all_coupled:
+                    vm[k] = c_start + i * c_step
+                steps.append(_make_step(vm))
+        else:
+            for combo in itertools.product(*all_grid_vals):
+                vm = dict(zip(all_grid_keys, combo))
+                steps.append(_make_step(vm))
+
+        # ── Print summary ───────────────────────────────────────────
+        descs = []
+        for ja in joint_axes:
+            name = ja[5]
+            if ja[0] == 'grid':
+                descs.append(f"{_bold(name)}: {ja[2]} \u2192 {ja[3]} (step {abs(ja[4])})\u00b0")
+            else:
+                n = len(all_grid_vals[0])
+                c_end = ja[2] + (n - 1) * ja[3]
+                descs.append(f"{_bold(name)}: {ja[2]} \u2192 {c_end} (step {ja[3]})\u00b0")
+        for oa in obj_axes:
+            label = oa[8]
+            unit = 'mm' if oa[4] else '\u00b0'
+            if oa[0] == 'grid':
+                descs.append(f"{_bold(label)}: {oa[5]} \u2192 {oa[6]} (step {abs(oa[7])}){unit}")
+            else:
+                n = len(all_grid_vals[0])
+                c_end = oa[5] + (n - 1) * oa[6]
+                descs.append(f"{_bold(label)}: {oa[5]} \u2192 {c_end} (step {oa[6]}){unit}")
+        space_str = f"  {_dim(f'[{space}]')}" if obj_axes else ""
+        mode_str = ""
+        if all_coupled:
+            mode_str = f"  {_dim('coupled')}"
+        elif len(grid_ranges) > 1:
+            mode_str = f"  {_dim('grid')}"
+        print(f"  {_bgreen('Scanning')} {', '.join(descs)}{space_str}{mode_str}")
+        print(f"  {len(steps)} points, {step_ms} ms/step  {_dim('Ctrl+C to stop')}")
+
+        self._run_commands(steps, step_ms)
+
     def _fetch_device_configs(self, device_names):
         """Fetch device list and load configs for named devices."""
         resp = self._send_and_wait({"cmd": "listDevices"}, "devices", timeout=3.0)
@@ -1499,10 +1802,14 @@ class RobotClient:
                 ("robot.objrot(name, rx, ry, rz)", "Set object rotation (\u00b0)"),
                 ("robot.objscale(name, s)", "Set uniform or per-axis scale"),
                 ("robot.objvis(name, True|False)", "Show/hide object"),
+                ("robot.objtranslate(name, dx,dy,dz, sp)", "Translate in parent|local|world frame"),
+                ("robot.objrotate(name, rx,ry,rz, sp)", "Rotate in parent|local|world frame"),
             ]),
             ("Devices & Sessions", [
                 ("robot.devices()", "List all loaded devices"),
                 ("robot.device('name')", "Switch active device"),
+                ("robot.devtranslate(dx, dy, dz, sp)", "Translate device in parent|local|world"),
+                ("robot.devrotate(rx, ry, rz, sp)", "Rotate device in parent|local|world"),
                 ("robot.sessions()", "List active viewer sessions"),
                 ("robot.session('id')", "Switch to a viewer session"),
             ]),
@@ -1511,6 +1818,8 @@ class RobotClient:
                 ("robot.scan((...), (...))", "Grid or coupled scan"),
                 ("robot.scan(('Dev:J1', ...))", "Multi-device scan"),
                 ("robot.scan('J1', 'J2', func)", "Array scan (func/array)"),
+                ("robot.scan(('@Cube:tx', 0, 100, 10))", "Object transform scan"),
+                ("  space='local'|'world'", "Coordinate frame for object scans"),
             ]),
             ("Path Planning", [
                 ("robot.plan(start, end)", "RRT-Connect path planner"),

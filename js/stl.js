@@ -716,11 +716,14 @@ export function selectSTL(entry, listItem) {
 export function deselectSTL() {
   if (State.selectedSTL) {
     State.stlTransformControls.detach();
+    State.stlTransformControls.setSpace('world');
     if (State.selectedListItem) State.selectedListItem.classList.remove('selected');
     State.setSelectedSTL(null);
     State.setSelectedListItem(null);
     stlModePanel.style.display = 'none';
     stlSelName.textContent = '';
+    document.getElementById('stlSpaceBtn').textContent = 'World';
+    document.getElementById('stlSpaceBtn').classList.remove('active');
   }
 }
 

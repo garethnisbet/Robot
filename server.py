@@ -21,6 +21,10 @@ Commands (send TO the viewer):
   {"cmd": "setMode", "mode": "FK"}                                # "FK" or "IK"
   {"cmd": "setIKTarget", "position": [x,y,z], "orientation": [a,b,g]}  # mm, deg (Z-up)
   {"cmd": "moveTo", "position": [x,y,z], "orientation": [a,b,g]}       # switch to IK + set target
+  {"cmd": "translateDevice", "delta": [dx,dy,dz], "space": "parent"}   # mm; space: parent|local|world
+  {"cmd": "rotateDevice", "delta": [rx,ry,rz], "space": "parent"}      # deg; space: parent|local|world
+  {"cmd": "translateObject", "name": "Cube", "delta": [dx,dy,dz], "space": "parent"}
+  {"cmd": "rotateObject", "name": "Cube", "delta": [rx,ry,rz], "space": "parent"}
 
 State (sent FROM the viewer):
   {

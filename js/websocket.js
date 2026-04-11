@@ -167,6 +167,9 @@ function _fastWorldAABB(mesh, target) {
   return target;
 }
 
+const _objWorldPos = new THREE.Vector3();
+const _objWorldQuat = new THREE.Quaternion();
+
 export function buildObjectInfo(entry, index) {
   const m = entry.mesh;
   const p = m.position;
@@ -183,6 +186,11 @@ export function buildObjectInfo(entry, index) {
     };
   }
 
+  m.updateWorldMatrix(true, false);
+  m.getWorldPosition(_objWorldPos);
+  m.getWorldQuaternion(_objWorldQuat);
+  const we = new THREE.Euler().setFromQuaternion(_objWorldQuat, 'XYZ');
+
   return {
     index,
     name: entry.name,
@@ -191,6 +199,8 @@ export function buildObjectInfo(entry, index) {
     scale:    [+s.x.toFixed(4), +s.y.toFixed(4), +s.z.toFixed(4)],
     visible:  m.visible,
     parent:   entry.parentLink || null,
+    worldPosition: [+(_objWorldPos.x * 1000).toFixed(2), +(_objWorldPos.z * 1000).toFixed(2), +(_objWorldPos.y * 1000).toFixed(2)],
+    worldRotation: [+(we.x * rad2deg).toFixed(2), +(we.z * rad2deg).toFixed(2), +(we.y * rad2deg).toFixed(2)],
     worldBB,
   };
 }
@@ -255,6 +265,79 @@ function syncIKAfterFK(dev) {
     dev.ikTargetEuler.setFromQuaternion(dev.ikTargetQuat, 'YZX');
     dev.ikTarget.quaternion.copy(dev.ikTargetQuat);
     syncIKSliders(dev);
+  }
+}
+
+// ============================================================
+// _applyTranslation — translate an Object3D by a delta
+//   delta: [dx, dy, dz] in mm (API Z-up convention)
+//   space: 'parent' | 'local' | 'world'
+// ============================================================
+const _parentRotQ = new THREE.Quaternion();
+const _worldDelta = new THREE.Vector3();
+
+function _applyTranslation(obj, delta, space) {
+  // API [x, y, z] Z-up → Three.js [x, z, y] Y-up
+  const tdx = delta[0] / 1000;
+  const tdy = delta[2] / 1000;
+  const tdz = delta[1] / 1000;
+
+  if (space === 'local') {
+    obj.translateX(tdx);
+    obj.translateY(tdy);
+    obj.translateZ(tdz);
+  } else if (space === 'world') {
+    _worldDelta.set(tdx, tdy, tdz);
+    if (obj.parent) {
+      obj.parent.updateWorldMatrix(true, false);
+      _parentRotQ.setFromRotationMatrix(obj.parent.matrixWorld).invert();
+      _worldDelta.applyQuaternion(_parentRotQ);
+    }
+    obj.position.add(_worldDelta);
+  } else {
+    // 'parent' (default) — position is already in parent space
+    obj.position.x += tdx;
+    obj.position.y += tdy;
+    obj.position.z += tdz;
+  }
+}
+
+// ============================================================
+// _applyRotation — rotate an Object3D by a delta
+//   delta: [rx, ry, rz] in degrees (API Z-up convention)
+//   space: 'parent' | 'local' | 'world'
+// ============================================================
+const _deltaQ = new THREE.Quaternion();
+const _parentQ = new THREE.Quaternion();
+
+function _applyRotation(obj, delta, space) {
+  // API [rx, ry, rz] → Three.js Euler(rx, rz, ry) with Y/Z swap
+  const euler = new THREE.Euler(
+    delta[0] * deg2rad,
+    delta[2] * deg2rad,
+    delta[1] * deg2rad,
+    'XYZ'
+  );
+  _deltaQ.setFromEuler(euler);
+
+  if (space === 'local') {
+    // Post-multiply: rotate in object's own frame
+    obj.quaternion.multiply(_deltaQ);
+  } else if (space === 'world') {
+    // Convert world delta to parent-local, then pre-multiply
+    if (obj.parent) {
+      obj.parent.updateWorldMatrix(true, false);
+      _parentQ.setFromRotationMatrix(obj.parent.matrixWorld);
+      // localDelta = parentInv * worldDelta * parent
+      const pInv = _parentQ.clone().invert();
+      const localDelta = pInv.multiply(_deltaQ).multiply(_parentQ);
+      obj.quaternion.premultiply(localDelta);
+    } else {
+      obj.quaternion.premultiply(_deltaQ);
+    }
+  } else {
+    // 'parent' (default) — pre-multiply to rotate in parent's frame
+    obj.quaternion.premultiply(_deltaQ);
   }
 }
 
@@ -336,6 +419,22 @@ export function handleCommand(data) {
       dev.rootGroup.rotation.set(data.rotation[0] * deg2rad, data.rotation[2] * deg2rad, data.rotation[1] * deg2rad);
     }
     wsSend(buildState(dev));
+
+  } else if (cmd === 'translateDevice') {
+    if (!dev) { wsSend({ type: 'error', error: 'Device not found' }); return; }
+    if (!Array.isArray(data.delta) || data.delta.length !== 3) {
+      wsSend({ type: 'error', error: 'delta must be [dx, dy, dz] in mm' }); return;
+    }
+    _applyTranslation(dev.rootGroup, data.delta, data.space || 'parent');
+    wsSend({ type: 'device', ...buildDeviceInfo(dev) });
+
+  } else if (cmd === 'rotateDevice') {
+    if (!dev) { wsSend({ type: 'error', error: 'Device not found' }); return; }
+    if (!Array.isArray(data.delta) || data.delta.length !== 3) {
+      wsSend({ type: 'error', error: 'delta must be [rx, ry, rz] in degrees' }); return;
+    }
+    _applyRotation(dev.rootGroup, data.delta, data.space || 'parent');
+    wsSend({ type: 'device', ...buildDeviceInfo(dev) });
 
   } else if (cmd === 'setDeviceParent') {
     if (!dev) { wsSend({ type: 'error', error: 'Device not found' }); return; }
@@ -538,11 +637,27 @@ export function handleCommand(data) {
     const entry = findSTLEntry(data);
     if (!entry) { wsSend({ type: 'error', error: 'Object not found' }); return; }
     if (data.visible !== undefined) entry.mesh.visible = !!data.visible;
-    if (Array.isArray(data.position) && data.position.length === 3) {
-      entry.mesh.position.set(data.position[0] / 1000, data.position[2] / 1000, data.position[1] / 1000);
-    }
-    if (Array.isArray(data.rotation) && data.rotation.length === 3) {
-      entry.mesh.rotation.set(data.rotation[2] * deg2rad, data.rotation[0] * deg2rad, data.rotation[1] * deg2rad);
+    if (data.space === 'world') {
+      if (Array.isArray(data.position) && data.position.length === 3) {
+        const wp = new THREE.Vector3(data.position[0] / 1000, data.position[2] / 1000, data.position[1] / 1000);
+        entry.mesh.parent.updateWorldMatrix(true, false);
+        wp.applyMatrix4(new THREE.Matrix4().copy(entry.mesh.parent.matrixWorld).invert());
+        entry.mesh.position.copy(wp);
+      }
+      if (Array.isArray(data.rotation) && data.rotation.length === 3) {
+        const wq = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+          data.rotation[0] * deg2rad, data.rotation[2] * deg2rad, data.rotation[1] * deg2rad, 'XYZ'));
+        entry.mesh.parent.updateWorldMatrix(true, false);
+        const pq = new THREE.Quaternion().setFromRotationMatrix(entry.mesh.parent.matrixWorld).invert();
+        entry.mesh.quaternion.copy(pq.multiply(wq));
+      }
+    } else {
+      if (Array.isArray(data.position) && data.position.length === 3) {
+        entry.mesh.position.set(data.position[0] / 1000, data.position[2] / 1000, data.position[1] / 1000);
+      }
+      if (Array.isArray(data.rotation) && data.rotation.length === 3) {
+        entry.mesh.rotation.set(data.rotation[0] * deg2rad, data.rotation[2] * deg2rad, data.rotation[1] * deg2rad);
+      }
     }
     if (Array.isArray(data.scale) && data.scale.length === 3) {
       entry.mesh.scale.set(data.scale[0], data.scale[1], data.scale[2]);
@@ -610,6 +725,26 @@ export function handleCommand(data) {
     const entry = findSTLEntry(data);
     if (!entry) { wsSend({ type: 'error', error: 'Object not found' }); return; }
     entry.mesh.scale.set(1, 1, 1);
+    const idx = State.importedSTLs.indexOf(entry);
+    wsSend({ type: 'object', ...buildObjectInfo(entry, idx) });
+
+  } else if (cmd === 'translateObject') {
+    const entry = findSTLEntry(data);
+    if (!entry) { wsSend({ type: 'error', error: 'Object not found' }); return; }
+    if (!Array.isArray(data.delta) || data.delta.length !== 3) {
+      wsSend({ type: 'error', error: 'delta must be [dx, dy, dz] in mm' }); return;
+    }
+    _applyTranslation(entry.mesh, data.delta, data.space || 'parent');
+    const idx = State.importedSTLs.indexOf(entry);
+    wsSend({ type: 'object', ...buildObjectInfo(entry, idx) });
+
+  } else if (cmd === 'rotateObject') {
+    const entry = findSTLEntry(data);
+    if (!entry) { wsSend({ type: 'error', error: 'Object not found' }); return; }
+    if (!Array.isArray(data.delta) || data.delta.length !== 3) {
+      wsSend({ type: 'error', error: 'delta must be [rx, ry, rz] in degrees' }); return;
+    }
+    _applyRotation(entry.mesh, data.delta, data.space || 'parent');
     const idx = State.importedSTLs.indexOf(entry);
     wsSend({ type: 'object', ...buildObjectInfo(entry, idx) });
 
@@ -754,6 +889,8 @@ export function handleCommand(data) {
         renameDevice:     { params: 'device?, name', description: 'Rename a device' },
         setActiveDevice:  { params: 'device', description: 'Set the active device' },
         setDeviceOrigin:  { params: 'device?, position?, rotation?', description: 'Set device world position/rotation (mm, deg)' },
+        translateDevice:  { params: 'device?, delta, space?', description: 'Translate device by [dx,dy,dz] mm in parent|local|world space' },
+        rotateDevice:     { params: 'device?, delta, space?', description: 'Rotate device by [rx,ry,rz] deg in parent|local|world space' },
         setDeviceParent:  { params: 'device?, parent', description: 'Parent device to a link (e.g. "dev_0:L3") or null for world' },
         listConfigs:      { params: '', description: 'List available config files' },
         // Joints
@@ -775,12 +912,14 @@ export function handleCommand(data) {
         // Objects
         listObjects:      { params: '', description: 'List all imported objects' },
         getObject:        { params: 'index|name|object', description: 'Get info for one object' },
-        setObject:        { params: 'index|name, position?, rotation?, scale?, visible?, parent?, color?, name?', description: 'Modify an object' },
+        setObject:        { params: 'index|name, position?, rotation?, scale?, visible?, parent?, color?, name?, space?', description: 'Modify an object (space: local|world)' },
         addPrimitive:     { params: 'type', description: 'Add cube, sphere, or cylinder' },
         removeObject:     { params: 'index|name|object', description: 'Remove an object' },
         duplicateObject:  { params: 'index|name|object', description: 'Duplicate an object' },
         resetObjectRotation: { params: 'index|name|object', description: 'Reset object rotation to identity' },
         resetObjectScale:    { params: 'index|name|object', description: 'Reset object scale to 1' },
+        translateObject:     { params: 'index|name, delta, space?', description: 'Translate object by [dx,dy,dz] mm in parent|local|world space' },
+        rotateObject:        { params: 'index|name, delta, space?', description: 'Rotate object by [rx,ry,rz] deg in parent|local|world space' },
         // Visualization
         setLabels:        { params: 'enabled?', description: 'Toggle or set label visibility' },
         setOrigins:       { params: 'enabled?', description: 'Toggle or set joint origin axes for all devices' },

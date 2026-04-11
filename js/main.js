@@ -283,6 +283,14 @@ document.getElementById('devModeR').addEventListener('click', () => {
   document.getElementById('devModeR').classList.add('active');
   document.getElementById('devModeT').classList.remove('active');
 });
+document.getElementById('devSpaceBtn').addEventListener('click', () => {
+  const ctrl = State.deviceTransformControls;
+  const isLocal = ctrl.space === 'local';
+  ctrl.setSpace(isLocal ? 'world' : 'local');
+  const btn = document.getElementById('devSpaceBtn');
+  btn.textContent = isLocal ? 'World' : 'Local';
+  btn.classList.toggle('active', !isLocal);
+});
 
 // Device parent dropdown
 document.getElementById('deviceParentSelect').addEventListener('change', (e) => {
@@ -427,6 +435,14 @@ document.getElementById('addCylinderBtn').addEventListener('click', () => addPri
 document.getElementById('stlModeT').addEventListener('click',  () => setSTLTransformMode('translate'));
 document.getElementById('stlModeR').addEventListener('click',  () => setSTLTransformMode('rotate'));
 document.getElementById('stlModeS').addEventListener('click',  () => setSTLTransformMode('scale'));
+document.getElementById('stlSpaceBtn').addEventListener('click', () => {
+  const ctrl = State.stlTransformControls;
+  const isLocal = ctrl.space === 'local';
+  ctrl.setSpace(isLocal ? 'world' : 'local');
+  const btn = document.getElementById('stlSpaceBtn');
+  btn.textContent = isLocal ? 'World' : 'Local';
+  btn.classList.toggle('active', !isLocal);
+});
 document.getElementById('stlDeselect').addEventListener('click', deselectSTL);
 
 document.getElementById('lockAspectCb').addEventListener('change', (e) => {

@@ -20,7 +20,7 @@ const deg2rad = Math.PI / 180;
 const rad2deg = 180 / Math.PI;
 
 // configFiles list (kept here to mirror original constant)
-export const configFiles = ['robot_config.json', 'i16_config.json', 'gp225_config.json', 'gp280_config.json', 'gp180_config.json'];
+export const configFiles = ['robot_config.json', 'i16_config.json', 'i19_config.json', 'gp225_config.json', 'gp280_config.json', 'gp180_config.json'];
 
 // ============================================================
 // makeSpanEditable
@@ -291,8 +291,11 @@ export function setActiveDevice(dev) {
     document.getElementById('moveDeviceBtn').classList.remove('active');
     document.getElementById('device-mode').style.display = 'none';
     State.deviceTransformControls.setMode('translate');
+    State.deviceTransformControls.setSpace('world');
     document.getElementById('devModeT').classList.add('active');
     document.getElementById('devModeR').classList.remove('active');
+    document.getElementById('devSpaceBtn').textContent = 'World';
+    document.getElementById('devSpaceBtn').classList.remove('active');
   }
 
   State.setActiveDevice(dev);
