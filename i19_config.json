@@ -36,7 +36,7 @@
     {
       "name": "two_theta",
       "bone": "Bone.003",
-      "restPos": [ 0.0, 0.0, -0.89761 ],
+      "restPos": [ 0, 0, -0.90172 ],
       "restQuat": [ 0.00391, -0.00391, 0.7071, -0.7071 ],
       "axis": [ 1, 0, 0 ],
       "limits": [ -10, 170 ],
@@ -45,7 +45,7 @@
     {
       "name": "k2theta.003",
       "bone": "Bone.004",
-      "restPos": [ 0.0, 0.0, -0.49104 ],
+      "restPos": [ 0, 0, -0.49104 ],
       "restQuat": [ 0.00102, -0.48542, 0.00056, -0.87428 ],
       "axis": [ 0, 0, 1 ],
       "limits": [ 0, 0 ],
@@ -93,29 +93,29 @@
       "fixed": true
     },
     {
-      "name": "ktheta.004",
+      "name": "theta",
       "bone": "Bone.011",
       "restPos": [ 0, 0, -0.65341 ],
       "restQuat": [ 0.70711, 0, -0.70711, 0 ],
-      "axis": [ 0, 0, 1 ],
-      "limits": [ 0, 0 ],
-      "parent": 8,
-      "fixed": true
+      "axis": [ 0, 0, -1 ],
+      "limits": [ -200, 200 ],
+      "parent": 8
     },
     {
-      "name": "theta",
+      "name": "ktheta.004",
       "bone": "Bone.012",
-      "restPos": [ 0.0, 0.0, -0.12074 ],
+      "restPos": [ 0, 0, -0.12074 ],
       "restQuat": [ 0.70709, -0.0046, -0.70709, 0.0046 ],
-      "axis": [ 1, 0, 0 ],
-      "limits": [ -200, 200 ],
-      "parent": 9
+      "axis": [ 0, 0, 1 ],
+      "limits": [ 0, 0 ],
+      "parent": 9,
+      "fixed": true
     },
     {
       "name": "ktheta.005",
       "bone": "Bone.013",
-      "restPos": [ 0.0, 0.0, -0.18358 ],
-      "restQuat": [ 0.90564, 0.00175, 0.42396, -0.00804 ],
+      "restPos": [ 0, 0, -0.18358 ],
+      "restQuat": [ 0.90509, 0.00183, 0.42513, -0.00807 ],
       "axis": [ 0, 0, 1 ],
       "limits": [ 0, 0 ],
       "parent": 10,
@@ -124,17 +124,17 @@
     {
       "name": "kappa",
       "bone": "Bone.014",
-      "restPos": [ 0.0, -0.0, -0.3156 ],
-      "restQuat": [ 0.70331, -0.00085, 0.71088, 0.0025 ],
-      "axis": [ 0, 0, 1 ],
+      "restPos": [ 0, 0, -0.35278 ],
+      "restQuat": [ 0.69929, -0.00588, 0.71481, -0.00243 ],
+      "axis": [ 0, 0, -1 ],
       "limits": [ -150, 150 ],
       "parent": 11
     },
     {
       "name": "kkappa.001",
       "bone": "Bone.015",
-      "restPos": [ 0, 0, -0.14344 ],
-      "restQuat": [ 0.71678, 0.00082, 0.6973, -0.00085 ],
+      "restPos": [ 0, 0, -0.14185 ],
+      "restQuat": [ 0.72173, -0.00132, 0.69213, 0.00711 ],
       "axis": [ 0, 0, 1 ],
       "limits": [ 0, 0 ],
       "parent": 12,
@@ -143,8 +143,8 @@
     {
       "name": "kkappa.002",
       "bone": "Bone.016",
-      "restPos": [ 0, 0, -0.21061 ],
-      "restQuat": [ 0.91187, -3e-05, -0.41048, 8e-05 ],
+      "restPos": [ 0, 0, -0.24584 ],
+      "restQuat": [ 0.90932, -0.00424, -0.41608, 0.00223 ],
       "axis": [ 0, 0, 1 ],
       "limits": [ 0, 0 ],
       "parent": 13,
@@ -153,41 +153,31 @@
     {
       "name": "phi",
       "bone": "Bone.017",
-      "restPos": [ 0, 0, -0.137 ],
-      "restQuat": [ 0.70255, -0.00387, -0.71161, 0.00371 ],
+      "restPos": [ 0, 0, -0.15077 ],
+      "restQuat": [ 0.7071, -0.00839, -0.70707, -0.00079 ],
       "axis": [ 0, 0, -1 ],
       "limits": [ -360, 360 ],
       "parent": 14
     }
   ],
   "links": [
-    {
-      "name": "I19_Diff204",
-      "label": "Detector Arm",
-      "joint": 3
-    },
-    {
-      "name": "I19_Diff304",
-      "label": "Theta",
-      "joint": 10
-    },
-    {
-      "name": "I19_Diff1107",
-      "label": "Kappa",
-      "joint": 12
-    },
-    {
-      "name": "I19_Diff540",
-      "label": "Phi",
-      "joint": 15
-    }
+    { "name": "Base", "label": "Base", "joint": 0 },
+    { "name": "UpperBase", "label": "Upper Base", "joint": 0 },
+    { "name": "I19_Diff001", "label": "Frame", "joint": 0 },
+    { "name": "I19_Diff419", "label": "Frame Extra", "joint": 0 },
+    { "name": "SampleHolder", "label": "Sample Holder", "joint": 15 },
+    { "name": "Delta", "label": "Detector Arm", "joint": 3 },
+    { "name": "ktheta", "label": "Theta", "joint": 9 },
+    { "name": "Kappa", "label": "Kappa", "joint": 12 },
+    { "name": "Phi", "label": "Phi", "joint": 15 }
   ],
   "demoPose": [
     0, 0, 0,
     0,
     0,
-    0, 0, 0, 0, 0,
+    0, 0, 0, 0,
     -33.5,
+    0,
     0,
     -134.6,
     0, 0,

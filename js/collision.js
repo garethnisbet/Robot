@@ -200,7 +200,9 @@ function checkCollisionsOffThread() {
   }
 
   function addPair(target, meshA, meshB, nameA, nameB) {
-    const key = [nameA, nameB].sort().join('|');
+    const key = meshA.uuid < meshB.uuid
+      ? meshA.uuid + '|' + meshB.uuid
+      : meshB.uuid + '|' + meshA.uuid;
     if (hitPairs.has(key)) return;
     hitPairs.add(key);
     collectMatrix(meshA);
