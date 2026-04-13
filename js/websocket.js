@@ -6,7 +6,7 @@ import * as State from './state.js';
 import {
   updateFK, getEEWorldPosition, getEEWorldQuaternion, clampJoints,
   kappaToEuler, eulerToKappa, getCompensation, updateVirtualAngles,
-  updateChain,
+  updateChain, pyEulerFromRelQuat, relQuatFromPyEuler,
 } from './kinematics.js';
 import { loadDevice } from './device.js';
 import { updateSliders, setIKMode, syncIKSliders } from './device.js';
@@ -106,14 +106,14 @@ export function buildState(dev) {
   const eePos  = getEEWorldPosition(dev);
   const eeQuat = getEEWorldQuaternion(dev);
   const relQuat = eeQuat.clone().multiply(dev.homeQuaternionInv);
-  const euler  = new THREE.Euler().setFromQuaternion(relQuat, 'YZX');
+  const [_a, _b, _g] = pyEulerFromRelQuat(relQuat);
   return {
     type: 'state',
     device: dev.name,
     joints: dev.sliderJointMap.map(ji => +(dev.apiSign[ji] * dev.jointAngles[ji] * rad2deg).toFixed(2)),
     jointNames: dev.sliderJointMap.map(ji => dev.config.joints[ji].name),
     eePosition:    [+(eePos.x * 1000).toFixed(2), +(eePos.z * 1000).toFixed(2), +(eePos.y * 1000).toFixed(2)],
-    eeOrientation: [+(euler.x * rad2deg).toFixed(2), +(90 - euler.z * rad2deg).toFixed(2), +(euler.y * rad2deg).toFixed(2)],
+    eeOrientation: [+_a.toFixed(2), +_b.toFixed(2), +_g.toFixed(2)],
     mode: dev.ikMode ? 'IK' : 'FK',
     ikError: dev.ikMode ? +((getEEWorldPosition(dev).distanceTo(dev.ikTarget.position)) * 1000).toFixed(3) : null,
     collisionEnabled: State.collisionEnabled,
@@ -245,8 +245,7 @@ export function applyIKTarget(dev, data) {
     dev.ikTarget.position.set(data.position[0] / 1000, data.position[2] / 1000, data.position[1] / 1000);
   }
   if (Array.isArray(data.orientation) && data.orientation.length === 3) {
-    const relEuler = new THREE.Euler(data.orientation[0] * deg2rad, data.orientation[2] * deg2rad, (90 - data.orientation[1]) * deg2rad, 'YZX');
-    const relQuat = new THREE.Quaternion().setFromEuler(relEuler);
+    const relQuat = relQuatFromPyEuler(data.orientation[0], data.orientation[1], data.orientation[2]);
     dev.ikTargetQuat.copy(relQuat).multiply(dev.homeQuaternion);
     dev.ikTargetEuler.setFromQuaternion(dev.ikTargetQuat, 'YZX');
     dev.ikTarget.quaternion.copy(dev.ikTargetQuat);

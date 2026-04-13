@@ -8,6 +8,7 @@ Interactive 3D visualisation and control for robots and scientific instruments. 
 |--------|--------|--------|-------------|
 | Meca500 R3 | `robot_config.json` | 6 (serial) | 6-DOF compact industrial manipulator |
 | i16 Diffractometer | `i16_config.json` | 10 movable (branching) | Diamond Light Source 6-circle diffractometer with merlin and crystal detectors |
+| i19 Kappa Diffractometer | `i19_config.json` | branching | Diamond Light Source kappa diffractometer (2θ / θ / κ / φ chain) |
 | Yaskawa GP225 | `gp225_config.json` | 6 (serial) | 6-DOF heavy-payload industrial robot |
 | Yaskawa GP280 | `gp280_config.json` | 6 (serial) | 6-DOF heavy-payload industrial robot |
 | Yaskawa GP180-120 | `gp180_config.json` | 6 (serial) | 6-DOF heavy-payload industrial robot |
@@ -37,9 +38,11 @@ New devices can be added from Blender scenes using the `/build-viewer` skill (se
 - **Parent-child linking** — attach objects to device links so they follow the kinematic chain
 - **Self-collision detection** — BVH-accelerated triangle-level intersection testing between device links, using kinematic adjacency to skip physically connected parts
 - **Collision detection** — intersection testing between device links and imported scene objects, with red highlight on colliding meshes
+- **Screenshot** — one-click PNG capture of the WebGL view composited with the control panel overlay
+- **Unified Euler convention** — viewer, WebSocket state, and the Python `GNKinematics` library all report end-effector orientation as the same ZYX Euler triple (α=Rx, β=Ry, γ=Rz), with matching gimbal-lock branches
 - **Remote control API** — two-way WebSocket API for controlling any device from Python or any WebSocket client
 - **Session routing** — each browser tab gets a unique session ID; controllers can target a specific tab or broadcast to all
-- **Connection info panel** — click the API status indicator (top-left) to see the session ID, connection command, and download the IPython client
+- **Connection info panel** — click the API status indicator (top-left) to see the session ID, connection command, and download `RemoteAPI.zip` (IPython client + `GNKinematics` library + robot definitions)
 
 ## Quick Start
 
@@ -54,7 +57,7 @@ Open `http://localhost:8000/threejs_scene.html` in a browser. Use the dropdown t
 pip3 install aiohttp websockets ipython
 python3 server.py --config robot_config.json
 ```
-Open `http://localhost:8080` in a browser. The status indicator in the top-left shows the WebSocket connection state and the session ID for this tab. Click it to open the connection info panel, which shows the full connection command, WebSocket URL, and a link to download `robot_ipython.py`.
+Open `http://localhost:8080` in a browser. The status indicator in the top-left shows the WebSocket connection state and the session ID for this tab. Click it to open the connection info panel, which shows the full connection command, WebSocket URL, and a link to download `RemoteAPI.zip` — a self-contained bundle with `robot_ipython.py`, the `GNKinematics` Python library, and `RobotDefinitions.py`.
 
 ## Adding New Devices
 
@@ -205,6 +208,8 @@ meca500 [5]: for a in range(0, 91, 10):              # full Python syntax
 | `ik` | `robot.ik()` | Switch to IK mode |
 | `joints 45 -90 0 0 30 0` | `robot.joints(45, -90, 0, 0, 30, 0)` | Set all movable joint angles (degrees) |
 | `joint gamma 45` | `robot.joint('gamma', 45)` | Set a single joint by name |
+| `pos meca500 [0,0,0,0,0,0]` | `robot.set_pos('meca500', [0,0,0,0,0,0])` | Set joints on a named device (accepts list, numpy array, or callable) |
+| `inc meca500 [0,0,0,0,0,10]` | `robot.inc_pos('meca500', [0,0,0,0,0,10])` | Increment joints on a named device relative to current |
 | `move 150 100 300 45 0 0` | `robot.move(150, 100, 300, 45, 0, 0)` | IK move to position (mm) + orientation (deg) |
 | `target 190 0 308` | `robot.target(190, 0, 308)` | Set IK target without switching mode |
 | `demo` | `robot.demo()` | Run the config's demo pose |
@@ -449,15 +454,20 @@ js/
   websocket.js           WebSocket client for remote control API
 server.py                WebSocket + HTTP server for remote control API
 robot_ipython.py         IPython remote control client (any device)
+GNKinematics/            Python forward/inverse kinematics library (matches viewer's ZYX Euler)
+RobotDefinitions.py      Robot DH / geometry parameters for GNKinematics
+RemoteAPI.zip            Bundled client (ipython client + GNKinematics + RobotDefinitions); served from viewer
 robot_config.json        Meca500 R3 device config
 i16_config.json          i16 diffractometer device config
+i19_config.json          i19 kappa diffractometer device config
 gp225_config.json        Yaskawa GP225 device config
 gp280_config.json        Yaskawa GP280 device config
 gp180_config.json        Yaskawa GP180-120 device config
 robot_scene.glb          Meca500 GLB model
 i16_scene.glb            i16 diffractometer GLB model
+i19_scene.glb            i19 kappa diffractometer GLB model
 gp225_scene.glb          Yaskawa GP225 GLB model
-gp280_scene_v2.glb       Yaskawa GP280 GLB model
+gp280_scene.glb          Yaskawa GP280 GLB model
 gp180_scene.glb          Yaskawa GP180-120 GLB model
 Dockerfile               Multi-stage container build
 helm/                    Kubernetes Helm chart

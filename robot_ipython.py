@@ -698,6 +698,58 @@ class RobotClient:
         joint_idx = self._joint_name_to_idx[nl]
         self._send({"cmd": "setSingleJoint", "index": joint_idx, "angle": float(angle)})
 
+    def set_pos(self, device, value):
+        """Set joint angles (degrees) for a named device.
+
+        Usage: robot.set_pos('meca500', [0, 0, 0, 0, 0, 0])
+               robot.set_pos('meca500', np.zeros(6))
+               robot.set_pos('meca500', my_pose_func)     # callable, called with no args
+               robot.set_pos('meca500', my_pose_func())   # or pass result directly
+        """
+        if callable(value):
+            value = value()
+        try:
+            angles = [float(a) for a in value]
+        except TypeError:
+            print(f"  {_yellow('Error')}: value must be iterable or callable, got {type(value).__name__}")
+            return
+        self._send({"cmd": "setJoints", "device": str(device),
+                    "angles": [round(a, 4) for a in angles]})
+
+    def inc_pos(self, device, value):
+        """Increment joint angles (degrees) for a named device, relative to current.
+
+        Usage: robot.inc_pos('meca500', [0, 0, 0, 0, 0, 10])
+               robot.inc_pos('meca500', np.array([1, -1, 0, 0, 0, 0]))
+               robot.inc_pos('meca500', my_delta_func)   # callable, called with no args
+        """
+        if callable(value):
+            value = value()
+        try:
+            deltas = [float(a) for a in value]
+        except TypeError:
+            print(f"  {_yellow('Error')}: value must be iterable or callable, got {type(value).__name__}")
+            return
+        old = self._print_state
+        self._print_state = False
+        try:
+            state = self._send_and_wait(
+                {"cmd": "getState", "device": str(device)}, "state", timeout=3.0
+            )
+        finally:
+            self._print_state = old
+        if not state or "joints" not in state:
+            print(f"  {_bred('Error')}: could not read current joints for device {device!r}")
+            return
+        current = [float(a) for a in state["joints"]]
+        if len(deltas) != len(current):
+            print(f"  {_yellow('Error')}: expected {len(current)} values for "
+                  f"{device!r}, got {len(deltas)}")
+            return
+        new_angles = [c + d for c, d in zip(current, deltas)]
+        self._send({"cmd": "setJoints", "device": str(device),
+                    "angles": [round(a, 4) for a in new_angles]})
+
     # ═════════════════════════════════════════════════════════════════════
     #  PUBLIC API — IK
     # ═════════════════════════════════════════════════════════════════════
@@ -1786,6 +1838,10 @@ class RobotClient:
             ("Joint Control", [
                 ("robot.joints(j1, j2, ...)", "Set all movable joint angles (\u00b0)"),
                 ("robot.joint('name', angle)", "Set a single joint by name"),
+                ("robot.set_pos('dev', [j1, ...])", "Set joints on named device (list/array/callable)"),
+                ("robot.inc_pos('dev', [d1, ...])", "Increment joints on named device (relative)"),
+                ("pos <dev> <list|array|callable>", "Magic: pos meca500 [0,0,0,0,0,0]"),
+                ("inc <dev> <list|array|callable>", "Magic: inc meca500 [0,0,0,0,0,10] (relative)"),
             ]),
             ("Inverse Kinematics", [
                 ("robot.move(x, y, z [, a, b, g])", "IK move to position (mm) + orientation (\u00b0)"),
@@ -1957,6 +2013,9 @@ def _register_magics(ipython, robot):
     With automagic (on by default), the % prefix is optional:
         joints 0 30 60 0 45 90
         joint J1 45
+        pos meca500 [0, 0, 0, 0, 0, 0]
+        pos meca500 np.zeros(6)
+        inc meca500 [0, 0, 0, 0, 0, 10]
         move 150 100 300
         scan J1 0 90 5
         scan J1 J2 polar_func()
@@ -2004,7 +2063,68 @@ def _register_magics(ipython, robot):
             return
         robot.joint(parts[0], float(parts[1]))
     reg(_m_joint, magic_name='joint')
-    reg(_m_joint, magic_name='pos')  # alias
+
+    def _m_pos(line):
+        """pos <device> <value>
+
+        value is a Python expression evaluated in the IPython namespace:
+        a list, numpy array, or callable returning joint angles (degrees).
+
+        Examples:
+            pos meca500 [0, 0, 0, 0, 0, 0]
+            pos meca500 np.zeros(6)
+            pos meca500 my_pose_func()
+            pos meca500 my_pose_func        # callable; invoked with no args
+        """
+        stripped = line.strip()
+        if not stripped:
+            print(f"  {_yellow('Usage')}: pos <device> <list|array|callable>")
+            print(f"  Example: {_bold('pos meca500 [0,0,0,0,0,0]')}")
+            return
+        parts = stripped.split(None, 1)
+        if len(parts) < 2:
+            print(f"  {_yellow('Usage')}: pos <device> <list|array|callable>")
+            return
+        device, expr = parts[0], parts[1]
+        from IPython import get_ipython
+        ip = get_ipython()
+        try:
+            value = ip.ev(expr)
+        except Exception as e:
+            print(f"  {_bred('Error')}: failed to evaluate {expr!r}: {e}")
+            return
+        robot.set_pos(device, value)
+    reg(_m_pos, magic_name='pos')
+
+    def _m_inc(line):
+        """inc <device> <value>
+
+        Like pos, but adds the given deltas to the device's current joint angles.
+
+        Examples:
+            inc meca500 [0, 0, 0, 0, 0, 10]
+            inc meca500 np.array([1, -1, 0, 0, 0, 0])
+            inc meca500 my_delta_func()
+        """
+        stripped = line.strip()
+        if not stripped:
+            print(f"  {_yellow('Usage')}: inc <device> <list|array|callable>")
+            print(f"  Example: {_bold('inc meca500 [0,0,0,0,0,10]')}")
+            return
+        parts = stripped.split(None, 1)
+        if len(parts) < 2:
+            print(f"  {_yellow('Usage')}: inc <device> <list|array|callable>")
+            return
+        device, expr = parts[0], parts[1]
+        from IPython import get_ipython
+        ip = get_ipython()
+        try:
+            value = ip.ev(expr)
+        except Exception as e:
+            print(f"  {_bred('Error')}: failed to evaluate {expr!r}: {e}")
+            return
+        robot.inc_pos(device, value)
+    reg(_m_inc, magic_name='inc')
 
     # ── IK commands ──────────────────────────────────────────────────
 

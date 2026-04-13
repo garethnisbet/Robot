@@ -19,7 +19,7 @@ scene.background = new THREE.Color(0x2a2a3a);
 const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.001, 50);
 camera.position.set(0.45, 0.30, 0.40);
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(devicePixelRatio);
 renderer.shadowMap.enabled = true;

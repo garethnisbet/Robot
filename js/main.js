@@ -26,7 +26,7 @@ import {
 } from './scene.js';
 import {
   updateFK, getEEWorldPosition, getEEWorldQuaternion,
-  updateChain, solveIK,
+  updateChain, solveIK, relQuatFromPyEuler,
 } from './kinematics.js';
 import {
   loadDevice,
@@ -248,12 +248,13 @@ document.getElementById('labelBtn').addEventListener('click', () => {
     const aDeg = parseFloat(document.getElementById('ika').value);
     const bDeg = parseFloat(document.getElementById('ikb').value);
     const cDeg = parseFloat(document.getElementById('ikc').value);
-    // Convert from user euler (home-relative, beta-90) to absolute quaternion
-    const relEuler = new THREE.Euler(aDeg * deg2rad, cDeg * deg2rad, (90 - bDeg) * deg2rad, 'YZX');
-    const relQuat = new THREE.Quaternion().setFromEuler(relEuler);
+    const relQuat = relQuatFromPyEuler(aDeg, bDeg, cDeg);
     State.activeDevice.ikTargetQuat.copy(relQuat).multiply(State.activeDevice.homeQuaternion);
     State.activeDevice.ikTargetEuler.setFromQuaternion(State.activeDevice.ikTargetQuat, 'YZX');
     State.activeDevice.ikTarget.quaternion.copy(State.activeDevice.ikTargetQuat);
+    console.log('[IK-IN]', {input: [aDeg, bDeg, cDeg], relQuat: relQuat.toArray(),
+      homeQ: State.activeDevice.homeQuaternion.toArray(),
+      ikTargetQuat: State.activeDevice.ikTargetQuat.toArray()});
   });
 });
 
@@ -722,6 +723,41 @@ window.addEventListener('beforeunload', () => {
   } catch (e) {
     console.warn('[Auto-save] Failed to save scene to localStorage:', e);
   }
+});
+
+// Screenshot button — composite WebGL canvas with the control panel
+document.getElementById('screenshotBtn').addEventListener('click', async () => {
+  State.orbitControls.update();
+  State.renderer.render(State.scene, State.activeCamera);
+
+  const glCanvas = State.renderer.domElement;
+  const out = document.createElement('canvas');
+  out.width = glCanvas.width;
+  out.height = glCanvas.height;
+  const ctx = out.getContext('2d');
+  ctx.drawImage(glCanvas, 0, 0, out.width, out.height);
+
+  const panel = document.getElementById('panel');
+  if (panel && typeof html2canvas === 'function') {
+    try {
+      const scale = glCanvas.width / window.innerWidth;
+      const panelCanvas = await html2canvas(panel, {
+        backgroundColor: null,
+        scale,
+        logging: false,
+      });
+      const rect = panel.getBoundingClientRect();
+      ctx.drawImage(panelCanvas, rect.left * scale, rect.top * scale);
+    } catch (e) {
+      console.warn('[Screenshot] panel capture failed:', e);
+    }
+  }
+
+  const a = document.createElement('a');
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  a.download = `screenshot_${ts}.png`;
+  a.href = out.toDataURL('image/png');
+  a.click();
 });
 
 // Save / Load scene buttons

@@ -216,3 +216,98 @@ export function invertNxN(m, n) {
   }
   return aug.map(row => row.slice(n));
 }
+
+// ============================================================
+// Python-compatible world-frame ZYX Euler of the tool frame.
+//
+// The Three.js viewer is Y-up; the Python kinematics are Z-up. The two
+// worlds differ by the basis swap M = swap(Y,Z). A rotation expressed in
+// Three.js world converts via R_py = M · R_three · M. Home in Python has
+// em = Ry(90°), so at a general pose em = R_delta_py · Ry(90°) where
+// R_delta_py is the home-relative rotation in Python coords.
+//
+// These helpers match Python's GNKinematics.rotationMatrixToEulerZYX, so
+// the viewer's displayed (alpha, beta, gamma) agrees with al_be_gam from
+// f_kinematics — including the canonical branch at beta = ±90° gimbal lock.
+// ============================================================
+
+function _swapYZRowsCols(r) {
+  // Returns M · r · M where M swaps rows 1↔2 and cols 1↔2.
+  return [
+    [r[0][0], r[0][2], r[0][1]],
+    [r[2][0], r[2][2], r[2][1]],
+    [r[1][0], r[1][2], r[1][1]],
+  ];
+}
+
+function _matFromQuat(q) {
+  const m = new THREE.Matrix4().makeRotationFromQuaternion(q);
+  const e = m.elements; // column-major
+  return [
+    [e[0], e[4], e[8]],
+    [e[1], e[5], e[9]],
+    [e[2], e[6], e[10]],
+  ];
+}
+
+function _matMul(a, b) {
+  const r = [[0,0,0],[0,0,0],[0,0,0]];
+  for (let i = 0; i < 3; i++)
+    for (let j = 0; j < 3; j++)
+      r[i][j] = a[i][0]*b[0][j] + a[i][1]*b[1][j] + a[i][2]*b[2][j];
+  return r;
+}
+
+function _quatFromMat(m) {
+  const m4 = new THREE.Matrix4().set(
+    m[0][0], m[0][1], m[0][2], 0,
+    m[1][0], m[1][1], m[1][2], 0,
+    m[2][0], m[2][1], m[2][2], 0,
+    0, 0, 0, 1,
+  );
+  return new THREE.Quaternion().setFromRotationMatrix(m4);
+}
+
+export function pyEulerFromRelQuat(relQuat) {
+  const rThree = _matFromQuat(relQuat);
+  const rDelta = _swapYZRowsCols(rThree);
+  const ry90 = [[0, 0, 1], [0, 1, 0], [-1, 0, 0]];
+  const em = _matMul(rDelta, ry90);
+  // rmatrix = em^T, with Python's noise clip (|v| < 1e-5 → 0) so the
+  // singular branch produces a deterministic (alpha, 90°, 0) at gimbal lock.
+  const clip = (v) => (Math.abs(v) < 1e-5 ? 0 : v);
+  const r00 = clip(em[0][0]), r01 = clip(em[1][0]), r02 = clip(em[2][0]);
+  const r10 = clip(em[0][1]);
+  const r20 = clip(em[0][2]), r21 = clip(em[1][2]), r22 = clip(em[2][2]);
+  const sy = Math.hypot(r21, r22);
+  let alpha, beta, gamma;
+  if (sy >= 1e-6) {
+    alpha = -Math.atan2(r21, r22);
+    beta  = -Math.atan2(-r20, sy);
+    gamma = -Math.atan2(r10, r00);
+  } else {
+    alpha = Math.PI - Math.atan2(r01, r02);
+    beta  = -Math.atan2(-r20, sy);
+    gamma = -Math.atan2(r10, r00);
+  }
+  while (alpha >  Math.PI) alpha -= 2 * Math.PI;
+  while (alpha <= -Math.PI) alpha += 2 * Math.PI;
+  return [alpha * rad2deg, beta * rad2deg, gamma * rad2deg];
+}
+
+export function relQuatFromPyEuler(alphaDeg, betaDeg, gammaDeg) {
+  const Rx = new THREE.Matrix4().makeRotationX(alphaDeg * deg2rad);
+  const Ry = new THREE.Matrix4().makeRotationY(betaDeg  * deg2rad);
+  const Rz = new THREE.Matrix4().makeRotationZ(gammaDeg * deg2rad);
+  const em4 = Rx.multiply(Ry).multiply(Rz);
+  const ee = em4.elements;
+  const em = [
+    [ee[0], ee[4], ee[8]],
+    [ee[1], ee[5], ee[9]],
+    [ee[2], ee[6], ee[10]],
+  ];
+  const ryNeg90 = [[0, 0, -1], [0, 1, 0], [1, 0, 0]];
+  const rDelta = _matMul(em, ryNeg90);
+  const rThree = _swapYZRowsCols(rDelta);
+  return _quatFromMat(rThree);
+}

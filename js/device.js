@@ -12,6 +12,7 @@ import {
   updateFK, getEEWorldPosition, getEEWorldQuaternion,
   getJointWorldAxis, clampJoints,
   kappaToEuler, eulerToKappa, getCompensation, updateVirtualAngles,
+  pyEulerFromRelQuat,
 } from './kinematics.js';
 
 const deg2rad = Math.PI / 180;
@@ -468,10 +469,13 @@ export function syncIKSliders(dev) {
   document.getElementById('ikvz').textContent = zmm;
 
   const relQuat = dev.ikTargetQuat.clone().multiply(dev.homeQuaternionInv);
-  const relEuler = new THREE.Euler().setFromQuaternion(relQuat, 'YZX');
-  const ad = Math.round(relEuler.x * rad2deg);
-  const bd = Math.round(90 - relEuler.z * rad2deg);
-  const cd = Math.round(relEuler.y * rad2deg);
+  const [a, b, g] = pyEulerFromRelQuat(relQuat);
+  const ad = Math.round(a);
+  const bd = Math.round(b);
+  const cd = Math.round(g);
+  console.log('[IK-OUT]', {ikTargetQuat: dev.ikTargetQuat.toArray(),
+    homeQInv: dev.homeQuaternionInv.toArray(),
+    readbackRelQ: relQuat.toArray(), decoded: [a, b, g], rounded: [ad, bd, cd]});
   document.getElementById('ika').value = ad;
   document.getElementById('ikva').textContent = ad;
   document.getElementById('ikb').value = bd;

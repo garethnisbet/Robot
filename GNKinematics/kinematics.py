@@ -242,9 +242,8 @@ class kinematics:
 
     def setEulerTarget(self, xyz, r_alpha, r_beta, r_gamma):
         vx, vy, vz = np.identity(3)
-        # Convert from user euler (home-relative, beta offset by 90°) to absolute
-        em_rel = rotmat(vx, r_alpha) @ rotmat(vy, 90 - r_beta) @ rotmat(vz, r_gamma)
-        em = em_rel @ self._home_rot_inv
+        # World-frame ZYX Euler (identity = tool frame aligned with world).
+        em = rotmat(vx, r_alpha) @ rotmat(vy, r_beta) @ rotmat(vz, r_gamma)
         targetmatrix = np.array([em @ vx, em @ vy, em @ vz])
         tool = np.asarray(self.tool_offset) @ targetmatrix
         xyz = np.array(xyz) + tool
@@ -267,13 +266,11 @@ class kinematics:
         self._t_off = self._rotate_through_joints(self.tool_offset, angles, 5)
         new_centre = rotxyz(np.atleast_2d(self.centre_offset), self.axis_vects[0, :], angles[0])
 
-        # Convert back to Euler angles (relative to home orientation)
-        # Convention: alpha=Rx, beta=Ry (home=90°), gamma=Rz
+        # World-frame ZYX Euler angles of the tool frame.
         rmatrix = np.concatenate((self.v5, self.v6, self.v7), 0)
-        rmatrix_rel = self._home_rot_inv @ rmatrix
-        rmatrix_rel[np.abs(rmatrix_rel) < 1e-5] = 0
-        alpha, beta, gamma = rotationMatrixToEulerZYX(rmatrix_rel)
-        self.al_be_gam = np.array([[alpha, np.pi / 2 - beta, gamma]])
+        rmatrix[np.abs(rmatrix) < 1e-5] = 0
+        alpha, beta, gamma = rotationMatrixToEulerZYX(rmatrix)
+        self.al_be_gam = np.array([[alpha, beta, gamma]])
         self.position = self.v4 - self._t_off + new_centre
 
         return np.concatenate((self.v0, self.v1, self.v2, self.v3, self.v4,
