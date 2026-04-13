@@ -209,7 +209,11 @@ meca500 [5]: for a in range(0, 91, 10):              # full Python syntax
 | `joints 45 -90 0 0 30 0` | `robot.joints(45, -90, 0, 0, 30, 0)` | Set all movable joint angles (degrees) |
 | `joint gamma 45` | `robot.joint('gamma', 45)` | Set a single joint by name |
 | `pos meca500 [0,0,0,0,0,0]` | `robot.set_pos('meca500', [0,0,0,0,0,0])` | Set joints on a named device (accepts list, numpy array, or callable) |
+| `pos meca500 {2: 45}` | `robot.set_pos('meca500', {2: 45})` | Set individual axes only (key = joint index or name) |
+| `pos i19 {'v:chi': 45}` | `robot.set_pos('i19', {'v:chi': 45})` | Set kappa virtual angle(s) — keys `v:chi`, `v:theta`, `v:phi` |
 | `inc meca500 [0,0,0,0,0,10]` | `robot.inc_pos('meca500', [0,0,0,0,0,10])` | Increment joints on a named device relative to current |
+| `inc meca500 {5: 10}` | `robot.inc_pos('meca500', {5: 10})` | Increment individual axes only (key = joint index or name) |
+| `inc i19 {'v:chi': 5}` | `robot.inc_pos('i19', {'v:chi': 5})` | Increment kappa virtual angle(s) |
 | `move 150 100 300 45 0 0` | `robot.move(150, 100, 300, 45, 0, 0)` | IK move to position (mm) + orientation (deg) |
 | `target 190 0 308` | `robot.target(190, 0, 308)` | Set IK target without switching mode |
 | `demo` | `robot.demo()` | Run the config's demo pose |
@@ -231,12 +235,16 @@ meca500 [5]: for a in range(0, 91, 10):              # full Python syntax
 | `scan theta 0 90 5 phi 0 30 2` | `robot.scan(('theta',0,90,5), ('phi',0,30,2))` | 2D grid scan |
 | `scan theta 0 90 5 phi 0 1` | `robot.scan(('theta',0,90,5), ('phi',0,1))` | Coupled scan |
 | `scan DevA:J1 0 50 5 DevB:J1 0 30 5` | `robot.scan(('DevA:J1',0,50,5), ('DevB:J1',0,30,5))` | Multi-device scan |
+| `scan v:chi 0 90 5` | `robot.scan(('v:chi', 0, 90, 5))` | Kappa virtual-axis scan (chi/theta/phi) |
+| `scan v:chi 0 45 5 v:phi 0 30 5` | `robot.scan(('v:chi',0,45,5), ('v:phi',0,30,5))` | Virtual-axis grid/coupled scan |
 | — | `robot.scan(('@Cube:tx', 0, 100, 10))` | Object translation scan |
 | — | `robot.scan(('@Cube:rz', 0, 360, 10))` | Object rotation scan |
 | — | `robot.scan(('@Cube:tx',0,100,10), space='world')` | Object scan in world coords |
 | — | `robot.scan(('J1',0,90,5), ('@Cube:tz',0,50,5))` | Mixed joint + object scan |
 
 Object scan axes use `@ObjectName:component` syntax where component is `tx`, `ty`, `tz`, `rx`, `ry`, or `rz`. The `space` parameter (`'local'` or `'world'`) controls the coordinate frame for object transforms (default: `'local'`).
+
+Kappa virtual axes use a `v:` prefix (`v:chi`, `v:theta`, `v:phi`) to disambiguate from the physical `theta`/`phi` joints. Virtual scans target the active kappa device and cannot be mixed with physical-joint axes in the same scan. The same `v:<axis>` keys work as dict keys in `robot.set_pos` / `robot.inc_pos`.
 
 **Object commands:**
 

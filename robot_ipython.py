@@ -698,6 +698,89 @@ class RobotClient:
         joint_idx = self._joint_name_to_idx[nl]
         self._send({"cmd": "setSingleJoint", "index": joint_idx, "angle": float(angle)})
 
+    _VIRTUAL_AXES = ('chi', 'theta', 'phi')
+
+    @staticmethod
+    def _parse_virtual_axis(name):
+        """If name is 'v:<axis>' (case-insensitive) with axis in {chi,theta,phi},
+        return the canonical virtual axis name; else None."""
+        if not isinstance(name, str):
+            return None
+        s = name.strip().lower()
+        if s.startswith('v:') and s[2:] in RobotClient._VIRTUAL_AXES:
+            return s[2:]
+        return None
+
+    def _fetch_virtual_angles(self, device):
+        """Return {'chi':.., 'theta':.., 'phi':..} for a kappa device, or None."""
+        old = self._print_state
+        self._print_state = False
+        try:
+            msg = {"cmd": "getVirtualAngles"}
+            if device is not None:
+                msg["device"] = str(device)
+            resp = self._send_and_wait(msg, "virtualAngles", timeout=3.0)
+        finally:
+            self._print_state = old
+        if not resp or 'chi' not in resp:
+            return None
+        return {
+            'chi':   float(resp['chi']),
+            'theta': float(resp['theta']),
+            'phi':   float(resp['phi']),
+        }
+
+    def _fetch_device_joints(self, device):
+        """Return (current_joints, joint_names) for a device, or (None, None)."""
+        old = self._print_state
+        self._print_state = False
+        try:
+            state = self._send_and_wait(
+                {"cmd": "getState", "device": str(device)}, "state", timeout=3.0
+            )
+            dev = self._send_and_wait(
+                {"cmd": "getDevice", "device": str(device)}, "device", timeout=3.0
+            )
+        finally:
+            self._print_state = old
+        if not state or "joints" not in state:
+            return None, None
+        current = [float(a) for a in state["joints"]]
+        names = (dev or {}).get("jointNames") or []
+        return current, list(names)
+
+    @staticmethod
+    def _resolve_axis(key, n, names):
+        """Resolve a dict key to a joint index. Accepts int, or str (name/index)."""
+        if isinstance(key, bool):
+            raise ValueError(f"invalid axis key: {key!r}")
+        if isinstance(key, int):
+            idx = key
+        elif isinstance(key, str):
+            s = key.strip()
+            if s.lstrip('-').isdigit():
+                idx = int(s)
+            else:
+                lower = [str(nm).lower() for nm in names]
+                sl = s.lower()
+                if sl in lower:
+                    idx = lower.index(sl)
+                else:
+                    matches = [i for i, nm in enumerate(lower) if nm.startswith(sl)]
+                    if len(matches) == 1:
+                        idx = matches[0]
+                    else:
+                        raise ValueError(
+                            f"unknown joint {key!r}; available: {names}"
+                        )
+        else:
+            raise ValueError(f"invalid axis key type: {type(key).__name__}")
+        if idx < 0:
+            idx += n
+        if not (0 <= idx < n):
+            raise ValueError(f"axis index {key!r} out of range (device has {n} joints)")
+        return idx
+
     def set_pos(self, device, value):
         """Set joint angles (degrees) for a named device.
 
@@ -705,13 +788,58 @@ class RobotClient:
                robot.set_pos('meca500', np.zeros(6))
                robot.set_pos('meca500', my_pose_func)     # callable, called with no args
                robot.set_pos('meca500', my_pose_func())   # or pass result directly
+
+        Partial update by axis (only named axes are changed):
+               robot.set_pos('meca500', {2: 45})                 # axis index
+               robot.set_pos('meca500', {'J4': 10, 'J6': -30})   # axis name
+
+        Virtual axes (kappa diffractometers only), prefix with 'v:':
+               robot.set_pos('i19', {'v:chi': 45})
+               robot.set_pos('i19', {'v:chi': 45, 'v:theta': 30})
         """
         if callable(value):
             value = value()
+        if isinstance(value, dict):
+            virtual, physical = {}, {}
+            for k, v in value.items():
+                va = self._parse_virtual_axis(k)
+                if va:
+                    virtual[va] = v
+                else:
+                    physical[k] = v
+            if virtual and physical:
+                print(f"  {_yellow('Error')}: cannot mix virtual (v:) and physical axes "
+                      "in one call; issue them separately")
+                return
+            if virtual:
+                try:
+                    msg = {"cmd": "setVirtualAngles", "device": str(device)}
+                    for name, val in virtual.items():
+                        msg[name] = float(val)
+                except (ValueError, TypeError) as e:
+                    print(f"  {_yellow('Error')}: {e}")
+                    return
+                self._send(msg)
+                return
+            current, names = self._fetch_device_joints(device)
+            if current is None:
+                print(f"  {_bred('Error')}: could not read current joints for device {device!r}")
+                return
+            new_angles = list(current)
+            try:
+                for k, v in physical.items():
+                    idx = self._resolve_axis(k, len(current), names)
+                    new_angles[idx] = float(v)
+            except (ValueError, TypeError) as e:
+                print(f"  {_yellow('Error')}: {e}")
+                return
+            self._send({"cmd": "setJoints", "device": str(device),
+                        "angles": [round(a, 4) for a in new_angles]})
+            return
         try:
             angles = [float(a) for a in value]
         except TypeError:
-            print(f"  {_yellow('Error')}: value must be iterable or callable, got {type(value).__name__}")
+            print(f"  {_yellow('Error')}: value must be iterable, dict, or callable, got {type(value).__name__}")
             return
         self._send({"cmd": "setJoints", "device": str(device),
                     "angles": [round(a, 4) for a in angles]})
@@ -722,26 +850,68 @@ class RobotClient:
         Usage: robot.inc_pos('meca500', [0, 0, 0, 0, 0, 10])
                robot.inc_pos('meca500', np.array([1, -1, 0, 0, 0, 0]))
                robot.inc_pos('meca500', my_delta_func)   # callable, called with no args
+
+        Partial increment by axis (only named axes are moved):
+               robot.inc_pos('meca500', {5: 10})                 # axis index
+               robot.inc_pos('meca500', {'J6': 10, 'J4': -5})    # axis name
+
+        Virtual axes (kappa diffractometers only), prefix with 'v:':
+               robot.inc_pos('i19', {'v:chi': 5})
+               robot.inc_pos('i19', {'v:chi': 5, 'v:theta': 2})
         """
         if callable(value):
             value = value()
+        if isinstance(value, dict):
+            virtual, physical = {}, {}
+            for k, v in value.items():
+                va = self._parse_virtual_axis(k)
+                if va:
+                    virtual[va] = v
+                else:
+                    physical[k] = v
+            if virtual and physical:
+                print(f"  {_yellow('Error')}: cannot mix virtual (v:) and physical axes "
+                      "in one call; issue them separately")
+                return
+            if virtual:
+                current_v = self._fetch_virtual_angles(device)
+                if current_v is None:
+                    print(f"  {_bred('Error')}: could not read virtual angles "
+                          f"(device {device!r} is not a kappa geometry?)")
+                    return
+                try:
+                    msg = {"cmd": "setVirtualAngles", "device": str(device)}
+                    for name, delta in virtual.items():
+                        msg[name] = current_v[name] + float(delta)
+                except (ValueError, TypeError) as e:
+                    print(f"  {_yellow('Error')}: {e}")
+                    return
+                self._send(msg)
+                return
+            current, names = self._fetch_device_joints(device)
+            if current is None:
+                print(f"  {_bred('Error')}: could not read current joints for device {device!r}")
+                return
+            new_angles = list(current)
+            try:
+                for k, v in physical.items():
+                    idx = self._resolve_axis(k, len(current), names)
+                    new_angles[idx] = current[idx] + float(v)
+            except (ValueError, TypeError) as e:
+                print(f"  {_yellow('Error')}: {e}")
+                return
+            self._send({"cmd": "setJoints", "device": str(device),
+                        "angles": [round(a, 4) for a in new_angles]})
+            return
+        current, names = self._fetch_device_joints(device)
+        if current is None:
+            print(f"  {_bred('Error')}: could not read current joints for device {device!r}")
+            return
         try:
             deltas = [float(a) for a in value]
         except TypeError:
-            print(f"  {_yellow('Error')}: value must be iterable or callable, got {type(value).__name__}")
+            print(f"  {_yellow('Error')}: value must be iterable, dict, or callable, got {type(value).__name__}")
             return
-        old = self._print_state
-        self._print_state = False
-        try:
-            state = self._send_and_wait(
-                {"cmd": "getState", "device": str(device)}, "state", timeout=3.0
-            )
-        finally:
-            self._print_state = old
-        if not state or "joints" not in state:
-            print(f"  {_bred('Error')}: could not read current joints for device {device!r}")
-            return
-        current = [float(a) for a in state["joints"]]
         if len(deltas) != len(current):
             print(f"  {_yellow('Error')}: expected {len(current)} values for "
                   f"{device!r}, got {len(deltas)}")
@@ -1105,6 +1275,12 @@ class RobotClient:
 
         Array scan: pass axis names (strings) followed by a callable or 2D array.
 
+        Virtual axes (kappa diffractometers) use a 'v:' prefix — chi/theta/phi:
+            robot.scan(('v:chi', 0, 90, 5))                             # 1D virtual
+            robot.scan(('v:chi', 0, 90, 5), ('v:theta', 0, 2))          # coupled
+            robot.scan(('v:chi', 0, 45, 5), ('v:phi', 0, 30, 5))        # grid
+            robot.scan('v:chi', 'v:theta', my_func)                     # array virtual
+
         Usage:
             robot.scan(('J1', 0, 90, 5))
             robot.scan(('J1', 0, 90, 5), ('J2', 0, 45, 5))             # grid
@@ -1142,11 +1318,27 @@ class RobotClient:
         if is_array_scan:
             axis_names = list(axis_specs[:-1])
             data = last() if callable(last) else last
+            virt_flags = [self._parse_virtual_axis(n) is not None for n in axis_names]
+            if any(virt_flags) and not all(virt_flags):
+                print(f"  {_yellow('Error')}: cannot mix virtual (v:) and physical axes in one scan")
+                return
+            if all(virt_flags):
+                self._scan_from_array_virtual(axis_names, data, steptime)
+                return
             self._scan_from_array(axis_names, data, steptime)
             return
 
         if len(axis_specs[0]) != 4:
             print(f"  {_yellow('Error')}: first axis needs 4 values (axis, start, end, step)")
+            return
+
+        # Virtual-axis scan (chi/theta/phi on kappa device) via 'v:' prefix
+        virt_flags = [self._parse_virtual_axis(str(s[0])) is not None for s in axis_specs]
+        if any(virt_flags) and not all(virt_flags):
+            print(f"  {_yellow('Error')}: cannot mix virtual (v:) and physical axes in one scan")
+            return
+        if all(virt_flags):
+            self._scan_virtual_single(axis_specs, steptime)
             return
 
         # Separate joint axes and object axes
@@ -1479,6 +1671,129 @@ class RobotClient:
                 for dname, angles in wp.items():
                     self._send({"cmd": "setJoints", "device": dname,
                                 "angles": [round(a, 4) for a in angles]})
+                time.sleep(step_ms / 1000.0)
+        except KeyboardInterrupt:
+            print(f"\n  {_yellow('Scan stopped.')}")
+        else:
+            print(f"  {_bgreen('Scan complete.')}")
+
+    # ── Virtual-axis (kappa) scans ───────────────────────────────────────
+
+    def _scan_virtual_single(self, axis_specs, step_ms):
+        """Scan kappa virtual axes (chi/theta/phi) on the active device."""
+        base = self._fetch_virtual_angles(None)
+        if base is None:
+            print(f"  {_bred('Error')}: active device is not a kappa geometry — "
+                  "virtual axes unavailable")
+            return
+
+        grid_axes = []
+        coupled_axes = []
+        for gi, spec in enumerate(axis_specs):
+            axis_name = str(spec[0])
+            vname = self._parse_virtual_axis(axis_name)
+            try:
+                nums = [float(x) for x in spec[1:]]
+            except (TypeError, ValueError):
+                print(f"  {_yellow('Error')}: axis {axis_name!r} has non-numeric values")
+                return
+            if gi == 0 or len(nums) == 3:
+                if len(nums) != 3:
+                    print(f"  {_yellow('Error')}: axis {axis_name!r} needs 3 values (start, end, step)")
+                    return
+                grid_axes.append((vname, nums[0], nums[1], nums[2]))
+            elif len(nums) == 2:
+                coupled_axes.append((vname, nums[0], nums[1]))
+            else:
+                print(f"  {_yellow('Error')}: axis {axis_name!r} needs 3 values "
+                      f"(start, end, step) or 2 (start, step), got {len(nums)}")
+                return
+
+        grid_ranges = []
+        for vname, start, end, step in grid_axes:
+            if abs(step) < 1e-6:
+                print(f"  {_bred('Error')}: step size must be > 0")
+                return
+            grid_ranges.append((vname, _build_axis_vals(start, end, step)))
+
+        if coupled_axes:
+            primary_vals = grid_ranges[0][1]
+            n_points = len(primary_vals)
+            coupled_ranges = [
+                (vn, [cs + i * cp for i in range(n_points)])
+                for vn, cs, cp in coupled_axes
+            ]
+            all_ranges = grid_ranges + coupled_ranges
+            waypoints = []
+            for i in range(n_points):
+                pt = {vn: vals[i] for vn, vals in all_ranges}
+                waypoints.append(pt)
+        else:
+            names_list = [vn for vn, _ in grid_ranges]
+            vals_list = [v for _, v in grid_ranges]
+            waypoints = [
+                {n: v for n, v in zip(names_list, combo)}
+                for combo in itertools.product(*vals_list)
+            ]
+
+        axis_descs = []
+        for vn, start, end, step in grid_axes:
+            axis_descs.append(f"{_bold('v:' + vn)}: {start} \u2192 {end} (step {abs(step)})")
+        if coupled_axes:
+            n_points = len(grid_ranges[0][1])
+            for vn, cs, cp in coupled_axes:
+                ce = cs + (n_points - 1) * cp
+                axis_descs.append(f"{_bold('v:' + vn)}: {cs} \u2192 {ce} (step {cp})")
+        mode_str = _dim("coupled") if coupled_axes else (_dim("grid") if len(grid_axes) > 1 else "")
+        mode_suffix = f"  {mode_str}" if mode_str else ""
+        print(f"  {_bgreen('Scanning')} {', '.join(axis_descs)}  {_dim('virtual')}{mode_suffix}")
+        print(f"  {len(waypoints)} points, {step_ms} ms/step  {_dim('Ctrl+C to stop')}")
+
+        self._run_virtual_waypoints(waypoints, step_ms)
+
+    def _scan_from_array_virtual(self, axis_names, data, step_ms):
+        """Array scan over kappa virtual axes on the active device."""
+        try:
+            rows = [list(row) for row in data]
+        except TypeError:
+            print(f"  {_bred('Error')}: array data must be a 2D iterable")
+            return
+        if not rows:
+            print(f"  {_yellow('Error')}: array is empty")
+            return
+        vnames = [self._parse_virtual_axis(n) for n in axis_names]
+        n_axes = len(vnames)
+        for ri, row in enumerate(rows):
+            if len(row) != n_axes:
+                print(f"  {_yellow('Error')}: row {ri} has {len(row)} values, expected {n_axes}")
+                return
+
+        base = self._fetch_virtual_angles(None)
+        if base is None:
+            print(f"  {_bred('Error')}: active device is not a kappa geometry — "
+                  "virtual axes unavailable")
+            return
+
+        waypoints = []
+        for row in rows:
+            pt = {vn: float(val) for vn, val in zip(vnames, row)}
+            waypoints.append(pt)
+
+        labels = [_bold('v:' + vn) for vn in vnames]
+        print(f"  {_bgreen('Array scan')} {', '.join(labels)}  {_dim('virtual')}")
+        print(f"  {len(waypoints)} points, {step_ms} ms/step  {_dim('Ctrl+C to stop')}")
+        self._run_virtual_waypoints(waypoints, step_ms)
+
+    def _run_virtual_waypoints(self, waypoints, step_ms, device=None):
+        """Stream virtual-angle waypoints with Ctrl+C interrupt."""
+        try:
+            for wp in waypoints:
+                msg = {"cmd": "setVirtualAngles"}
+                if device is not None:
+                    msg["device"] = device
+                for k, v in wp.items():
+                    msg[k] = float(v)
+                self._send(msg)
                 time.sleep(step_ms / 1000.0)
         except KeyboardInterrupt:
             print(f"\n  {_yellow('Scan stopped.')}")
@@ -1839,9 +2154,11 @@ class RobotClient:
                 ("robot.joints(j1, j2, ...)", "Set all movable joint angles (\u00b0)"),
                 ("robot.joint('name', angle)", "Set a single joint by name"),
                 ("robot.set_pos('dev', [j1, ...])", "Set joints on named device (list/array/callable)"),
+                ("robot.set_pos('dev', {axis: v})", "Set only listed axes (axis = index or name)"),
                 ("robot.inc_pos('dev', [d1, ...])", "Increment joints on named device (relative)"),
-                ("pos <dev> <list|array|callable>", "Magic: pos meca500 [0,0,0,0,0,0]"),
-                ("inc <dev> <list|array|callable>", "Magic: inc meca500 [0,0,0,0,0,10] (relative)"),
+                ("robot.inc_pos('dev', {axis: d})", "Increment only listed axes (axis = index or name)"),
+                ("pos <dev> <list|array|dict|callable>", "Magic: pos meca500 [0,0,0,0,0,0] or {2: 45}"),
+                ("inc <dev> <list|array|dict|callable>", "Magic: inc meca500 [0,0,0,0,0,10] or {5: 10}"),
             ]),
             ("Inverse Kinematics", [
                 ("robot.move(x, y, z [, a, b, g])", "IK move to position (mm) + orientation (\u00b0)"),
@@ -1874,6 +2191,7 @@ class RobotClient:
                 ("robot.scan((...), (...))", "Grid or coupled scan"),
                 ("robot.scan(('Dev:J1', ...))", "Multi-device scan"),
                 ("robot.scan('J1', 'J2', func)", "Array scan (func/array)"),
+                ("robot.scan(('v:chi', 0, 90, 5))", "Kappa virtual-axis scan"),
                 ("robot.scan(('@Cube:tx', 0, 100, 10))", "Object transform scan"),
                 ("  space='local'|'world'", "Coordinate frame for object scans"),
             ]),
@@ -1891,6 +2209,9 @@ class RobotClient:
             ]),
             ("Kappa (Diffractometers)", [
                 ("robot.virtual_angles(chi=, theta=, phi=)", "Get/set virtual angles"),
+                ("robot.set_pos('dev', {'v:chi': 45})", "Partial set of virtual angles"),
+                ("robot.inc_pos('dev', {'v:chi': 5})", "Increment virtual angles"),
+                ("robot.scan(('v:chi', 0, 90, 5))", "Scan virtual axes"),
                 ("robot.kappa_sign(True|False)", "Set kappa sign convention"),
             ]),
             ("Position Queries", [
@@ -2068,22 +2389,26 @@ def _register_magics(ipython, robot):
         """pos <device> <value>
 
         value is a Python expression evaluated in the IPython namespace:
-        a list, numpy array, or callable returning joint angles (degrees).
+        a list/array/callable for the full joint vector, OR a dict
+        {axis: angle} to set individual axes (axis is index or joint name).
 
         Examples:
             pos meca500 [0, 0, 0, 0, 0, 0]
             pos meca500 np.zeros(6)
             pos meca500 my_pose_func()
             pos meca500 my_pose_func        # callable; invoked with no args
+            pos meca500 {2: 45}             # set only axis index 2
+            pos meca500 {'J4': 10, 'J6': -30}
         """
         stripped = line.strip()
         if not stripped:
-            print(f"  {_yellow('Usage')}: pos <device> <list|array|callable>")
+            print(f"  {_yellow('Usage')}: pos <device> <list|array|dict|callable>")
             print(f"  Example: {_bold('pos meca500 [0,0,0,0,0,0]')}")
+            print(f"  Example: {_bold('pos meca500 {2: 45}')}  # single axis")
             return
         parts = stripped.split(None, 1)
         if len(parts) < 2:
-            print(f"  {_yellow('Usage')}: pos <device> <list|array|callable>")
+            print(f"  {_yellow('Usage')}: pos <device> <list|array|dict|callable>")
             return
         device, expr = parts[0], parts[1]
         from IPython import get_ipython
@@ -2100,20 +2425,25 @@ def _register_magics(ipython, robot):
         """inc <device> <value>
 
         Like pos, but adds the given deltas to the device's current joint angles.
+        Accepts a list/array/callable for all axes, or a dict {axis: delta}
+        to increment only individual axes (axis is index or joint name).
 
         Examples:
             inc meca500 [0, 0, 0, 0, 0, 10]
             inc meca500 np.array([1, -1, 0, 0, 0, 0])
             inc meca500 my_delta_func()
+            inc meca500 {5: 10}              # move only axis index 5
+            inc meca500 {'J6': 10, 'J4': -5}
         """
         stripped = line.strip()
         if not stripped:
-            print(f"  {_yellow('Usage')}: inc <device> <list|array|callable>")
+            print(f"  {_yellow('Usage')}: inc <device> <list|array|dict|callable>")
             print(f"  Example: {_bold('inc meca500 [0,0,0,0,0,10]')}")
+            print(f"  Example: {_bold('inc meca500 {5: 10}')}  # single axis")
             return
         parts = stripped.split(None, 1)
         if len(parts) < 2:
-            print(f"  {_yellow('Usage')}: inc <device> <list|array|callable>")
+            print(f"  {_yellow('Usage')}: inc <device> <list|array|dict|callable>")
             return
         device, expr = parts[0], parts[1]
         from IPython import get_ipython
@@ -2338,7 +2668,12 @@ def _register_magics(ipython, robot):
 
     def _m_scan(line):
         """scan <axis> <start> <end> <step> [<axis> ...] [--steptime ms]
-        scan <axis> [<axis> ...] func_or_expr() [--steptime ms]"""
+        scan <axis> [<axis> ...] func_or_expr() [--steptime ms]
+
+        Kappa virtual axes use a 'v:' prefix, e.g.:
+            scan v:chi 0 90 5
+            scan v:chi 0 90 5 v:theta 0 2
+        """
         raw = line.split()
         if not raw:
             robot.scan()
