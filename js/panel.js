@@ -74,8 +74,8 @@ export function buildControlPanel(dev) {
     const hi = sign < 0 ? -j.limits[0] : j.limits[1];
     const div = document.createElement('div');
     div.className = 'slider-row';
-    div.innerHTML = `<label>${displayName} <span id="v${si+1}">${deg.toFixed(1)}</span></label>` +
-      `<input type="range" id="j${si+1}" min="${lo}" max="${hi}" value="${deg.toFixed(1)}" step="0.5">`;
+    div.innerHTML = `<label>${displayName} <span id="v${si+1}">${deg.toFixed(2)}</span></label>` +
+      `<input type="range" id="j${si+1}" min="${lo}" max="${hi}" value="${deg.toFixed(2)}" step="0.01">`;
     sliderContainer.appendChild(div);
   }
 
@@ -86,7 +86,7 @@ export function buildControlPanel(dev) {
     const ji = dev.sliderJointMap[si - 1];
     slider.addEventListener('input', () => {
       const deg = parseFloat(slider.value);
-      label.textContent = deg.toFixed(1);
+      label.textContent = deg.toFixed(2);
       dev.jointAngles[ji] = dev.apiSign[ji] * deg * deg2rad;
       updateFK(dev);
       updateVirtualAngles(dev);
@@ -120,13 +120,13 @@ export function buildControlPanel(dev) {
       '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #334;">' +
       '<h2 style="color:#da5;">Virtual Angles (deg)</h2>' +
       '<div class="slider-row"><label>\u03C7 (chi) <span id="vchi">0</span></label>' +
-      `<input type="range" id="chiSlider" min="${chiMin.toFixed(1)}" max="${chiMax.toFixed(1)}" value="0" step="0.5">` +
+      `<input type="range" id="chiSlider" min="${chiMin.toFixed(2)}" max="${chiMax.toFixed(2)}" value="0" step="0.01">` +
       '</div>' +
       '<div class="slider-row"><label>\u03B8 (theta) <span id="vvtheta">0</span></label>' +
-      `<input type="range" id="vthetaSlider" min="${thetaLimits[0]}" max="${thetaLimits[1]}" value="0" step="0.5">` +
+      `<input type="range" id="vthetaSlider" min="${thetaLimits[0]}" max="${thetaLimits[1]}" value="0" step="0.01">` +
       '</div>' +
       '<div class="slider-row"><label>\u03C6 (phi) <span id="vvphi">0</span></label>' +
-      `<input type="range" id="vphiSlider" min="${phiLimits[0]}" max="${phiLimits[1]}" value="0" step="0.5">` +
+      `<input type="range" id="vphiSlider" min="${phiLimits[0]}" max="${phiLimits[1]}" value="0" step="0.01">` +
       '</div>' +
       '<button id="kappaSignBtn" class="active">\u03BA Sign: +</button>' +
       '</div>';
@@ -164,21 +164,21 @@ export function buildControlPanel(dev) {
     document.getElementById('chiSlider').addEventListener('input', (e) => {
       const v = readVirtualAngles();
       v.chi = parseFloat(e.target.value);
-      document.getElementById('vchi').textContent = v.chi.toFixed(1);
+      document.getElementById('vchi').textContent = v.chi.toFixed(2);
       applyVirtualAngles(v.theta, v.chi, v.phi);
     });
 
     document.getElementById('vthetaSlider').addEventListener('input', (e) => {
       const v = readVirtualAngles();
       v.theta = parseFloat(e.target.value);
-      document.getElementById('vvtheta').textContent = v.theta.toFixed(1);
+      document.getElementById('vvtheta').textContent = v.theta.toFixed(2);
       applyVirtualAngles(v.theta, v.chi, v.phi);
     });
 
     document.getElementById('vphiSlider').addEventListener('input', (e) => {
       const v = readVirtualAngles();
       v.phi = parseFloat(e.target.value);
-      document.getElementById('vvphi').textContent = v.phi.toFixed(1);
+      document.getElementById('vvphi').textContent = v.phi.toFixed(2);
       applyVirtualAngles(v.theta, v.chi, v.phi);
     });
 

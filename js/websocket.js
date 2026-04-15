@@ -110,10 +110,10 @@ export function buildState(dev) {
   return {
     type: 'state',
     device: dev.name,
-    joints: dev.sliderJointMap.map(ji => +(dev.apiSign[ji] * dev.jointAngles[ji] * rad2deg).toFixed(2)),
+    joints: dev.sliderJointMap.map(ji => +(dev.apiSign[ji] * dev.jointAngles[ji] * rad2deg).toFixed(4)),
     jointNames: dev.sliderJointMap.map(ji => dev.config.joints[ji].name),
-    eePosition:    [+(eePos.x * 1000).toFixed(2), +(eePos.z * 1000).toFixed(2), +(eePos.y * 1000).toFixed(2)],
-    eeOrientation: [+_a.toFixed(2), +_b.toFixed(2), +_g.toFixed(2)],
+    eePosition:    [+(eePos.x * 1000).toFixed(4), +(eePos.z * 1000).toFixed(4), +(eePos.y * 1000).toFixed(4)],
+    eeOrientation: [+_a.toFixed(4), +_b.toFixed(4), +_g.toFixed(4)],
     mode: dev.ikMode ? 'IK' : 'FK',
     ikError: dev.ikMode ? +((getEEWorldPosition(dev).distanceTo(dev.ikTarget.position)) * 1000).toFixed(3) : null,
     collisionEnabled: State.collisionEnabled,
@@ -194,13 +194,13 @@ export function buildObjectInfo(entry, index) {
   return {
     index,
     name: entry.name,
-    position: [+(p.x * 1000).toFixed(2), +(p.z * 1000).toFixed(2), +(p.y * 1000).toFixed(2)],
-    rotation:  [+(r.x * rad2deg).toFixed(2), +(r.z * rad2deg).toFixed(2), +(r.y * rad2deg).toFixed(2)],
+    position: [+(p.x * 1000).toFixed(4), +(p.z * 1000).toFixed(4), +(p.y * 1000).toFixed(4)],
+    rotation:  [+(r.x * rad2deg).toFixed(4), +(r.z * rad2deg).toFixed(4), +(r.y * rad2deg).toFixed(4)],
     scale:    [+s.x.toFixed(4), +s.y.toFixed(4), +s.z.toFixed(4)],
     visible:  m.visible,
     parent:   entry.parentLink || null,
-    worldPosition: [+(_objWorldPos.x * 1000).toFixed(2), +(_objWorldPos.z * 1000).toFixed(2), +(_objWorldPos.y * 1000).toFixed(2)],
-    worldRotation: [+(we.x * rad2deg).toFixed(2), +(we.z * rad2deg).toFixed(2), +(we.y * rad2deg).toFixed(2)],
+    worldPosition: [+(_objWorldPos.x * 1000).toFixed(4), +(_objWorldPos.z * 1000).toFixed(4), +(_objWorldPos.y * 1000).toFixed(4)],
+    worldRotation: [+(we.x * rad2deg).toFixed(4), +(we.z * rad2deg).toFixed(4), +(we.y * rad2deg).toFixed(4)],
     worldBB,
   };
 }
@@ -210,16 +210,22 @@ export function buildObjectInfo(entry, index) {
 // ============================================================
 function buildDeviceInfo(dev) {
   const rg = dev.rootGroup;
+  rg.updateWorldMatrix(true, false);
+  rg.getWorldPosition(_objWorldPos);
+  rg.getWorldQuaternion(_objWorldQuat);
+  const we = new THREE.Euler().setFromQuaternion(_objWorldQuat, 'XYZ');
   return {
     id: dev.id,
     name: dev.name,
     config: dev.configFile,
     active: dev === State.activeDevice,
     numJoints: dev.sliderJointMap.length,
-    joints: dev.sliderJointMap.map(ji => +(dev.apiSign[ji] * dev.jointAngles[ji] * rad2deg).toFixed(2)),
+    joints: dev.sliderJointMap.map(ji => +(dev.apiSign[ji] * dev.jointAngles[ji] * rad2deg).toFixed(4)),
     jointNames: dev.sliderJointMap.map(ji => dev.config.joints[ji].name),
-    position: [+(rg.position.x * 1000).toFixed(2), +(rg.position.z * 1000).toFixed(2), +(rg.position.y * 1000).toFixed(2)],
-    rotation: [+(rg.rotation.x * rad2deg).toFixed(2), +(rg.rotation.z * rad2deg).toFixed(2), +(rg.rotation.y * rad2deg).toFixed(2)],
+    position: [+(rg.position.x * 1000).toFixed(4), +(rg.position.z * 1000).toFixed(4), +(rg.position.y * 1000).toFixed(4)],
+    rotation: [+(rg.rotation.x * rad2deg).toFixed(4), +(rg.rotation.z * rad2deg).toFixed(4), +(rg.rotation.y * rad2deg).toFixed(4)],
+    worldPosition: [+(_objWorldPos.x * 1000).toFixed(4), +(_objWorldPos.z * 1000).toFixed(4), +(_objWorldPos.y * 1000).toFixed(4)],
+    worldRotation: [+(we.x * rad2deg).toFixed(4), +(we.z * rad2deg).toFixed(4), +(we.y * rad2deg).toFixed(4)],
     parent: dev.parentLink || null,
     isKappa: dev.isKappaGeometry || false,
     mode: dev.ikMode ? 'IK' : 'FK',

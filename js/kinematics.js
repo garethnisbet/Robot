@@ -220,23 +220,39 @@ export function invertNxN(m, n) {
 // ============================================================
 // Python-compatible world-frame ZYX Euler of the tool frame.
 //
-// The Three.js viewer is Y-up; the Python kinematics are Z-up. The two
-// worlds differ by the basis swap M = swap(Y,Z). A rotation expressed in
-// Three.js world converts via R_py = M · R_three · M. Home in Python has
-// em = Ry(90°), so at a general pose em = R_delta_py · Ry(90°) where
-// R_delta_py is the home-relative rotation in Python coords.
+// The Three.js viewer is Y-up; the Python kinematics are Z-up. The proper
+// rotation taking JS-world axes to Python-world axes is W = Rx(90°) (so
+// JS-Y maps to Py-Z). A rotation matrix R expressed in JS-world therefore
+// converts to Python-world via the similarity R_py = W · R · W^T. This
+// conjugation preserves the rotation angle, unlike the naive Y↔Z basis
+// swap (which is a reflection, det = -1).
+//
+// At home, Python's em_home_py depends on the robot's geometry; for the
+// arms currently supported it's Ry(90°) (tool along +X). The home value
+// is hardcoded here; if a future robot needs a different home convention
+// it can be made per-device.
 //
 // These helpers match Python's GNKinematics.rotationMatrixToEulerZYX, so
 // the viewer's displayed (alpha, beta, gamma) agrees with al_be_gam from
 // f_kinematics — including the canonical branch at beta = ±90° gimbal lock.
 // ============================================================
 
-function _swapYZRowsCols(r) {
-  // Returns M · r · M where M swaps rows 1↔2 and cols 1↔2.
+function _jsToPyBasis(r) {
+  // W · r · W^T with W = Rx(90°). Converts a rotation matrix from the
+  // Three.js Y-up world basis to the Python Z-up world basis.
   return [
-    [r[0][0], r[0][2], r[0][1]],
-    [r[2][0], r[2][2], r[2][1]],
-    [r[1][0], r[1][2], r[1][1]],
+    [ r[0][0], -r[0][2],  r[0][1]],
+    [-r[2][0],  r[2][2], -r[2][1]],
+    [ r[1][0], -r[1][2],  r[1][1]],
+  ];
+}
+
+function _pyToJsBasis(r) {
+  // Inverse of _jsToPyBasis: W^T · r · W with W = Rx(90°).
+  return [
+    [ r[0][0],  r[0][2], -r[0][1]],
+    [ r[2][0],  r[2][2], -r[2][1]],
+    [-r[1][0], -r[1][2],  r[1][1]],
   ];
 }
 
@@ -270,9 +286,9 @@ function _quatFromMat(m) {
 
 export function pyEulerFromRelQuat(relQuat) {
   const rThree = _matFromQuat(relQuat);
-  const rDelta = _swapYZRowsCols(rThree);
+  const rDeltaPy = _jsToPyBasis(rThree);
   const ry90 = [[0, 0, 1], [0, 1, 0], [-1, 0, 0]];
-  const em = _matMul(rDelta, ry90);
+  const em = _matMul(rDeltaPy, ry90);
   // rmatrix = em^T, with Python's noise clip (|v| < 1e-5 → 0) so the
   // singular branch produces a deterministic (alpha, 90°, 0) at gimbal lock.
   const clip = (v) => (Math.abs(v) < 1e-5 ? 0 : v);
@@ -307,7 +323,7 @@ export function relQuatFromPyEuler(alphaDeg, betaDeg, gammaDeg) {
     [ee[2], ee[6], ee[10]],
   ];
   const ryNeg90 = [[0, 0, -1], [0, 1, 0], [1, 0, 0]];
-  const rDelta = _matMul(em, ryNeg90);
-  const rThree = _swapYZRowsCols(rDelta);
+  const rDeltaPy = _matMul(em, ryNeg90);
+  const rThree = _pyToJsBasis(rDeltaPy);
   return _quatFromMat(rThree);
 }

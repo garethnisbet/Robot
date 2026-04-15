@@ -714,6 +714,22 @@ if (!restoredFromStorage) {
 
 document.getElementById('loading').style.display = 'none';
 
+window.debugHome = () => {
+  const d = State.activeDevice;
+  if (!d) return null;
+  const m = new THREE.Matrix4().makeRotationFromQuaternion(d.homeQuaternion).elements;
+  return [[m[0],m[4],m[8]],[m[1],m[5],m[9]],[m[2],m[6],m[10]]];
+};
+window.debugEE = () => {
+  const d = State.activeDevice;
+  if (!d) return null;
+  State.scene.updateMatrixWorld(true);
+  const m = d.eeMarker.matrixWorld.elements;
+  const p = d.eeMarker.getWorldPosition(new THREE.Vector3());
+  return { pos: [p.x, p.y, p.z],
+           R: [[m[0],m[4],m[8]],[m[1],m[5],m[9]],[m[2],m[6],m[10]]] };
+};
+
 // Auto-save scene to localStorage on page unload
 window.addEventListener('beforeunload', () => {
   if (State.devices.length === 0) return;

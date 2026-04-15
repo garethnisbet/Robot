@@ -418,7 +418,7 @@ export function updateSliders(dev) {
     const slider = document.getElementById(`j${si+1}`);
     const label  = document.getElementById(`v${si+1}`);
     if (slider) slider.value = deg;
-    if (label)  label.textContent = deg.toFixed(1);
+    if (label)  label.textContent = deg.toFixed(2);
   }
   updateVirtualAngles(dev);
 }

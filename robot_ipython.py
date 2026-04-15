@@ -162,6 +162,50 @@ def _parse_obj_ref(token):
     return {"object": token}
 
 
+# ── Frame conversions (API Z-up ↔ Three.js Y-up) ─────────────────────────────
+#
+# The viewer reports positions in mm and orientations as Euler angles (deg)
+# built from a Three.js Quaternion with order 'XYZ' (intrinsic). Axes are
+# swapped at the boundary so API space has Z-up while Three uses Y-up:
+#   API [x, y, z] ↔ Three [x, z, y]
+
+def _api_to_three_vec(v):
+    return np.array([float(v[0]), float(v[2]), float(v[1])])
+
+def _three_to_api_vec(v):
+    return np.array([float(v[0]), float(v[2]), float(v[1])])
+
+def _api_euler_to_three(rot_deg):
+    # API [rx, ry, rz] = Three [ex, ez, ey] in degrees.
+    return (np.radians(rot_deg[0]),
+            np.radians(rot_deg[2]),
+            np.radians(rot_deg[1]))
+
+def _three_euler_to_api(ex, ey, ez):
+    return [float(np.degrees(ex)), float(np.degrees(ez)), float(np.degrees(ey))]
+
+def _rot_xyz_three(ex, ey, ez):
+    """Three.js Euler 'XYZ' intrinsic: R = Rx(ex) · Ry(ey) · Rz(ez)."""
+    cx, sx = np.cos(ex), np.sin(ex)
+    cy, sy = np.cos(ey), np.sin(ey)
+    cz, sz = np.cos(ez), np.sin(ez)
+    Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+    Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+    Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
+    return Rx @ Ry @ Rz
+
+def _euler_xyz_from_matrix(R):
+    """Inverse of _rot_xyz_three (Three.js Euler 'XYZ' convention)."""
+    ey = np.arcsin(max(-1.0, min(1.0, R[0, 2])))
+    if abs(R[0, 2]) < 0.9999999:
+        ex = np.arctan2(-R[1, 2], R[2, 2])
+        ez = np.arctan2(-R[0, 1], R[0, 0])
+    else:
+        ex = np.arctan2(R[2, 1], R[1, 1])
+        ez = 0.0
+    return ex, ey, ez
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  RobotClient — the main API class
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -632,6 +676,8 @@ class RobotClient:
             result["name"] = dev_data.get("name")
             result["position"] = dev_data.get("position")
             result["rotation"] = dev_data.get("rotation")
+            result["worldPosition"] = dev_data.get("worldPosition")
+            result["worldRotation"] = dev_data.get("worldRotation")
             result["joints"] = dev_data.get("joints")
             result["jointNames"] = dev_data.get("jointNames")
             result["mode"] = dev_data.get("mode")
@@ -662,6 +708,98 @@ class RobotClient:
         finally:
             self._print_state = old
         return data
+
+    def dev_pose(self, device=None, space='world'):
+        """Get a device's origin pose as (position, orientation).
+
+        Parameters:
+            device: device name (default: active device)
+            space:  'world' (default) or 'local' — frame to report the
+                    pose in. Local = relative to the device's parent.
+
+        Returns:
+            (position, orientation) with position in mm [x, y, z] and
+            orientation in degrees [rx, ry, rz] (XYZ-intrinsic Euler).
+            Returns (None, None) if the device can't be queried.
+
+        Usage:
+            p, o = robot.dev_pose()
+            p, o = robot.dev_pose('GP225')
+            p, o = robot.dev_pose('GP225', space='local')
+        """
+        info = self.get_device_pos(device)
+        if not info:
+            return None, None
+        if space == 'local':
+            return info.get('position'), info.get('rotation')
+        pos = info.get('worldPosition') or info.get('position')
+        rot = info.get('worldRotation') or info.get('rotation')
+        return pos, rot
+
+    def dev_pos(self, device=None, space='world'):
+        """Device origin position [x, y, z] in mm. See ``dev_pose``."""
+        return self.dev_pose(device, space)[0]
+
+    def dev_ori(self, device=None, space='world'):
+        """Device origin orientation [rx, ry, rz] in degrees. See ``dev_pose``."""
+        return self.dev_pose(device, space)[1]
+
+    def worldToLocal(self, position=None, orientation=None, device=None):
+        """Transform a world-frame pose into the device's local frame.
+
+        Positions and the input orientation use the viewer API convention
+        (same as ``robot.dev_ori()`` / ``devrotate``): positions in mm,
+        orientations as [rx, ry, rz] in the Three.js-mapped Z-up encoding.
+
+        The returned orientation is in proper XYZ Euler (degrees) in the
+        device-local Z-up frame — i.e. ``Rx(alpha)·Ry(beta)·Rz(gamma)``
+        with the standard right-hand rule — compatible with
+        ``GNKinematics.setEulerTarget(xyz, alpha, beta, gamma)``.
+
+        Parameters:
+            position:    [x, y, z] in mm, or None
+            orientation: [rx, ry, rz] in degrees, or None
+            device:      device name (default: active device)
+
+        Returns:
+            (local_position, local_orientation). Either element is None
+            when the matching input was omitted.
+
+        Usage:
+            p = robot.worldToLocal([100, 0, 50])[0]
+            p, o = robot.worldToLocal([100, 0, 50], [0, 0, 90])
+        """
+        info = self.get_device_pos(device)
+        if not info:
+            return None, None
+        dev_pos = info.get("worldPosition") or info.get("position")
+        dev_rot = info.get("worldRotation") or info.get("rotation")
+        if dev_pos is None or dev_rot is None:
+            return None, None
+
+        origin = _api_to_three_vec(dev_pos)
+        R_dev = _rot_xyz_three(*_api_euler_to_three(dev_rot))
+
+        local_pos = None
+        if position is not None:
+            p_world = _api_to_three_vec(position)
+            p_local = R_dev.T @ (p_world - origin)
+            local_pos = _three_to_api_vec(p_local).tolist()
+
+        local_ori = None
+        if orientation is not None:
+            R_world = _rot_xyz_three(*_api_euler_to_three(orientation))
+            R_local = R_dev.T @ R_world
+            # Convert local rotation from Three.js Y-up to API Z-up space, then
+            # extract proper XYZ Euler angles (compatible with setEulerTarget).
+            # The y↔z swap P is improper (det=-1), so going through P·R·P rather
+            # than the Three.js-mapped shortcut is necessary to get correct angles.
+            _P = np.array([[1,0,0],[0,0,1],[0,1,0]], dtype=float)
+            R_local_api = _P @ R_local @ _P
+            ex, ey, ez = _euler_xyz_from_matrix(R_local_api)
+            local_ori = [float(np.degrees(ex)), float(np.degrees(ey)), float(np.degrees(ez))]
+
+        return local_pos, local_ori
 
     # ═════════════════════════════════════════════════════════════════════
     #  PUBLIC API — Joint Control
@@ -2222,6 +2360,9 @@ class RobotClient:
                 ("robot.mode", "Current mode ('FK' or 'IK')"),
                 ("robot.get_device_pos(['name'])", "Any device: pos, rot, joints, EE"),
                 ("robot.get_obj_pos(name_or_idx)", "Any object: pos, rot, scale, BB"),
+                ("robot.dev_pose([name], space=)", "Device origin (pos, ori), world|local"),
+                ("robot.dev_pos([name]) / dev_ori", "Device origin position / orientation"),
+                ("robot.worldToLocal(pos, ori)", "World \u2192 device-local pose transform"),
             ]),
             ("Properties", [
                 ("robot.name", "Current device name"),
