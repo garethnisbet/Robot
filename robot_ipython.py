@@ -170,19 +170,21 @@ def _parse_obj_ref(token):
 #   API [x, y, z] ↔ Three [x, z, y]
 
 def _api_to_three_vec(v):
-    return np.array([float(v[0]), float(v[2]), float(v[1])])
+    # API Z-up (X right, Y into scene, Z up) → Three.js Y-up (X right, Y up, Z toward viewer)
+    # API Y = -Three Z (opposite directions: into-scene vs toward-viewer)
+    return np.array([float(v[0]), float(v[2]), -float(v[1])])
 
 def _three_to_api_vec(v):
-    return np.array([float(v[0]), float(v[2]), float(v[1])])
+    return np.array([float(v[0]), -float(v[2]), float(v[1])])
 
 def _api_euler_to_three(rot_deg):
-    # API [rx, ry, rz] = Three [ex, ez, ey] in degrees.
-    return (np.radians(rot_deg[0]),
-            np.radians(rot_deg[2]),
-            np.radians(rot_deg[1]))
+    # Rotation around API Y (into scene) = rotation around -Three Z (toward viewer) → negate ry.
+    return (np.radians(rot_deg[0]),    # Three ex = rx_api
+            np.radians(rot_deg[2]),    # Three ey = rz_api  (API Z = Three Y)
+            -np.radians(rot_deg[1]))   # Three ez = -ry_api (API Y = -Three Z)
 
 def _three_euler_to_api(ex, ey, ez):
-    return [float(np.degrees(ex)), float(np.degrees(ez)), float(np.degrees(ey))]
+    return [float(np.degrees(ex)), float(np.degrees(-ez)), float(np.degrees(ey))]
 
 def _rot_xyz_three(ex, ey, ez):
     """Three.js Euler 'XYZ' intrinsic: R = Rx(ex) · Ry(ey) · Rz(ez)."""
@@ -744,61 +746,82 @@ class RobotClient:
         """Device origin orientation [rx, ry, rz] in degrees. See ``dev_pose``."""
         return self.dev_pose(device, space)[1]
 
-    def worldToLocal(self, position=None, orientation=None, device=None):
+    def worldToLocal(self, pose_or_position=None, orientation=None, device=None):
         """Transform a world-frame pose into the device's local frame.
 
-        Positions and the input orientation use the viewer API convention
-        (same as ``robot.dev_ori()`` / ``devrotate``): positions in mm,
-        orientations as [rx, ry, rz] in the Three.js-mapped Z-up encoding.
+        Both input and output use the setEulerTarget convention:
+        positions in mm [x, y, z] and orientations as XYZ intrinsic
+        Euler angles [alpha, beta, gamma] in degrees, where the
+        rotation matrix is ``Rx(alpha)·Ry(beta)·Rz(gamma)`` in a
+        right-handed Z-up frame (X right, Y into scene, Z up).
 
-        The returned orientation is in proper XYZ Euler (degrees) in the
-        device-local Z-up frame — i.e. ``Rx(alpha)·Ry(beta)·Rz(gamma)``
-        with the standard right-hand rule — compatible with
-        ``GNKinematics.setEulerTarget(xyz, alpha, beta, gamma)``.
+        Note: the Y axis points *into* the scene, which is the
+        negation of the viewer's Y readback from ``dev_pose()``.
 
         Parameters:
-            position:    [x, y, z] in mm, or None
-            orientation: [rx, ry, rz] in degrees, or None
-            device:      device name (default: active device)
+            pose_or_position: [x, y, z, alpha, beta, gamma] in mm/degrees
+                              (6-element), or [x, y, z] in mm (3-element,
+                              use with orientation)
+            orientation:      [alpha, beta, gamma] in degrees, or None
+            device:           device name (default: active device)
 
         Returns:
-            (local_position, local_orientation). Either element is None
-            when the matching input was omitted.
+            [x, y, z, alpha, beta, gamma] when a 6-element pose is given, or
+            (local_position, local_orientation) when called with separate args.
 
         Usage:
-            p = robot.worldToLocal([100, 0, 50])[0]
+            result = robot.worldToLocal([100, 0, 50, 0, 0, 90])
             p, o = robot.worldToLocal([100, 0, 50], [0, 0, 90])
         """
+        six_form = pose_or_position is not None and len(pose_or_position) == 6 and orientation is None
+        if six_form:
+            position = list(pose_or_position[:3])
+            orientation = list(pose_or_position[3:])
+        else:
+            position = pose_or_position
+
         info = self.get_device_pos(device)
         if not info:
-            return None, None
+            return None if six_form else (None, None)
         dev_pos = info.get("worldPosition") or info.get("position")
         dev_rot = info.get("worldRotation") or info.get("rotation")
         if dev_pos is None or dev_rot is None:
-            return None, None
+            return None if six_form else (None, None)
 
-        origin = _api_to_three_vec(dev_pos)
-        R_dev = _rot_xyz_three(*_api_euler_to_three(dev_rot))
+        # The viewer websocket reports positions/rotations with
+        # Y = +Three_Z (toward viewer), but the kinematics and the
+        # Python coordinate helpers use a right-handed Z-up convention
+        # where Y = -Three_Z (into scene).  Negate the Y components
+        # so the helpers produce correct results.
+        dev_pos = [dev_pos[0], -dev_pos[1], dev_pos[2]]
+        dev_rot = [dev_rot[0], -dev_rot[1], dev_rot[2]]
+
+        # Device rotation in Three.js Y-up space, then convert to API Z-up.
+        # _P is the proper orthogonal basis-change (det=+1): API = _P @ Three.
+        _P = np.array([[1,0,0],[0,0,-1],[0,1,0]], dtype=float)
+        R_dev_three = _rot_xyz_three(*_api_euler_to_three(dev_rot))
+        R_dev_api = _P @ R_dev_three @ _P.T
 
         local_pos = None
         if position is not None:
             p_world = _api_to_three_vec(position)
-            p_local = R_dev.T @ (p_world - origin)
+            origin = _api_to_three_vec(dev_pos)
+            p_local = R_dev_three.T @ (p_world - origin)
             local_pos = _three_to_api_vec(p_local).tolist()
 
         local_ori = None
         if orientation is not None:
-            R_world = _rot_xyz_three(*_api_euler_to_three(orientation))
-            R_local = R_dev.T @ R_world
-            # Convert local rotation from Three.js Y-up to API Z-up space, then
-            # extract proper XYZ Euler angles (compatible with setEulerTarget).
-            # The y↔z swap P is improper (det=-1), so going through P·R·P rather
-            # than the Three.js-mapped shortcut is necessary to get correct angles.
-            _P = np.array([[1,0,0],[0,0,1],[0,1,0]], dtype=float)
-            R_local_api = _P @ R_local @ _P
+            # Build world rotation directly in API Z-up using
+            # setEulerTarget convention: R = Rx(alpha) · Ry(beta) · Rz(gamma).
+            R_world_api = _rot_xyz_three(np.radians(orientation[0]),
+                                         np.radians(orientation[1]),
+                                         np.radians(orientation[2]))
+            R_local_api = R_dev_api.T @ R_world_api
             ex, ey, ez = _euler_xyz_from_matrix(R_local_api)
             local_ori = [float(np.degrees(ex)), float(np.degrees(ey)), float(np.degrees(ez))]
 
+        if six_form:
+            return (local_pos + local_ori)
         return local_pos, local_ori
 
     # ═════════════════════════════════════════════════════════════════════

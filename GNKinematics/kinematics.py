@@ -240,7 +240,11 @@ class kinematics:
         """Rotate vec through the joint chain from from_joint down to joint 0."""
         return self._rotate_through_joints_raw(vec, self.axis_vects, angles, from_joint)
 
-    def setEulerTarget(self, xyz, r_alpha, r_beta, r_gamma):
+    def setEulerTarget(self, xyz_or_six, r_alpha=None, r_beta=None, r_gamma=None):
+        if r_alpha is None:
+            xyz_or_six = list(xyz_or_six)
+            xyz_or_six, r_alpha, r_beta, r_gamma = xyz_or_six[:3], xyz_or_six[3], xyz_or_six[4], xyz_or_six[5]
+        xyz = xyz_or_six
         vx, vy, vz = np.identity(3)
         # World-frame ZYX Euler (identity = tool frame aligned with world).
         em = rotmat(vx, r_alpha) @ rotmat(vy, r_beta) @ rotmat(vz, r_gamma)

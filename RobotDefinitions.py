@@ -10,7 +10,7 @@ Meca500_kin = kinematics.kinematics.from_home_positions(
     motor_limits=np.array([[-1750, 1750], [-700, 900], [-1350, 700],
                             [-1700, 1200], [-900, 1150], [-36000, 36000]]),
     centre_offset=[0, 0, 0],
-    tool_offset=[0, 0, -13.35],
+    tool_offset=[0, 0, 0],
     strategy='minimum_movement',
     weighting=[6, 5, 4, 3, 2, 1],
 )
