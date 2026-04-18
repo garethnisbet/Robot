@@ -20,7 +20,10 @@ const deg2rad = Math.PI / 180;
 const rad2deg = 180 / Math.PI;
 
 // configFiles list (kept here to mirror original constant)
-export const configFiles = ['robot_config.json', 'i16_config.json', 'i19_config.json', 'gp225_config.json', 'gp280_config.json', 'gp180_config.json'];
+export const configFiles = ['i16_config.json', 'i19_config.json', 'gp225_config.json', 'gp280_config.json', 'gp180_config.json',
+    'motomini_config.json',
+    'meca500_config.json'
+];
 
 // ============================================================
 // makeSpanEditable

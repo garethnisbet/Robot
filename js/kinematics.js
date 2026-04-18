@@ -124,7 +124,12 @@ export function orientationError(qTarget, qCurrent) {
 export function solveIK(dev, targetPos, targetQuat, maxIter = 20, tolerance = 0.0005) {
   const lambda = 0.5;
   const oriWeight = 0.3;
-  const numJoints = dev.numJoints;
+
+  const movable = [];
+  for (let i = 0; i < dev.numJoints; i++) {
+    if (!dev.jointFixed || !dev.jointFixed[i]) movable.push(i);
+  }
+  const nMov = movable.length;
 
   for (let iter = 0; iter < maxIter; iter++) {
     updateFK(dev);
@@ -139,16 +144,17 @@ export function solveIK(dev, targetPos, targetQuat, maxIter = 20, tolerance = 0.
 
     if (posNorm < tolerance && oriErr.length() < 0.01) return posNorm;
 
-    const J = Array.from({length: 6}, () => Array(numJoints).fill(0));
-    for (let j = 0; j < numJoints; j++) {
+    const J = Array.from({length: 6}, () => Array(nMov).fill(0));
+    for (let m = 0; m < nMov; m++) {
+      const j = movable[m];
       const axis = getJointWorldAxis(dev, j);
       const jPos = getJointWorldPosition(dev, j);
       const r = new THREE.Vector3().subVectors(eePos, jPos);
       const lin = new THREE.Vector3().crossVectors(axis, r);
-      J[0][j] = lin.x;  J[1][j] = lin.y;  J[2][j] = lin.z;
-      J[3][j] = axis.x * oriWeight;
-      J[4][j] = axis.y * oriWeight;
-      J[5][j] = axis.z * oriWeight;
+      J[0][m] = lin.x;  J[1][m] = lin.y;  J[2][m] = lin.z;
+      J[3][m] = axis.x * oriWeight;
+      J[4][m] = axis.y * oriWeight;
+      J[5][m] = axis.z * oriWeight;
     }
 
     const e = [
@@ -161,7 +167,7 @@ export function solveIK(dev, targetPos, targetQuat, maxIter = 20, tolerance = 0.
     for (let r = 0; r < n; r++) {
       for (let c = 0; c < n; c++) {
         let sum = 0;
-        for (let k = 0; k < numJoints; k++) sum += J[r][k] * J[c][k];
+        for (let k = 0; k < nMov; k++) sum += J[r][k] * J[c][k];
         JJT[r][c] = sum;
       }
     }
@@ -177,10 +183,10 @@ export function solveIK(dev, targetPos, targetQuat, maxIter = 20, tolerance = 0.
       for (let j = 0; j < n; j++)
         v[i] += inv[i][j] * e[j];
 
-    for (let i = 0; i < numJoints; i++) {
+    for (let m = 0; m < nMov; m++) {
       let dq = 0;
-      for (let j = 0; j < n; j++) dq += J[j][i] * v[j];
-      dev.jointAngles[i] += dq;
+      for (let j = 0; j < n; j++) dq += J[j][m] * v[j];
+      dev.jointAngles[movable[m]] += dq;
     }
 
     clampJoints(dev);

@@ -12,8 +12,10 @@ Interactive 3D visualisation and control for robots and scientific instruments. 
 | Yaskawa GP225 | `gp225_config.json` | 6 (serial) | 6-DOF heavy-payload industrial robot |
 | Yaskawa GP280 | `gp280_config.json` | 6 (serial) | 6-DOF heavy-payload industrial robot |
 | Yaskawa GP180-120 | `gp180_config.json` | 6 (serial) | 6-DOF heavy-payload industrial robot |
+| Yaskawa MotoMini | `motomini_config.json` | 6 (serial) | 6-DOF compact industrial robot |
+| Mecademic Meca500 (B) | `meca500_config.json` | 6 (serial) | 6-DOF compact manipulator (Blender import) |
 
-New devices can be added from Blender scenes using the `/build-viewer` skill (see [Adding New Devices](#adding-new-devices)).
+New devices can be added from Blender scenes using `import_robot.py` (see [Adding New Devices](#adding-new-devices)).
 
 ## Features
 
@@ -61,13 +63,100 @@ Open `http://localhost:8080` in a browser. The status indicator in the top-left 
 
 ## Adding New Devices
 
-New devices can be added from Blender scenes using the `/build-viewer` Claude Code skill. The process:
+### Importing from Blender
 
-1. Set up an armature in Blender with bones for each joint/kinematic link
-2. Parent meshes to bones
-3. Set rotation constraints via quaternion locks (WXYZ)
-4. Run `/build-viewer` to extract bone transforms, determine rotation axes, export a GLB, and generate a config JSON
-5. Add the new config filename to the `configFiles` array in `js/panel.js`
+The `import_robot.py` script extracts bone transforms, rotation axes, mesh parenting, and joint limits from a Blender armature, then exports a config JSON and skin-free GLB.
+
+#### Blender Setup
+
+1. **Armature**: create an armature with one bone per joint/kinematic link. Bones should form a parent-child chain matching the kinematic chain.
+2. **Mesh parenting**: parent each mesh to its corresponding bone (select mesh, then bone in Pose Mode, `Ctrl+P` → Bone).
+3. **Rotation mode**: set all pose bones to **Quaternion** rotation mode.
+4. **Quaternion locks**: for each bone, lock all quaternion components except the one that corresponds to the rotation axis:
+   - Lock W, Y, Z → free X (rotation about bone-local X)
+   - Lock W, X, Z → free Y (rotation about bone-local Y)
+   - Lock W, X, Y → free Z (rotation about bone-local Z)
+   - Lock all (W, X, Y, Z) → fixed joint (no rotation)
+   - Leave all unlocked → fixed joint (treated as structural)
+5. **Joint limits**: set IK limits on the free axis for each movable bone (`Bone Properties → Inverse Kinematics`). If no IK limits are set, the importer defaults to [-180, 180].
+6. **Render visibility**: hide any helper meshes by disabling their render visibility (camera icon in outliner). These will be excluded from the GLB export.
+
+#### Running the Importer
+
+In Blender's Script Editor (or Python console):
+
+```python
+exec(open('/path/to/RobotVisualisation/import_robot.py').read())
+```
+
+To override defaults, set variables before `exec()`:
+
+```python
+ARMATURE_NAME = 'MyArmature'     # default: auto-detect first armature
+DEVICE_NAME = 'My Robot'         # default: armature name
+CONFIG_FILE = 'my_robot_config.json'  # default: derived from device name
+GLB_FILE = 'my_robot_scene.glb'  # default: derived from config name
+exec(open('/path/to/RobotVisualisation/import_robot.py').read())
+```
+
+The script:
+1. Finds the armature and extracts bone rest transforms (converted from Blender Z-up to Three.js Y-up)
+2. Determines rotation axes from quaternion locks
+3. Maps meshes to bones via parent chains
+4. Extracts IK joint limits
+5. Exports a skin-free GLB (temporarily unparents bone-parented meshes to avoid glTF skins)
+6. Generates a config JSON with joints, links, eeOffset, and eeAxes
+7. Registers the config in `js/panel.js` if not already present
+
+#### Post-Import Checklist
+
+Open `http://localhost:8000/threejs_scene.html?config=my_robot_config.json` and verify:
+
+1. All meshes load and appear correctly
+2. FK sliders move the correct joints
+3. Each joint rotates about the correct axis and in the correct direction
+4. Labels toggle shows correct mesh names
+
+If rotation directions are wrong for specific joints, negate the `axis` array in the config JSON (e.g. `[0, -1, 0]` → `[0, 1, 0]`). If meshes are missing, check GLTFLoader name sanitization in the browser console — the importer sanitizes names (spaces → underscores, dots removed) but the GLB mesh names must match.
+
+#### apiSign
+
+If the robot manufacturer's joint angle convention is opposite to the viewer's for specific joints, add `"apiSign": -1` to those joints in the config. This flips the sign on the slider display and the WebSocket API without changing the physical rotation axis. For example, the Meca500 J4 has `"apiSign": -1` because the manufacturer defines positive J4 in the opposite direction.
+
+### Adding Robot Kinematics Definitions
+
+To enable IK via the Python `GNKinematics` library (used by `robot_ipython.py`), add a kinematics definition to `RobotDefinitions.py`:
+
+```python
+from GNKinematics import kinematics
+
+MyRobot_kin = kinematics.kinematics.from_home_positions(
+    v0=np.array([0, 0, 135.0]),       # base to J2 (mm)
+    v1=np.array([0, 0, 270.0]),       # J2 to J3
+    v2=np.array([60, 0, 308]),        # J3 to J4
+    v3=np.array([120, 0, 308]),       # J4 to J5
+    v4=np.array([190, 0, 308]),       # J5 to J6 flange
+    motor_limits=np.array([[-175, 175], [-70, 90], [-135, 70],
+                            [-170, 120], [-90, 115], [-360, 360]]),
+    centre_offset=[0, 0, 0],
+    tool_offset=[0, 0, 0],
+    strategy='minimum_movement',
+    weighting=[6, 5, 4, 3, 2, 1],
+)
+```
+
+The `v0`–`v4` vectors are the joint positions at home (all joints at zero), in the robot's Z-up coordinate frame. `motor_limits` are per-joint angle limits in degrees.
+
+Then add the new object to the IPython namespace in `robot_ipython.py`:
+
+1. Import it at the top: `from RobotDefinitions import ..., MyRobot_kin`
+2. Add it to the `user_ns` dict passed to `IPython.start_ipython()`:
+   ```python
+   user_ns={
+       ...
+       "MyRobot_kin": MyRobot_kin,
+   }
+   ```
 
 ### Config File Structure
 
@@ -78,24 +167,30 @@ New devices can be added from Blender scenes using the `/build-viewer` Claude Co
   "joints": [
     {
       "name": "joint_name",
+      "bone": "blender_bone_name",
       "restPos": [x, y, z],
       "restQuat": [w, x, y, z],
       "axis": [x, y, z],
       "limits": [-180, 180],
       "parent": 0,
-      "fixed": false
+      "fixed": false,
+      "apiSign": 1
     }
   ],
   "links": [
     { "name": "mesh_name", "label": "Display Name", "joint": 0 }
   ],
+  "eeOffset": [0, 0, -0.05],
+  "eeAxes": [[0, 0, -1], [0, -1, 0], [1, 0, 0]],
   "demoPose": [0, 45, -90]
 }
 ```
 
 Key fields:
-- **joints**: one entry per bone — `restPos`/`restQuat` from Blender (C_gltf converted), `axis` from quaternion lock analysis, `parent` index (-1 for roots), `fixed` for non-movable kinematic links
-- **links**: maps GLB mesh names (sanitized: spaces→underscores) to joint indices
+- **joints**: one entry per bone — `restPos`/`restQuat` from Blender (C matrix converted), `axis` from quaternion lock analysis, `parent` index (-1 for roots), `fixed` for non-movable kinematic links, optional `apiSign` (-1 to flip slider/API convention)
+- **links**: maps GLB mesh names (sanitized: spaces→underscores, dots removed) to joint indices
+- **eeOffset**: displacement from last joint to end-effector point (derived from last bone length)
+- **eeAxes**: end-effector crosshair axes — use `[[0,0,-1],[0,-1,0],[1,0,0]]` for all robots
 - **demoPose**: joint angles in degrees for the demo button (one per joint, fixed joints = 0)
 
 ## Objects
@@ -460,6 +555,7 @@ js/
   collision.js           BVH-accelerated collision detection (Web Worker + main-thread fallback)
   collision-worker.js    Background thread for collision math
   websocket.js           WebSocket client for remote control API
+import_robot.py          Blender import script — extracts armature to config JSON + GLB
 server.py                WebSocket + HTTP server for remote control API
 robot_ipython.py         IPython remote control client (any device)
 GNKinematics/            Python forward/inverse kinematics library (matches viewer's ZYX Euler)

@@ -71,6 +71,7 @@ export async function loadDevice(configFile) {
 
   // Build joint limits, axes, FK chain
   const jointLimits = config.joints.map(j => [j.limits[0] * deg2rad, j.limits[1] * deg2rad]);
+  const jointFixed = config.joints.map(j => !!j.fixed);
   const apiSign = config.joints.map(j => (j.apiSign !== undefined) ? j.apiSign : 1);
 
   const linkToJoint = {};
@@ -223,6 +224,7 @@ export async function loadDevice(configFile) {
     numJoints,
     rootGroup,
     jointLimits,
+    jointFixed,
     jointAngles: Array(numJoints).fill(0),
     jointRestGroups,
     jointRotGroups,

@@ -1,0 +1,100 @@
+{
+  "name": "Meca500",
+  "armature": "Armature",
+  "model": "meca500_scene.glb",
+  "joints": [
+    {
+      "name": "J1 Base",
+      "bone": "J1 Base",
+      "restPos": [ 0.0, 0.0, 0.0 ],
+      "restQuat": [ 0.70711, 0.70711, 0.0, 0.0 ],
+      "axis": [ 0, 0, -1 ],
+      "limits": [ -180, 180 ],
+      "parent": -1
+    },
+    {
+      "name": "J2 Shoulder",
+      "bone": "J2 Shoulder",
+      "restPos": [ 0.0, 0.0, -0.135 ],
+      "restQuat": [ 0.99999, 0.0, 0.00401, 0.00015 ],
+      "axis": [ 0, -1, 0 ],
+      "limits": [ -180, 180 ],
+      "parent": 0
+    },
+    {
+      "name": "J3 Elbow",
+      "bone": "J3 Elbow",
+      "restPos": [ -0.0, -0.0, -0.135 ],
+      "restQuat": [ 0.87216, 0.00338, -0.48916, -0.00629 ],
+      "axis": [ 0, -1, 0 ],
+      "limits": [ -180, 180 ],
+      "parent": 1
+    },
+    {
+      "name": "J4 Wrist Roll",
+      "bone": "J4 Wrist Roll",
+      "restPos": [ 0.0, -0.0, -0.07194 ],
+      "restQuat": [ 0.96152, 0.00229, -0.27466, 0.00558 ],
+      "axis": [ 0, 0, -1 ],
+      "limits": [ -180, 180 ],
+      "parent": 2
+    },
+    {
+      "name": "J5 Wrist Pitch",
+      "bone": "J5 Wrist Pitch",
+      "restPos": [ -0.0, -0.0, -0.06 ],
+      "restQuat": [ 1.0, -0.0, -1e-05, 0.00278 ],
+      "axis": [ 0, -1, 0 ],
+      "limits": [ -180, 180 ],
+      "parent": 3
+    },
+    {
+      "name": "J6 Flange",
+      "bone": "J6 Flange",
+      "restPos": [ 0.0, 0.0, -0.05408 ],
+      "restQuat": [ 1.0, -0.0, 0.0, -0.0 ],
+      "axis": [ 0, 0, -1 ],
+      "limits": [ -180, 180 ],
+      "parent": 4
+    }
+  ],
+  "links": [
+    {
+      "name": "L0",
+      "label": "L0",
+      "joint": 0
+    },
+    {
+      "name": "L1",
+      "label": "L1",
+      "joint": 1
+    },
+    {
+      "name": "L2",
+      "label": "L2",
+      "joint": 2
+    },
+    {
+      "name": "L3",
+      "label": "L3",
+      "joint": 3
+    },
+    {
+      "name": "L4",
+      "label": "L4",
+      "joint": 4
+    },
+    {
+      "name": "L5",
+      "label": "L5",
+      "joint": 5
+    }
+  ],
+  "eeOffset": [ 0, 0, -0.01377 ],
+  "eeAxes": [
+    [ 0, 0, -1 ],
+    [ 0, -1, 0 ],
+    [ 1, 0, 0 ]
+  ],
+  "demoPose": [ 0, 0, 0, 0, 0, 0 ]
+}

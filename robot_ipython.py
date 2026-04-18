@@ -28,7 +28,7 @@ import urllib.request
 import websockets
 import numpy as np
 from GNKinematics import kinematics
-from RobotDefinitions import Meca500_kin, GP225_kin, GP180_120_kin, GP280_kin
+from RobotDefinitions import Meca500_kin, GP225_kin, GP180_120_kin, GP280_kin, MotoMini_kin
 
 
 # ── ANSI colour helpers ──────────────────────────────────────────────────────
@@ -2957,6 +2957,7 @@ def main():
             "GP225_kin": GP225_kin,
             "GP180_120_kin": GP180_120_kin,
             "GP280_kin": GP280_kin,
+            "MotoMini_kin": MotoMini_kin,
             "_register_magics": _register_magics,
         },
         config=c,
