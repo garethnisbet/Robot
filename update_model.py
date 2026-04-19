@@ -9,7 +9,7 @@ Usage from Blender Script Editor or MCP:
     exec(open('/FastDrive/Dropbox/ClaudeCodeProjects/RobotVisualisation/update_model.py').read())
 
 To override the config file, set CONFIG_FILE before running:
-    CONFIG_FILE = 'robot_config.json'
+    CONFIG_FILE = 'meca500_config.json'
     exec(open('update_model.py').read())
 """
 

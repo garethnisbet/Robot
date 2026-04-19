@@ -10,7 +10,7 @@ syntax (loops, variables, etc.) alongside robot control.
 
 Usage:
     pip install websockets ipython
-    python robot_ipython.py [--url ws://localhost:8080/ws] [--config robot_config.json]
+    python robot_ipython.py [--url ws://localhost:8080/ws] [--config meca500_config.json]
 """
 
 import argparse
@@ -219,7 +219,7 @@ class RobotClient:
     event loop thread and block for the result. No ``await`` needed.
     """
 
-    def __init__(self, url="ws://localhost:8080/ws", config="robot_config.json",
+    def __init__(self, url="ws://localhost:8080/ws", config="meca500_config.json",
                  session=None, connect=True):
         global _http_base_url
         self._url = url
@@ -2912,13 +2912,13 @@ def main():
         epilog="Examples:\n"
                "  python robot_ipython.py\n"
                "  python robot_ipython.py --config i16_config.json\n"
-               "  python robot_ipython.py --url ws://192.168.1.100:8080/ws --config robot_config.json\n"
+               "  python robot_ipython.py --url ws://192.168.1.100:8080/ws --config meca500_config.json\n"
                "  python robot_ipython.py --session ab12cd34\n",
     )
     parser.add_argument("--url", default="ws://localhost:8080/ws",
                         help="WebSocket URL (default: ws://localhost:8080/ws)")
-    parser.add_argument("--config", default="robot_config.json",
-                        help="Path to device config JSON (default: robot_config.json)")
+    parser.add_argument("--config", default="meca500_config.json",
+                        help="Path to device config JSON (default: meca500_config.json)")
     parser.add_argument("--session", default=None,
                         help="Session ID of the viewer instance to connect to.")
     args = parser.parse_args()

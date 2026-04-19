@@ -2,7 +2,7 @@
 """
 Robot Path Planner — RRT-Connect with capsule collision detection
 
-Replicates the Three.js FK chain from robot_config.json, then runs
+Replicates the Three.js FK chain from meca500_config.json, then runs
 RRT-Connect in joint space with capsule self-collision and obstacle checks.
 
 Usage (CLI):
@@ -11,7 +11,7 @@ Usage (CLI):
 
 Library usage:
     from planner import RobotPlanner
-    p = RobotPlanner("robot_config.json")
+    p = RobotPlanner("meca500_config.json")
     path = p.plan([0,0,0,0,0,0], [30,-45,60,0,30,0])  # degrees
     # path is list of joint-angle lists (degrees), or None if failed
 """
@@ -62,7 +62,7 @@ def fk(joints_cfg, angles_deg):
     """
     Compute world-space positions (and orientations) of each joint frame.
 
-    joints_cfg: list of joint dicts from robot_config.json
+    joints_cfg: list of joint dicts from the device config JSON
     angles_deg: list of joint angles in degrees (same length as joints_cfg)
 
     Returns list of (position_3d, quaternion_wxyz) for each joint,
@@ -208,12 +208,12 @@ def capsule_aabb_collide(c: Capsule, aabb: AABBObstacle) -> bool:
 
 class RobotPlanner:
     """
-    RRT-Connect path planner for a robot described by robot_config.json.
+    RRT-Connect path planner for a robot described by a device config JSON.
 
     Parameters
     ----------
     config_path : str
-        Path to robot_config.json.
+        Path to device config JSON (e.g. meca500_config.json).
     capsule_radii : list[float] | float | None
         Per-link capsule radius (metres). If a single float, used for all links.
         If None, defaults to 18 mm for all links (tuned for Meca500 geometry).
@@ -229,7 +229,7 @@ class RobotPlanner:
 
     def __init__(
         self,
-        config_path: str = "robot_config.json",
+        config_path: str = "meca500_config.json",
         capsule_radii=None,
         obstacles: list = None,
         step_deg: float = 5.0,
@@ -508,8 +508,8 @@ def _parse_angles(s):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="RRT-Connect path planner for robot_config.json")
-    parser.add_argument("--config", default="robot_config.json")
+    parser = argparse.ArgumentParser(description="RRT-Connect path planner for robot configs")
+    parser.add_argument("--config", default="meca500_config.json")
     parser.add_argument("--start", required=True, help='Joint angles in degrees e.g. "0 0 0 0 0 0"')
     parser.add_argument("--goal",  required=True, help='Goal joint angles in degrees')
     parser.add_argument("--obstacles", default=None,

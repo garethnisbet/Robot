@@ -4,7 +4,7 @@ Build a config JSON and export a GLB for the interactive Three.js FK/IK viewer f
 
 User arguments (optional): $ARGUMENTS
 - If the user specifies an armature name, use that. Otherwise auto-detect the first armature in the scene.
-- If the user specifies a config filename, use that. Otherwise default to `robot_config.json`.
+- If the user specifies a config filename, use that. Otherwise default to `meca500_config.json`.
 - If the user specifies a GLB filename, use that. Otherwise derive from the config name.
 
 ## Step 1: Inspect the Blender Scene

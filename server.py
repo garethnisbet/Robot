@@ -7,7 +7,7 @@ for remote robot control.
 
 Usage:
     pip install aiohttp
-    python server.py [--port 8000] [--config robot_config.json]
+    python server.py [--port 8000] [--config meca500_config.json]
 
 WebSocket endpoint: ws://localhost:8000/ws
 
@@ -179,7 +179,7 @@ async def sessions_handler(request):
 def create_app(config_path=None):
     app = web.Application()
 
-    config_name = Path(config_path).name if config_path else "robot_config.json"
+    config_name = Path(config_path).name if config_path else "meca500_config.json"
 
     async def index_handler(request):
         if "config" not in request.query:
@@ -199,8 +199,8 @@ def main():
     parser = argparse.ArgumentParser(description="Robot Visualisation WebSocket Server")
     parser.add_argument("--port", type=int, default=8080, help="HTTP port (default: 8080)")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
-    parser.add_argument("--config", default="robot_config.json",
-                        help="Path to robot config JSON (default: robot_config.json)")
+    parser.add_argument("--config", default="meca500_config.json",
+                        help="Path to robot config JSON (default: meca500_config.json)")
     args = parser.parse_args()
 
     app = create_app(config_path=args.config)

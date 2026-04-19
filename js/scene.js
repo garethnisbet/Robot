@@ -157,18 +157,18 @@ const fill = new THREE.DirectionalLight(0xffffff, 0.8);
 fill.position.set(-0.886, 1.022, 0.668);
 scene.add(fill);
 
-const spot = new THREE.SpotLight(0x0058ff, 10, 3, Math.PI / 4, 0.5);
-spot.position.set(-0.134, 1.043, 1.665);
+const spot = new THREE.SpotLight(0x0058ff, 30, 9, Math.PI / 4, 0.5);
+spot.position.set(-0.402, 3.129, 4.995);
 scene.add(spot);
 
-const spot2 = new THREE.SpotLight(0x0058ff, 33.75, 3, Math.PI / 4, 0.5);
-spot2.position.set(-1.665, 1.0, -0.134);
+const spot2 = new THREE.SpotLight(0x0058ff, 101.25, 9, Math.PI / 4, 0.5);
+spot2.position.set(-4.995, 3.0, -0.402);
 spot2.target.position.set(0, 0.5, 0);
 scene.add(spot2);
 scene.add(spot2.target);
 
-const spot3 = new THREE.SpotLight(0x0058ff, 33.75, 3, Math.PI / 4, 0.5);
-spot3.position.set(1.665, 1.0, 0.134);
+const spot3 = new THREE.SpotLight(0x0058ff, 101.25, 9, Math.PI / 4, 0.5);
+spot3.position.set(4.995, 3.0, 0.402);
 spot3.target.position.set(0, 0.5, 0);
 scene.add(spot3);
 scene.add(spot3.target);

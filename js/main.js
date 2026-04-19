@@ -637,7 +637,7 @@ window.addEventListener('resize', () => {
 // ============================================================
 // Initialization
 // ============================================================
-const configParam = new URLSearchParams(window.location.search).get('config') || 'robot_config.json';
+const configParam = new URLSearchParams(window.location.search).get('config') || 'meca500_config.json';
 
 // Try restoring from localStorage first
 const SCENE_STORAGE_KEY = 'robotvis_scene';
@@ -818,7 +818,7 @@ document.getElementById('clearSceneBtn').addEventListener('click', () => {
   State.resetDeviceIdCounter();
 
   rebuildDeviceList();
-  rebuildPrimaryModelDropdown('robot_config.json');
+  rebuildPrimaryModelDropdown('meca500_config.json');
 });
 
 // ============================================================
@@ -927,7 +927,7 @@ async function restoreScene(data) {
   }
 
   rebuildDeviceList();
-  rebuildPrimaryModelDropdown(State.devices[0]?.configFile || 'robot_config.json');
+  rebuildPrimaryModelDropdown(State.devices[0]?.configFile || 'meca500_config.json');
 }
 
 document.getElementById('loadSceneFile').addEventListener('change', async (e) => {

@@ -6,7 +6,7 @@ Interactive 3D visualisation and control for robots and scientific instruments. 
 
 | Device | Config | Joints | Description |
 |--------|--------|--------|-------------|
-| Meca500 R3 | `robot_config.json` | 6 (serial) | 6-DOF compact industrial manipulator |
+| Meca500 R3 | `meca500_config.json` | 6 (serial) | 6-DOF compact industrial manipulator |
 | i16 Diffractometer | `i16_config.json` | 10 movable (branching) | Diamond Light Source 6-circle diffractometer with merlin and crystal detectors |
 | i19 Kappa Diffractometer | `i19_config.json` | branching | Diamond Light Source kappa diffractometer (2θ / θ / κ / φ chain) |
 | Yaskawa GP225 | `gp225_config.json` | 6 (serial) | 6-DOF heavy-payload industrial robot |
@@ -57,7 +57,7 @@ Open `http://localhost:8000/threejs_scene.html` in a browser. Use the dropdown t
 **With remote control API:**
 ```bash
 pip3 install aiohttp websockets ipython
-python3 server.py --config robot_config.json
+python3 server.py --config meca500_config.json
 ```
 Open `http://localhost:8080` in a browser. The status indicator in the top-left shows the WebSocket connection state and the session ID for this tab. Click it to open the connection info panel, which shows the full connection command, WebSocket URL, and a link to download `RemoteAPI.zip` — a self-contained bundle with `robot_ipython.py`, the `GNKinematics` Python library, and `RobotDefinitions.py`.
 
@@ -258,8 +258,8 @@ GET http://localhost:8080/sessions
 ### Interactive Client (IPython)
 
 ```bash
-python3 robot_ipython.py --config robot_config.json                        # broadcast to all tabs
-python3 robot_ipython.py --config robot_config.json --session ab12cd34     # target a specific tab
+python3 robot_ipython.py --config meca500_config.json                        # broadcast to all tabs
+python3 robot_ipython.py --config meca500_config.json --session ab12cd34     # target a specific tab
 python3 robot_ipython.py --config i16_config.json --session ab12cd34       # i16 diffractometer
 python3 robot_ipython.py --url ws://192.168.1.100:8080/ws --session ab12cd34  # remote server
 ```
@@ -561,7 +561,7 @@ robot_ipython.py         IPython remote control client (any device)
 GNKinematics/            Python forward/inverse kinematics library (matches viewer's ZYX Euler)
 RobotDefinitions.py      Robot DH / geometry parameters for GNKinematics
 RemoteAPI.zip            Bundled client (ipython client + GNKinematics + RobotDefinitions); served from viewer
-robot_config.json        Meca500 R3 device config
+meca500_config.json      Meca500 R3 device config
 i16_config.json          i16 diffractometer device config
 i19_config.json          i19 kappa diffractometer device config
 gp225_config.json        Yaskawa GP225 device config
