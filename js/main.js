@@ -45,6 +45,7 @@ import {
   selectSTL, deselectSTL, setSTLTransformMode, setSTLParent,
 } from './stl.js';
 import { checkCollisions, clearCollisionHighlights, initCollisionWorker } from './collision.js';
+import { initVR, updateVR } from './vr.js';
 import {
   wsConnect, initWsInfoPanel, registerSetActiveDevice, registerAvailableConfigs,
 } from './websocket.js';
@@ -81,7 +82,7 @@ const tgtPosEl = document.getElementById('tgtPos');
 const ikErrEl  = document.getElementById('ikErr');
 
 function animate() {
-  requestAnimationFrame(animate);
+  updateVR();
 
   if (State.activeDevice) {
     if (State.activeDevice.ikMode) {
@@ -125,25 +126,30 @@ function animate() {
 
   checkCollisions();
 
-  // Camera snap animation
-  const currentSnapAnim = snapAnim; // read live export
-  if (currentSnapAnim) {
-    currentSnapAnim.t = Math.min(1, currentSnapAnim.t + snapClock.getDelta() / 0.4);
-    const t = easeNavSnap(currentSnapAnim.t);
-    State.activeCamera.position.lerpVectors(currentSnapAnim.sp, currentSnapAnim.ep, t);
-    State.activeCamera.up.lerpVectors(currentSnapAnim.su, currentSnapAnim.eu, t).normalize();
-    if (currentSnapAnim.t >= 1) {
-      setSnapAnim(null); State.orbitControls.enabled = true;
-      if (State.orthoOn) updateOrthoFrustum();
+  if (!State.vrActive) {
+    // Camera snap animation
+    const currentSnapAnim = snapAnim;
+    if (currentSnapAnim) {
+      currentSnapAnim.t = Math.min(1, currentSnapAnim.t + snapClock.getDelta() / 0.4);
+      const t = easeNavSnap(currentSnapAnim.t);
+      State.activeCamera.position.lerpVectors(currentSnapAnim.sp, currentSnapAnim.ep, t);
+      State.activeCamera.up.lerpVectors(currentSnapAnim.su, currentSnapAnim.eu, t).normalize();
+      if (currentSnapAnim.t >= 1) {
+        setSnapAnim(null); State.orbitControls.enabled = true;
+        if (State.orthoOn) updateOrthoFrustum();
+      }
+    } else {
+      snapClock.getDelta();
     }
-  } else {
-    snapClock.getDelta();
+    State.orbitControls.update();
   }
 
-  State.orbitControls.update();
   State.renderer.render(State.scene, State.activeCamera);
-  State.labelRenderer.render(State.scene, State.activeCamera);
-  renderNavGizmo();
+
+  if (!State.vrActive) {
+    State.labelRenderer.render(State.scene, State.activeCamera);
+    renderNavGizmo();
+  }
 }
 
 // ============================================================
@@ -951,8 +957,11 @@ document.getElementById('loadSceneFile').addEventListener('change', async (e) =>
   e.target.value = '';
 });
 
+// Start VR support
+initVR();
+
 // Start render loop
-animate();
+State.renderer.setAnimationLoop(animate);
 
 // Start WebSocket
 wsConnect();
