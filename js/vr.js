@@ -15,7 +15,9 @@ let savedCamPos, savedCamQuat, savedTarget;
 let activeGrab = null;
 const selecting = new Set();
 
-export function initVR() {
+export async function initVR() {
+  if (!navigator.xr || !await navigator.xr.isSessionSupported('immersive-vr')) return;
+
   const renderer = State.renderer;
   renderer.xr.enabled = true;
 
