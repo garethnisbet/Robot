@@ -23,7 +23,16 @@ export async function initVR() {
 
   const btn = VRButton.createButton(renderer);
   btn.style.zIndex = '9999';
+  btn.style.transition = 'opacity 1s ease';
   document.body.appendChild(btn);
+
+  setTimeout(() => {
+    const text = btn.textContent || btn.innerHTML || '';
+    if (!text.includes('ENTER VR') && !text.includes('EXIT VR')) {
+      btn.style.opacity = '0';
+      setTimeout(() => { btn.style.display = 'none'; }, 1000);
+    }
+  }, 10000);
 
   const rig = new THREE.Group();
   rig.name = 'VRCameraRig';

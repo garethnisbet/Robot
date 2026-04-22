@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import { STLLoader }  from 'three/addons/loaders/STLLoader.js';
 import { OBJLoader }  from 'three/addons/loaders/OBJLoader.js';
+import { MTLLoader }  from 'three/addons/loaders/MTLLoader.js';
 import { PLYLoader }  from 'three/addons/loaders/PLYLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
@@ -229,7 +230,9 @@ export async function restoreSTLsFromState(records) {
 // ============================================================
 export function _mergeObject3D(object3D) {
   const chunks = [];
+  const colorChunks = [];
   let totalVerts = 0;
+  let hasNonWhite = false;
   object3D.updateWorldMatrix(true, true);
   object3D.traverse(child => {
     if (!child.isMesh || !child.geometry) return;
@@ -246,6 +249,28 @@ export function _mergeObject3D(object3D) {
       arr[i * 3 + 2] = pos.getZ(i);
     }
     chunks.push(arr);
+
+    const colors = new Float32Array(pos.count * 3);
+    const existingColors = geo.getAttribute('color');
+    if (existingColors) {
+      for (let i = 0; i < pos.count; i++) {
+        colors[i * 3]     = existingColors.getX(i);
+        colors[i * 3 + 1] = existingColors.getY(i);
+        colors[i * 3 + 2] = existingColors.getZ(i);
+      }
+      hasNonWhite = true;
+    } else {
+      const mat = child.material;
+      const c = (mat && mat.color) ? mat.color : new THREE.Color(1, 1, 1);
+      if (c.r < 0.99 || c.g < 0.99 || c.b < 0.99) hasNonWhite = true;
+      for (let i = 0; i < pos.count; i++) {
+        colors[i * 3]     = c.r;
+        colors[i * 3 + 1] = c.g;
+        colors[i * 3 + 2] = c.b;
+      }
+    }
+    colorChunks.push(colors);
+
     totalVerts += pos.count;
   });
   const merged = new THREE.BufferGeometry();
@@ -257,6 +282,16 @@ export function _mergeObject3D(object3D) {
       offset += chunk.length;
     }
     merged.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+    if (hasNonWhite) {
+      const colorsArr = new Float32Array(totalVerts * 3);
+      let cOffset = 0;
+      for (const cc of colorChunks) {
+        colorsArr.set(cc, cOffset);
+        cOffset += cc.length;
+      }
+      merged.setAttribute('color', new THREE.BufferAttribute(colorsArr, 3));
+    }
   }
   merged.computeVertexNormals();
   return merged;
@@ -314,9 +349,12 @@ export function _addPointsToScene(geometry, buffer, name, color, stlId, transfor
 export function _addMeshToScene(geometry, buffer, fileType, name, color, stlId, transforms) {
   geometry.boundsTree = new MeshBVH(geometry);
 
+  const hasVertexColors = geometry.hasAttribute('color');
   const material = new THREE.MeshStandardMaterial({
-    color, metalness: 0.3, roughness: 0.6,
+    color: hasVertexColors ? 0xffffff : color,
+    metalness: 0.3, roughness: 0.6,
     transparent: true, opacity: 0.85,
+    vertexColors: hasVertexColors,
   });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.castShadow = true;
@@ -377,11 +415,26 @@ export function loadSTLFile(file) {
   reader.readAsArrayBuffer(file);
 }
 
-export function loadOBJFile(file) {
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    const text = e.target.result;
-    const group = objLoader.parse(text);
+export function loadOBJFile(file, mtlFile) {
+  const readText = f => new Promise(resolve => {
+    const r = new FileReader();
+    r.onload = e => resolve(e.target.result);
+    r.readAsText(f);
+  });
+
+  const doLoad = async () => {
+    const text = await readText(file);
+    const loader = new OBJLoader();
+
+    if (mtlFile) {
+      const mtlText = await readText(mtlFile);
+      const mtlLoader = new MTLLoader();
+      const materials = mtlLoader.parse(mtlText);
+      materials.preload();
+      loader.setMaterials(materials);
+    }
+
+    const group = loader.parse(text);
     const geometry = _mergeObject3D(group);
     const buffer = new TextEncoder().encode(text).buffer;
     const baseName = file.name.replace(/\.obj$/i, '');
@@ -389,7 +442,7 @@ export function loadOBJFile(file) {
     const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
     _addMeshToScene(geometry, buffer, 'obj', baseName, color, stlId, null);
   };
-  reader.readAsText(file);
+  doLoad();
 }
 
 export function loadPLYFile(file) {

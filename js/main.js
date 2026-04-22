@@ -423,11 +423,21 @@ document.getElementById('stlBtn').addEventListener('click', () => {
 });
 
 document.getElementById('stlFile').addEventListener('change', (e) => {
-  for (const file of e.target.files) {
+  const files = [...e.target.files];
+  const mtlFiles = new Map();
+  for (const f of files) {
+    if (f.name.toLowerCase().endsWith('.mtl'))
+      mtlFiles.set(f.name.toLowerCase(), f);
+  }
+  for (const file of files) {
     const ext = file.name.split('.').pop().toLowerCase();
-    if (ext === 'stl')                   loadSTLFile(file);
-    else if (ext === 'obj')              loadOBJFile(file);
-    else if (ext === 'ply')              loadPLYFile(file);
+    if (ext === 'mtl') continue;
+    if (ext === 'stl')                        loadSTLFile(file);
+    else if (ext === 'obj') {
+      const mtlRef = file.name.replace(/\.obj$/i, '.mtl').toLowerCase();
+      loadOBJFile(file, mtlFiles.get(mtlRef) || null);
+    }
+    else if (ext === 'ply')                   loadPLYFile(file);
     else if (ext === 'glb' || ext === 'gltf') loadGLBFile(file);
   }
   e.target.value = '';

@@ -151,27 +151,32 @@ sun.shadow.camera.near = 0.1;
 sun.shadow.camera.far = 20;
 sun.shadow.camera.left = sun.shadow.camera.bottom = -4;
 sun.shadow.camera.right = sun.shadow.camera.top = 4;
+sun.shadow.bias = -0.002;
+sun.shadow.normalBias = 0.02;
 scene.add(sun);
 
-const fill = new THREE.DirectionalLight(0xffffff, 0.8);
-fill.position.set(-0.886, 1.022, 0.668);
+// Three-point studio lighting
+const key = new THREE.SpotLight(0xffffff, 80, 12, Math.PI / 5, 0.4);
+key.position.set(3, 4, 3);
+key.target.position.set(0, 0.5, 0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.bias = -0.002;
+key.shadow.normalBias = 0.02;
+scene.add(key);
+scene.add(key.target);
+
+const fill = new THREE.SpotLight(0xffffff, 30, 12, Math.PI / 4, 0.6);
+fill.position.set(-3, 3, 2);
+fill.target.position.set(0, 0.5, 0);
 scene.add(fill);
+scene.add(fill.target);
 
-const spot = new THREE.SpotLight(0x0058ff, 30, 9, Math.PI / 4, 0.5);
-spot.position.set(-0.402, 3.129, 4.995);
-scene.add(spot);
-
-const spot2 = new THREE.SpotLight(0x0058ff, 101.25, 9, Math.PI / 4, 0.5);
-spot2.position.set(-4.995, 3.0, -0.402);
-spot2.target.position.set(0, 0.5, 0);
-scene.add(spot2);
-scene.add(spot2.target);
-
-const spot3 = new THREE.SpotLight(0x0058ff, 101.25, 9, Math.PI / 4, 0.5);
-spot3.position.set(4.995, 3.0, 0.402);
-spot3.target.position.set(0, 0.5, 0);
-scene.add(spot3);
-scene.add(spot3.target);
+const rim = new THREE.SpotLight(0xffffff, 60, 12, Math.PI / 5, 0.4);
+rim.position.set(-1, 4, -4);
+rim.target.position.set(0, 0.5, 0);
+scene.add(rim);
+scene.add(rim.target);
 
 scene.add(new THREE.AmbientLight(0x404060, 0.7));
 scene.add(new THREE.HemisphereLight(0x8888bb, 0x333344, 0.4));
