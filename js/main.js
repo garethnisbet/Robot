@@ -659,29 +659,40 @@ const configParam = new URLSearchParams(window.location.search).get('config') ||
 const SCENE_STORAGE_KEY = 'robotvis_scene';
 let restoredFromStorage = false;
 
-try {
-  const saved = localStorage.getItem(SCENE_STORAGE_KEY);
-  if (saved) {
-    const data = JSON.parse(saved);
-    if (data.version && Array.isArray(data.devices) && data.devices.length > 0) {
-      document.getElementById('loading').textContent = 'Restoring scene...';
-      await restoreScene(data);
-      restoredFromStorage = true;
-      console.log('[Auto-restore] Scene restored from localStorage');
+const MAX_RESTORE_ATTEMPTS = 3;
+const saved = localStorage.getItem(SCENE_STORAGE_KEY);
+
+if (saved) {
+  let data;
+  try { data = JSON.parse(saved); } catch (_) { data = null; }
+
+  if (data && data.version && Array.isArray(data.devices) && data.devices.length > 0) {
+    for (let attempt = 1; attempt <= MAX_RESTORE_ATTEMPTS && !restoredFromStorage; attempt++) {
+      try {
+        document.getElementById('loading').textContent =
+          attempt === 1 ? 'Restoring scene...' : `Restoring scene (attempt ${attempt}/${MAX_RESTORE_ATTEMPTS})...`;
+        await restoreScene(data);
+        restoredFromStorage = true;
+        console.log(`[Auto-restore] Scene restored from localStorage (attempt ${attempt})`);
+      } catch (err) {
+        console.warn(`[Auto-restore] Attempt ${attempt}/${MAX_RESTORE_ATTEMPTS} failed:`, err);
+        // Clean up partial restore before retrying or falling back
+        for (const dev of [...State.devices]) {
+          State.transformControls.detach();
+          State.deviceTransformControls.detach();
+          State.scene.remove(dev.rootGroup);
+        }
+        State.devices.length = 0;
+        State.resetDeviceIdCounter();
+        if (attempt < MAX_RESTORE_ATTEMPTS) {
+          await new Promise(r => setTimeout(r, 1000 * attempt));
+        }
+      }
+    }
+    if (!restoredFromStorage) {
+      console.warn('[Auto-restore] All attempts failed — saved state kept in localStorage for next load');
     }
   }
-} catch (err) {
-  console.warn('[Auto-restore] Failed, falling back to default:', err);
-  localStorage.removeItem(SCENE_STORAGE_KEY);
-  // Clean up any partial restore
-  for (const dev of [...State.devices]) {
-    State.transformControls.detach();
-    State.deviceTransformControls.detach();
-    State.scene.remove(dev.rootGroup);
-  }
-  State.devices.length = 0;
-  State.resetDeviceIdCounter();
-  restoredFromStorage = false;
 }
 
 if (!restoredFromStorage) {
@@ -746,8 +757,8 @@ window.debugEE = () => {
            R: [[m[0],m[4],m[8]],[m[1],m[5],m[9]],[m[2],m[6],m[10]]] };
 };
 
-// Auto-save scene to localStorage on page unload
-window.addEventListener('beforeunload', () => {
+// Auto-save scene to localStorage periodically and on page unload
+function autoSaveScene() {
   if (State.devices.length === 0) return;
   try {
     const payload = buildScenePayload();
@@ -755,6 +766,11 @@ window.addEventListener('beforeunload', () => {
   } catch (e) {
     console.warn('[Auto-save] Failed to save scene to localStorage:', e);
   }
+}
+setInterval(autoSaveScene, 30_000);
+window.addEventListener('beforeunload', autoSaveScene);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') autoSaveScene();
 });
 
 // Screenshot button — composite WebGL canvas with the control panel
