@@ -16,23 +16,25 @@ let activeGrab = null;
 const selecting = new Set();
 
 export async function initVR() {
-  if (!navigator.xr || !await navigator.xr.isSessionSupported('immersive-vr')) return;
-
   const renderer = State.renderer;
-  renderer.xr.enabled = true;
+
+  const vrSupported = navigator.xr &&
+    await navigator.xr.isSessionSupported('immersive-vr').catch(() => false);
+
+  renderer.xr.enabled = !!vrSupported;
 
   const btn = VRButton.createButton(renderer);
   btn.style.zIndex = '9999';
   btn.style.transition = 'opacity 1s ease';
   document.body.appendChild(btn);
 
-  setTimeout(() => {
-    const text = btn.textContent || btn.innerHTML || '';
-    if (!text.includes('ENTER VR') && !text.includes('EXIT VR')) {
+  if (!vrSupported) {
+    setTimeout(() => {
       btn.style.opacity = '0';
       setTimeout(() => { btn.style.display = 'none'; }, 1000);
-    }
-  }, 10000);
+    }, 10000);
+    return;
+  }
 
   const rig = new THREE.Group();
   rig.name = 'VRCameraRig';
