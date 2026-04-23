@@ -47,6 +47,9 @@ import argparse
 import asyncio
 import json
 import logging
+import ssl
+import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -195,22 +198,102 @@ def create_app(config_path=None):
     return app
 
 
+def _make_ssl_context(certfile=None, keyfile=None):
+    """Create an SSL context, generating a self-signed cert if none provided."""
+    if certfile and keyfile:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile, keyfile)
+        return ctx
+
+    cert_dir = Path(tempfile.mkdtemp(prefix="robot-ssl-"))
+    cert_path = cert_dir / "cert.pem"
+    key_path = cert_dir / "key.pem"
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "rsa:2048",
+        "-keyout", str(key_path), "-out", str(cert_path),
+        "-days", "365", "-nodes",
+        "-subj", "/CN=localhost",
+        "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+    ], check=True, capture_output=True)
+    log.info(f"Generated self-signed certificate in {cert_dir}")
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(str(cert_path), str(key_path))
+    return ctx
+
+
+def _create_redirect_app(https_port):
+    """Tiny app that redirects all HTTP requests to HTTPS."""
+    redirect_app = web.Application()
+
+    async def redirect_to_https(request):
+        host = request.host.split(":")[0]
+        target = f"https://{host}:{https_port}{request.path_qs}"
+        raise web.HTTPMovedPermanently(target)
+
+    redirect_app.router.add_route("*", "/{path_info:.*}", redirect_to_https)
+    return redirect_app
+
+
+async def _run_dual(app, host, port, ssl_ctx):
+    """Run HTTPS on `port` and an HTTP redirect server on port-1 (or 8080)."""
+    runner = web.AppRunner(app)
+    await runner.setup()
+    https_site = web.TCPSite(runner, host, port, ssl_context=ssl_ctx)
+    await https_site.start()
+
+    http_port = port - 1 if port != 80 else 8080
+    redirect_app = _create_redirect_app(port)
+    redirect_runner = web.AppRunner(redirect_app)
+    await redirect_runner.setup()
+    http_site = web.TCPSite(redirect_runner, host, http_port)
+    await http_site.start()
+
+    log.info(f"HTTP redirect on port {http_port} -> HTTPS port {port}")
+
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await runner.cleanup()
+        await redirect_runner.cleanup()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Robot Visualisation WebSocket Server")
     parser.add_argument("--port", type=int, default=8080, help="HTTP port (default: 8080)")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
     parser.add_argument("--config", default="meca500_config.json",
                         help="Path to robot config JSON (default: meca500_config.json)")
+    parser.add_argument("--ssl", action="store_true", default=False,
+                        help="Enable HTTPS (auto-generates self-signed cert if --cert/--key not given)")
+    parser.add_argument("--cert", default=None, help="Path to SSL certificate file")
+    parser.add_argument("--key", default=None, help="Path to SSL private key file")
     args = parser.parse_args()
 
+    ssl_ctx = None
+    if args.ssl or args.cert:
+        ssl_ctx = _make_ssl_context(args.cert, args.key)
+
     app = create_app(config_path=args.config)
-    log.info(f"Starting server on http://{args.host}:{args.port}")
     config_name = Path(args.config).name
-    log.info(f"Open http://localhost:{args.port}/?config={config_name} in your browser")
-    log.info(f"WebSocket API at ws://localhost:{args.port}/ws")
-    log.info(f"Active sessions at http://localhost:{args.port}/sessions")
-    log.info(f"Robot config: {args.config}")
-    web.run_app(app, host=args.host, port=args.port, print=None)
+
+    if ssl_ctx:
+        https_port = args.port
+        http_port = args.port - 1 if args.port != 80 else 8080
+        log.info(f"Starting HTTPS server on https://{args.host}:{https_port}")
+        log.info(f"Starting HTTP redirect on http://{args.host}:{http_port}")
+        log.info(f"Open https://localhost:{https_port}/?config={config_name} in your browser")
+        log.info(f"  (or http://localhost:{http_port} — redirects to HTTPS)")
+        log.info(f"WebSocket API at wss://localhost:{https_port}/ws")
+        log.info(f"Robot config: {args.config}")
+        asyncio.run(_run_dual(app, args.host, https_port, ssl_ctx))
+    else:
+        log.info(f"Starting server on http://{args.host}:{args.port}")
+        log.info(f"Open http://localhost:{args.port}/?config={config_name} in your browser")
+        log.info(f"WebSocket API at ws://localhost:{args.port}/ws")
+        log.info(f"Active sessions at http://localhost:{args.port}/sessions")
+        log.info(f"Robot config: {args.config}")
+        web.run_app(app, host=args.host, port=args.port, print=None)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,23 @@
+// ============================================================
+// js/vr.js — WebXR VR interaction (Meta Quest controller conventions)
+//
+// Controller mapping (Meta Quest guidelines):
+//   Trigger (select)    = ray-select: UI interaction, device selection
+//   Grip (squeeze)      = grab objects (STL meshes, IK target)
+//   Left thumbstick     = locomotion: up=teleport arc, L/R=snap turn
+//   Right thumbstick    = scroll panel (Y), snap turn (X) when not on panel
+//   B / Y button        = toggle / reposition VR panel
+//   A / X button        = reset to home position
+// ============================================================
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+import { HTMLMesh } from 'three/addons/interactive/HTMLMesh.js';
+import { InteractiveGroup } from 'three/addons/interactive/InteractiveGroup.js';
 import * as State from './state.js';
 import { setOrtho } from './scene.js';
+import { findDeviceForObject, setActiveDevice } from './panel.js';
+import { updateFK } from './kinematics.js';
 
 const _raycaster = new THREE.Raycaster();
 const _tempMatrix = new THREE.Matrix4();
@@ -11,9 +26,34 @@ const _groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const _intersection = new THREE.Vector3();
 
 let teleportMarker;
+let teleportArc;
 let savedCamPos, savedCamQuat, savedTarget;
 let activeGrab = null;
-const selecting = new Set();
+
+const controllers = [];
+
+// VR panel
+let vrPanelMesh = null;
+let interactiveGroup = null;
+let panelVisible = false;
+let lastPanelRefresh = 0;
+const PANEL_REFRESH_INTERVAL = 500;
+
+// Locomotion state
+let teleportActive = false;
+let teleportController = null;
+
+// Gamepad state for edge-detection
+const prevButtons = [{}, {}]; // keyed by button index
+const STICK_DEADZONE = 0.2;
+const SNAP_ANGLE = Math.PI / 6; // 30 degrees
+let snapTurnCooldown = 0;
+const SCROLL_SPEED = 400;
+
+// Teleport arc constants
+const ARC_SEGMENTS = 30;
+const ARC_GRAVITY = -9.8;
+const ARC_VELOCITY = 5.0;
 
 export async function initVR() {
   const renderer = State.renderer;
@@ -46,6 +86,7 @@ export async function initVR() {
 
   for (let i = 0; i < 2; i++) {
     const controller = renderer.xr.getController(i);
+    controller.userData.index = i;
     rig.add(controller);
 
     const grip = renderer.xr.getControllerGrip(i);
@@ -57,18 +98,23 @@ export async function initVR() {
       new THREE.Vector3(0, 0, -5),
     ]);
     const color = i === 0 ? 0x4488ff : 0x44ff88;
-    controller.add(new THREE.Line(rayGeo,
-      new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.5 })));
+    const rayLine = new THREE.Line(rayGeo,
+      new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.5 }));
+    rayLine.name = 'vr-ray';
+    controller.add(rayLine);
 
-    controller.addEventListener('selectstart', () => selecting.add(controller));
-    controller.addEventListener('selectend', () => {
-      onTriggerRelease(controller);
-      selecting.delete(controller);
-    });
-    controller.addEventListener('squeezestart', () => onGrabStart(controller));
-    controller.addEventListener('squeezeend', () => onGrabEnd(controller));
+    // Trigger = ray select (UI, device selection)
+    controller.addEventListener('selectstart', () => onTriggerStart(controller));
+    controller.addEventListener('selectend', () => onTriggerEnd(controller));
+
+    // Grip = grab objects
+    controller.addEventListener('squeezestart', () => onGripStart(controller));
+    controller.addEventListener('squeezeend', () => onGripEnd(controller));
+
+    controllers.push(controller);
   }
 
+  // Teleport marker
   const ringGeo = new THREE.RingGeometry(0.05, 0.09, 32);
   ringGeo.rotateX(-Math.PI / 2);
   const discGeo = new THREE.CircleGeometry(0.05, 32);
@@ -81,9 +127,29 @@ export async function initVR() {
   teleportMarker.visible = false;
   State.scene.add(teleportMarker);
 
+  // Teleport arc line
+  const arcPositions = new Float32Array(ARC_SEGMENTS * 3);
+  const arcGeo = new THREE.BufferGeometry();
+  arcGeo.setAttribute('position', new THREE.BufferAttribute(arcPositions, 3));
+  teleportArc = new THREE.Line(arcGeo,
+    new THREE.LineBasicMaterial({ color: 0x44ff88, transparent: true, opacity: 0.6 }));
+  teleportArc.frustumCulled = false;
+  teleportArc.visible = false;
+  State.scene.add(teleportArc);
+
+  // Interactive group for VR panel (HTMLMesh must be a direct child)
+  interactiveGroup = new InteractiveGroup();
+  interactiveGroup.listenToXRControllerEvents(controllers[0]);
+  interactiveGroup.listenToXRControllerEvents(controllers[1]);
+  State.scene.add(interactiveGroup);
+
   renderer.xr.addEventListener('sessionstart', onSessionStart);
   renderer.xr.addEventListener('sessionend', onSessionEnd);
 }
+
+// ============================================================
+// Session lifecycle
+// ============================================================
 
 function onSessionStart() {
   State.setVRActive(true);
@@ -98,6 +164,8 @@ function onSessionStart() {
   State.camera.position.set(0, 0, 0);
   State.camera.quaternion.identity();
   State.orbitControls.enabled = false;
+
+  createVRPanel();
 }
 
 function onSessionEnd() {
@@ -114,8 +182,76 @@ function onSessionEnd() {
   State.orbitControls.update();
 
   teleportMarker.visible = false;
+  teleportArc.visible = false;
+  teleportActive = false;
   activeGrab = null;
+  destroyVRPanel();
 }
+
+// ============================================================
+// VR Panel (HTMLMesh of the control panel)
+// ============================================================
+
+function createVRPanel() {
+  destroyVRPanel();
+
+  const panelEl = document.getElementById('panel');
+  if (!panelEl) return;
+
+  vrPanelMesh = new HTMLMesh(panelEl);
+  vrPanelMesh.scale.setScalar(2);
+  interactiveGroup.add(vrPanelMesh);
+  positionPanelInFront();
+  vrPanelMesh.visible = true;
+  panelVisible = true;
+}
+
+function destroyVRPanel() {
+  if (vrPanelMesh) {
+    interactiveGroup.remove(vrPanelMesh);
+    vrPanelMesh.dispose();
+    vrPanelMesh = null;
+  }
+  panelVisible = false;
+}
+
+function positionPanelInFront() {
+  if (!vrPanelMesh) return;
+
+  const cam = State.camera;
+  const camWorld = new THREE.Vector3();
+  const camDir = new THREE.Vector3();
+  cam.getWorldPosition(camWorld);
+  cam.getWorldDirection(camDir);
+
+  camDir.y = 0;
+  camDir.normalize();
+  const pos = camWorld.clone().add(camDir.multiplyScalar(1.2));
+  pos.y = camWorld.y - 0.2;
+
+  vrPanelMesh.position.copy(pos);
+  vrPanelMesh.lookAt(camWorld.x, pos.y, camWorld.z);
+}
+
+function toggleVRPanel() {
+  if (!vrPanelMesh) {
+    createVRPanel();
+    return;
+  }
+  panelVisible = !panelVisible;
+  vrPanelMesh.visible = panelVisible;
+  if (panelVisible) positionPanelInFront();
+}
+
+function refreshVRPanel() {
+  if (!vrPanelMesh || !panelVisible) return;
+  destroyVRPanel();
+  createVRPanel();
+}
+
+// ============================================================
+// Raycasting helpers
+// ============================================================
 
 function castRay(controller) {
   _tempMatrix.identity().extractRotation(controller.matrixWorld);
@@ -123,39 +259,187 @@ function castRay(controller) {
   _raycaster.ray.direction.set(0, 0, -1).applyMatrix4(_tempMatrix);
 }
 
-function onTriggerRelease(controller) {
-  if (!teleportMarker.visible) return;
-
-  const rig = State.vrRig;
-  State.camera.getWorldPosition(_worldPos);
-  rig.position.x += teleportMarker.position.x - _worldPos.x;
-  rig.position.z += teleportMarker.position.z - _worldPos.z;
-  teleportMarker.visible = false;
+function getAllDeviceMeshes() {
+  const meshes = [];
+  for (const dev of State.devices) {
+    for (const link of dev.robotLinkMeshes) {
+      for (const mesh of link.meshes) meshes.push(mesh);
+    }
+    for (const mesh of dev.staticMeshes) meshes.push(mesh);
+  }
+  return meshes;
 }
 
-function onGrabStart(controller) {
+function isPointingAtPanel(controller) {
+  if (!vrPanelMesh || !panelVisible) return false;
+  castRay(controller);
+  return _raycaster.intersectObject(vrPanelMesh, false).length > 0;
+}
+
+// ============================================================
+// Teleport arc (parabolic, Meta Quest style)
+// ============================================================
+
+function computeArc(controller) {
+  _tempMatrix.identity().extractRotation(controller.matrixWorld);
+  const origin = new THREE.Vector3().setFromMatrixPosition(controller.matrixWorld);
+  const dir = new THREE.Vector3(0, 0, -1).applyMatrix4(_tempMatrix).normalize();
+
+  const vel = dir.multiplyScalar(ARC_VELOCITY);
+  const dt = 0.05;
+  const pts = [];
+  const pos = origin.clone();
+
+  for (let i = 0; i < ARC_SEGMENTS; i++) {
+    pts.push(pos.clone());
+    pos.x += vel.x * dt;
+    pos.y += vel.y * dt;
+    pos.z += vel.z * dt;
+    vel.y += ARC_GRAVITY * dt;
+
+    if (pos.y <= 0) {
+      pos.y = 0;
+      pts.push(pos.clone());
+      return { pts, landing: pos.clone() };
+    }
+  }
+  return { pts, landing: null };
+}
+
+function updateTeleportArc(controller) {
+  const { pts, landing } = computeArc(controller);
+
+  const posAttr = teleportArc.geometry.attributes.position;
+  for (let i = 0; i < ARC_SEGMENTS; i++) {
+    const p = i < pts.length ? pts[i] : pts[pts.length - 1];
+    posAttr.setXYZ(i, p.x, p.y, p.z);
+  }
+  posAttr.needsUpdate = true;
+  teleportArc.geometry.setDrawRange(0, pts.length);
+  teleportArc.visible = true;
+
+  if (landing) {
+    teleportMarker.position.copy(landing);
+    teleportMarker.position.y = 0.005;
+    teleportMarker.visible = true;
+  } else {
+    teleportMarker.visible = false;
+  }
+}
+
+// ============================================================
+// Trigger (select) — ray-based UI & scene interaction
+// ============================================================
+
+function onTriggerStart(controller) {
+  castRay(controller);
+
+  // Panel interaction — let InteractiveGroup handle it
+  if (vrPanelMesh && panelVisible) {
+    const panelHits = _raycaster.intersectObject(vrPanelMesh, false);
+    if (panelHits.length > 0) {
+      controller.userData.hitType = 'panel';
+      return;
+    }
+  }
+
+  // STL mesh selection
+  if (State.stlSelectable) {
+    const stlMeshes = State.importedSTLs.filter(s => s.mesh.visible).map(s => s.mesh);
+    const stlHits = _raycaster.intersectObjects(stlMeshes, false);
+    if (stlHits.length > 0 && stlHits[0].distance < 10) {
+      controller.userData.hitType = 'stl';
+      return;
+    }
+  }
+
+  // Device selection
+  const deviceMeshes = getAllDeviceMeshes();
+  const deviceHits = _raycaster.intersectObjects(deviceMeshes, false);
+  if (deviceHits.length > 0 && deviceHits[0].distance < 10) {
+    const hitDev = findDeviceForObject(deviceHits[0].object);
+    if (hitDev) {
+      controller.userData.hitType = 'device';
+      if (hitDev !== State.activeDevice) {
+        setActiveDevice(hitDev);
+        refreshVRPanel();
+      }
+      return;
+    }
+  }
+
+  controller.userData.hitType = 'none';
+}
+
+function onTriggerEnd(controller) {
+  controller.userData.hitType = null;
+}
+
+// ============================================================
+// Grip (squeeze) — grab objects with either hand
+// ============================================================
+
+function onGripStart(controller) {
   if (activeGrab) return;
   castRay(controller);
 
+  // Collect all grabbable candidates
   const candidates = State.importedSTLs.filter(s => s.mesh.visible).map(s => s.mesh);
-  let hits = _raycaster.intersectObjects(candidates, false);
 
-  if (hits.length === 0 && State.activeDevice?.ikMode && State.activeDevice.ikTarget) {
-    hits = _raycaster.intersectObject(State.activeDevice.ikTarget, true);
-  }
+  // IK target: check the target sphere itself, the TransformControls gizmo
+  // handles, and a larger invisible proximity sphere for easier VR targeting
+  let ikHit = false;
+  if (State.activeDevice?.ikMode && State.activeDevice.ikTarget) {
+    const ikTarget = State.activeDevice.ikTarget;
 
-  if (hits.length > 0 && hits[0].distance < 3) {
-    let target = hits[0].object;
-    const stlEntry = State.importedSTLs.find(s => s.mesh === target);
-    if (stlEntry) {
-      target = stlEntry.mesh;
-    } else if (State.activeDevice?.ikTarget) {
-      let p = target;
-      while (p) {
-        if (p === State.activeDevice.ikTarget) { target = p; break; }
-        p = p.parent;
+    // Proximity check: is the ray within 0.08m (80mm) of the IK target center?
+    const ikWorldPos = new THREE.Vector3();
+    ikTarget.getWorldPosition(ikWorldPos);
+    const closest = new THREE.Vector3();
+    _raycaster.ray.closestPointToPoint(ikWorldPos, closest);
+    const dist = closest.distanceTo(ikWorldPos);
+    const rayDist = _raycaster.ray.origin.distanceTo(closest);
+
+    if (dist < 0.08 && rayDist < 5) {
+      ikHit = true;
+    }
+
+    // Also check the TransformControls gizmo children
+    if (!ikHit && State.transformControls.object === ikTarget) {
+      const gizmoHits = _raycaster.intersectObjects(State.transformControls.children, true);
+      if (gizmoHits.length > 0 && gizmoHits[0].distance < 5) {
+        ikHit = true;
       }
     }
+  }
+
+  if (ikHit) {
+    const ikTarget = State.activeDevice.ikTarget;
+    controller.getWorldPosition(_worldPos);
+    const objWorld = new THREE.Vector3();
+    ikTarget.getWorldPosition(objWorld);
+
+    // Store initial quaternions for rotation tracking
+    const ctrlQuat = new THREE.Quaternion();
+    controller.getWorldQuaternion(ctrlQuat);
+
+    activeGrab = {
+      controller,
+      object: ikTarget,
+      offset: objWorld.clone().sub(_worldPos),
+      isIKTarget: true,
+      startCtrlQuat: ctrlQuat,
+      startObjQuat: ikTarget.quaternion.clone(),
+    };
+    return;
+  }
+
+  // STL meshes
+  const hits = _raycaster.intersectObjects(candidates, false);
+  if (hits.length > 0 && hits[0].distance < 5) {
+    let target = hits[0].object;
+    const stlEntry = State.importedSTLs.find(s => s.mesh === target);
+    if (stlEntry) target = stlEntry.mesh;
 
     controller.getWorldPosition(_worldPos);
     const objWorld = new THREE.Vector3();
@@ -164,28 +448,149 @@ function onGrabStart(controller) {
     activeGrab = {
       controller,
       object: target,
-      offset: objWorld.sub(_worldPos),
-      isIKTarget: target === State.activeDevice?.ikTarget,
+      offset: objWorld.clone().sub(_worldPos),
+      isIKTarget: false,
     };
   }
 }
 
-function onGrabEnd(controller) {
+function onGripEnd(controller) {
   if (activeGrab?.controller === controller) activeGrab = null;
 }
+
+// ============================================================
+// Gamepad polling — thumbstick locomotion, scroll, buttons
+//
+// xr-standard gamepad per XRInputSource (Quest Touch):
+//   axes[0,1] = unmapped (always 0)
+//   axes[2]   = thumbstick X,  axes[3] = thumbstick Y  (Y: negative=forward)
+//   buttons[0] = trigger
+//   buttons[1] = squeeze/grip
+//   buttons[3] = thumbstick press
+//   buttons[4] = X (left) / A (right)
+//   buttons[5] = Y (left) / B (right)
+// ============================================================
+
+function buttonEdge(idx, btnIndex, pressed) {
+  const key = btnIndex;
+  const prev = !!prevButtons[idx][key];
+  prevButtons[idx][key] = pressed;
+  return pressed && !prev;
+}
+
+function pollGamepads(dt) {
+  const session = State.renderer.xr.getSession();
+  if (!session) return;
+
+  const panelEl = document.getElementById('panel');
+  let leftStickX = 0, leftStickY = 0;
+  let rightStickX = 0, rightStickY = 0;
+  let leftController = controllers[0];
+
+  for (let si = 0; si < session.inputSources.length; si++) {
+    const source = session.inputSources[si];
+    const gp = source.gamepad;
+    if (!gp) continue;
+    const isLeft = source.handedness === 'left';
+    // Map input source to its Three.js controller by array index
+    const controller = controllers[si];
+    if (!controller) continue;
+    const idx = si;
+
+    // xr-standard: thumbstick is axes[2,3] (axes[0,1] are unmapped on Quest)
+    const stickX = gp.axes[2] || 0;
+    const stickY = gp.axes[3] || 0;
+
+    if (isLeft) {
+      leftStickX = stickX;
+      leftStickY = stickY;
+      leftController = controller;
+    } else {
+      rightStickX = stickX;
+      rightStickY = stickY;
+    }
+
+    // B / Y button (index 5) — toggle and reposition VR panel
+    if (gp.buttons[5] && buttonEdge(idx, 5, gp.buttons[5].pressed)) {
+      toggleVRPanel();
+    }
+
+    // A / X button (index 4) — reset joints to home
+    if (gp.buttons[4] && buttonEdge(idx, 4, gp.buttons[4].pressed)) {
+      if (State.activeDevice) {
+        State.activeDevice.jointAngles.fill(0);
+        updateFK(State.activeDevice);
+        refreshVRPanel();
+      }
+    }
+  }
+
+  // Left thumbstick up = teleport arc
+  if (leftStickY < -STICK_DEADZONE) {
+    teleportActive = true;
+    teleportController = leftController;
+  } else if (teleportActive && leftStickY >= -STICK_DEADZONE) {
+    // Release — execute teleport
+    if (teleportMarker.visible) {
+      const rig = State.vrRig;
+      State.camera.getWorldPosition(_worldPos);
+      rig.position.x += teleportMarker.position.x - _worldPos.x;
+      rig.position.z += teleportMarker.position.z - _worldPos.z;
+    }
+    teleportActive = false;
+    teleportMarker.visible = false;
+    teleportArc.visible = false;
+  }
+
+  // Snap turn: left stick L/R or right stick L/R (when not scrolling)
+  if (snapTurnCooldown > 0) {
+    snapTurnCooldown -= dt;
+  } else {
+    let turnInput = 0;
+    if (Math.abs(leftStickX) > 0.6) turnInput = leftStickX;
+    else if (Math.abs(rightStickX) > 0.6 && !isPointingAtPanelAny()) turnInput = rightStickX;
+
+    if (Math.abs(turnInput) > 0.6) {
+      const angle = turnInput > 0 ? -SNAP_ANGLE : SNAP_ANGLE;
+      State.vrRig.rotateY(angle);
+      snapTurnCooldown = 0.3;
+    }
+  }
+
+  // Right thumbstick Y = scroll panel (when pointing at it)
+  if (panelEl && panelVisible && Math.abs(rightStickY) > STICK_DEADZONE) {
+    if (isPointingAtPanelAny()) {
+      panelEl.scrollTop += rightStickY * SCROLL_SPEED * dt;
+    }
+  }
+}
+
+function isPointingAtPanelAny() {
+  for (const ctrl of controllers) {
+    if (isPointingAtPanel(ctrl)) return true;
+  }
+  return false;
+}
+
+// ============================================================
+// updateVR — called each frame from animate()
+// ============================================================
+
+let lastFrameTime = 0;
 
 export function updateVR() {
   if (!State.vrActive) return;
 
-  teleportMarker.visible = false;
-  for (const ctrl of selecting) {
-    castRay(ctrl);
-    if (_raycaster.ray.intersectPlane(_groundPlane, _intersection)) {
-      teleportMarker.position.set(_intersection.x, 0.005, _intersection.z);
-      teleportMarker.visible = true;
-    }
+  const now = performance.now();
+  const dt = lastFrameTime ? Math.min((now - lastFrameTime) / 1000, 0.1) : 0.016;
+  lastFrameTime = now;
+
+  // Teleport arc preview (left thumbstick up)
+  if (teleportActive && teleportController) {
+    updateTeleportArc(teleportController);
   }
 
+  // Grab — move and rotate grabbed object with controller
   if (activeGrab) {
     activeGrab.controller.getWorldPosition(_worldPos);
     const newWorld = _worldPos.clone().add(activeGrab.offset);
@@ -193,8 +598,29 @@ export function updateVR() {
     activeGrab.object.position.copy(newWorld);
 
     if (activeGrab.isIKTarget && State.activeDevice) {
-      State.activeDevice.ikTargetQuat.copy(activeGrab.object.quaternion);
-      State.activeDevice.ikTargetEuler.setFromQuaternion(State.activeDevice.ikTargetQuat, 'YZX');
+      // Apply controller rotation delta to IK target orientation
+      const currentCtrlQuat = new THREE.Quaternion();
+      activeGrab.controller.getWorldQuaternion(currentCtrlQuat);
+      const deltaQuat = currentCtrlQuat.multiply(activeGrab.startCtrlQuat.clone().invert());
+      const newQuat = deltaQuat.multiply(activeGrab.startObjQuat);
+      activeGrab.object.quaternion.copy(newQuat);
+
+      State.activeDevice.ikTargetQuat.copy(newQuat);
+      State.activeDevice.ikTargetEuler.setFromQuaternion(newQuat, 'YZX');
+    }
+  }
+
+  // Gamepad: thumbstick locomotion, scroll, face buttons
+  pollGamepads(dt);
+
+  // Periodic panel texture refresh
+  if (vrPanelMesh && panelVisible) {
+    if (now - lastPanelRefresh > PANEL_REFRESH_INTERVAL) {
+      lastPanelRefresh = now;
+      const tex = vrPanelMesh.material.map;
+      if (tex && typeof tex.update === 'function') {
+        tex.update();
+      }
     }
   }
 }
