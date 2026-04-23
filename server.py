@@ -222,40 +222,17 @@ def _make_ssl_context(certfile=None, keyfile=None):
     return ctx
 
 
-def _create_redirect_app(https_port):
-    """Tiny app that redirects all HTTP requests to HTTPS."""
-    redirect_app = web.Application()
-
-    async def redirect_to_https(request):
-        host = request.host.split(":")[0]
-        target = f"https://{host}:{https_port}{request.path_qs}"
-        raise web.HTTPMovedPermanently(target)
-
-    redirect_app.router.add_route("*", "/{path_info:.*}", redirect_to_https)
-    return redirect_app
-
-
-async def _run_dual(app, host, port, ssl_ctx):
-    """Run HTTPS on `port` and an HTTP redirect server on port-1 (or 8080)."""
+async def _run_https(app, host, port, ssl_ctx):
+    """Run HTTPS on `port`."""
     runner = web.AppRunner(app)
     await runner.setup()
     https_site = web.TCPSite(runner, host, port, ssl_context=ssl_ctx)
     await https_site.start()
 
-    http_port = port - 1 if port != 80 else 8080
-    redirect_app = _create_redirect_app(port)
-    redirect_runner = web.AppRunner(redirect_app)
-    await redirect_runner.setup()
-    http_site = web.TCPSite(redirect_runner, host, http_port)
-    await http_site.start()
-
-    log.info(f"HTTP redirect on port {http_port} -> HTTPS port {port}")
-
     try:
         await asyncio.Event().wait()
     finally:
         await runner.cleanup()
-        await redirect_runner.cleanup()
 
 
 def main():
@@ -279,14 +256,11 @@ def main():
 
     if ssl_ctx:
         https_port = args.port
-        http_port = args.port - 1 if args.port != 80 else 8080
         log.info(f"Starting HTTPS server on https://{args.host}:{https_port}")
-        log.info(f"Starting HTTP redirect on http://{args.host}:{http_port}")
         log.info(f"Open https://localhost:{https_port}/?config={config_name} in your browser")
-        log.info(f"  (or http://localhost:{http_port} — redirects to HTTPS)")
         log.info(f"WebSocket API at wss://localhost:{https_port}/ws")
         log.info(f"Robot config: {args.config}")
-        asyncio.run(_run_dual(app, args.host, https_port, ssl_ctx))
+        asyncio.run(_run_https(app, args.host, https_port, ssl_ctx))
     else:
         log.info(f"Starting server on http://{args.host}:{args.port}")
         log.info(f"Open http://localhost:{args.port}/?config={config_name} in your browser")

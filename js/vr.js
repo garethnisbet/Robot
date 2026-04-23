@@ -18,6 +18,7 @@ import * as State from './state.js';
 import { setOrtho } from './scene.js';
 import { findDeviceForObject, setActiveDevice } from './panel.js';
 import { updateFK } from './kinematics.js';
+import { selectSTL } from './stl.js';
 
 const _raycaster = new THREE.Raycaster();
 const _tempMatrix = new THREE.Matrix4();
@@ -67,6 +68,14 @@ export async function initVR() {
   btn.style.zIndex = '9999';
   btn.style.transition = 'opacity 1s ease';
   document.body.appendChild(btn);
+
+  const exitBtn = document.getElementById('exitVRBtn');
+  if (exitBtn) {
+    exitBtn.addEventListener('click', () => {
+      const session = renderer.xr.getSession();
+      if (session) session.end();
+    });
+  }
 
   if (!vrSupported) {
     setTimeout(() => {
@@ -165,11 +174,17 @@ function onSessionStart() {
   State.camera.quaternion.identity();
   State.orbitControls.enabled = false;
 
+  const exitBtn = document.getElementById('exitVRBtn');
+  if (exitBtn) exitBtn.style.display = '';
+
   createVRPanel();
 }
 
 function onSessionEnd() {
   State.setVRActive(false);
+
+  const exitBtn = document.getElementById('exitVRBtn');
+  if (exitBtn) exitBtn.style.display = 'none';
 
   const rig = State.vrRig;
   State.camera.position.copy(savedCamPos);
@@ -192,12 +207,35 @@ function onSessionEnd() {
 // VR Panel (HTMLMesh of the control panel)
 // ============================================================
 
+// Overflow styles stripped for html2canvas compatibility; restored on session end
+const _vrOverflowSaved = [];
+
+function _stripOverflow() {
+  const ids = ['panel', 'device-list', 'stl-list'];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    _vrOverflowSaved.push({ el, overflowY: el.style.overflowY, maxHeight: el.style.maxHeight });
+    el.style.overflowY = 'visible';
+    el.style.maxHeight = 'none';
+  }
+}
+
+function _restoreOverflow() {
+  for (const { el, overflowY, maxHeight } of _vrOverflowSaved) {
+    el.style.overflowY = overflowY;
+    el.style.maxHeight = maxHeight;
+  }
+  _vrOverflowSaved.length = 0;
+}
+
 function createVRPanel() {
   destroyVRPanel();
 
   const panelEl = document.getElementById('panel');
   if (!panelEl) return;
 
+  _stripOverflow();
   vrPanelMesh = new HTMLMesh(panelEl);
   vrPanelMesh.scale.setScalar(2);
   interactiveGroup.add(vrPanelMesh);
@@ -212,6 +250,7 @@ function destroyVRPanel() {
     vrPanelMesh.dispose();
     vrPanelMesh = null;
   }
+  _restoreOverflow();
   panelVisible = false;
 }
 
@@ -238,9 +277,13 @@ function toggleVRPanel() {
     createVRPanel();
     return;
   }
-  panelVisible = !panelVisible;
-  vrPanelMesh.visible = panelVisible;
-  if (panelVisible) positionPanelInFront();
+  if (panelVisible) {
+    panelVisible = false;
+    vrPanelMesh.visible = false;
+  } else {
+    destroyVRPanel();
+    createVRPanel();
+  }
 }
 
 function refreshVRPanel() {
@@ -346,8 +389,21 @@ function onTriggerStart(controller) {
   // STL mesh selection
   if (State.stlSelectable) {
     const stlMeshes = State.importedSTLs.filter(s => s.mesh.visible).map(s => s.mesh);
-    const stlHits = _raycaster.intersectObjects(stlMeshes, false);
+    const stlHits = _raycaster.intersectObjects(stlMeshes, true);
     if (stlHits.length > 0 && stlHits[0].distance < 10) {
+      const hitMesh = stlHits[0].object;
+      const entry = State.importedSTLs.find(s => {
+        if (s.mesh === hitMesh) return true;
+        let found = false;
+        s.mesh.traverse(c => { if (c === hitMesh) found = true; });
+        return found;
+      });
+      if (entry) {
+        const listItems = document.querySelectorAll('.stl-item');
+        const idx = State.importedSTLs.indexOf(entry);
+        selectSTL(entry, listItems[idx] || null);
+        refreshVRPanel();
+      }
       controller.userData.hitType = 'stl';
       return;
     }
@@ -435,22 +491,59 @@ function onGripStart(controller) {
   }
 
   // STL meshes
-  const hits = _raycaster.intersectObjects(candidates, false);
+  const hits = _raycaster.intersectObjects(candidates, true);
   if (hits.length > 0 && hits[0].distance < 5) {
-    let target = hits[0].object;
-    const stlEntry = State.importedSTLs.find(s => s.mesh === target);
-    if (stlEntry) target = stlEntry.mesh;
+    const hitObj = hits[0].object;
+    let target = null;
+    for (const s of State.importedSTLs) {
+      if (s.mesh === hitObj) { target = s.mesh; break; }
+      let found = false;
+      s.mesh.traverse(c => { if (c === hitObj) found = true; });
+      if (found) { target = s.mesh; break; }
+    }
+    if (!target) target = hitObj;
 
     controller.getWorldPosition(_worldPos);
     const objWorld = new THREE.Vector3();
     target.getWorldPosition(objWorld);
+
+    const ctrlQuat = new THREE.Quaternion();
+    controller.getWorldQuaternion(ctrlQuat);
 
     activeGrab = {
       controller,
       object: target,
       offset: objWorld.clone().sub(_worldPos),
       isIKTarget: false,
+      startCtrlQuat: ctrlQuat,
+      startObjQuat: target.quaternion.clone(),
     };
+    return;
+  }
+
+  // Device base — grab rootGroup to translate/rotate the whole device
+  const deviceMeshes = getAllDeviceMeshes();
+  const devHits = _raycaster.intersectObjects(deviceMeshes, false);
+  if (devHits.length > 0 && devHits[0].distance < 5) {
+    const hitDev = findDeviceForObject(devHits[0].object);
+    if (hitDev) {
+      const target = hitDev.rootGroup;
+      controller.getWorldPosition(_worldPos);
+      const objWorld = new THREE.Vector3();
+      target.getWorldPosition(objWorld);
+
+      const ctrlQuat = new THREE.Quaternion();
+      controller.getWorldQuaternion(ctrlQuat);
+
+      activeGrab = {
+        controller,
+        object: target,
+        offset: objWorld.clone().sub(_worldPos),
+        isIKTarget: false,
+        startCtrlQuat: ctrlQuat,
+        startObjQuat: target.quaternion.clone(),
+      };
+    }
   }
 }
 
@@ -597,16 +690,17 @@ export function updateVR() {
     if (activeGrab.object.parent) activeGrab.object.parent.worldToLocal(newWorld);
     activeGrab.object.position.copy(newWorld);
 
-    if (activeGrab.isIKTarget && State.activeDevice) {
-      // Apply controller rotation delta to IK target orientation
+    if (activeGrab.startCtrlQuat) {
       const currentCtrlQuat = new THREE.Quaternion();
       activeGrab.controller.getWorldQuaternion(currentCtrlQuat);
       const deltaQuat = currentCtrlQuat.multiply(activeGrab.startCtrlQuat.clone().invert());
       const newQuat = deltaQuat.multiply(activeGrab.startObjQuat);
       activeGrab.object.quaternion.copy(newQuat);
 
-      State.activeDevice.ikTargetQuat.copy(newQuat);
-      State.activeDevice.ikTargetEuler.setFromQuaternion(newQuat, 'YZX');
+      if (activeGrab.isIKTarget && State.activeDevice) {
+        State.activeDevice.ikTargetQuat.copy(newQuat);
+        State.activeDevice.ikTargetEuler.setFromQuaternion(newQuat, 'YZX');
+      }
     }
   }
 
