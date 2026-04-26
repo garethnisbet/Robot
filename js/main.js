@@ -299,6 +299,16 @@ document.getElementById('devSpaceBtn').addEventListener('click', () => {
   btn.classList.toggle('active', !isLocal);
 });
 
+document.getElementById('devResetPos').addEventListener('click', () => {
+  if (!State.activeDevice) return;
+  State.activeDevice.rootGroup.position.set(0, 0, 0);
+});
+document.getElementById('devResetOri').addEventListener('click', () => {
+  if (!State.activeDevice) return;
+  State.activeDevice.rootGroup.rotation.set(0, 0, 0);
+  State.activeDevice.rootGroup.quaternion.identity();
+});
+
 // Device parent dropdown
 document.getElementById('deviceParentSelect').addEventListener('change', (e) => {
   if (!State.activeDevice) return;
@@ -578,7 +588,17 @@ State.renderer.domElement.addEventListener('click', (e) => {
 window.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
-  if (State.selectedSTL) {
+  if (State.moveDeviceActive) {
+    if (e.key === 't' || e.key === 'T') {
+      State.deviceTransformControls.setMode('translate');
+      document.getElementById('devModeT').classList.add('active');
+      document.getElementById('devModeR').classList.remove('active');
+    } else if (e.key === 'r' || e.key === 'R') {
+      State.deviceTransformControls.setMode('rotate');
+      document.getElementById('devModeR').classList.add('active');
+      document.getElementById('devModeT').classList.remove('active');
+    }
+  } else if (State.selectedSTL) {
     if (e.key === 't' || e.key === 'T') {
       setSTLTransformMode('translate');
     } else if (e.key === 'r' || e.key === 'R') {

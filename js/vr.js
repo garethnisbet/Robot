@@ -6,11 +6,11 @@
 //   Grip (squeeze)      = grab objects (STL meshes, IK target)
 //   Left thumbstick     = locomotion: up=teleport arc, L/R=snap turn
 //   Right thumbstick    = scroll panel (Y), snap turn (X) when not on panel
+//   Thumbstick press    = toggle passthrough (AR camera feed)
 //   B / Y button        = toggle / reposition VR panel
 //   A / X button        = reset to home position
 // ============================================================
 import * as THREE from 'three';
-import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { HTMLMesh } from 'three/addons/interactive/HTMLMesh.js';
 import { InteractiveGroup } from 'three/addons/interactive/InteractiveGroup.js';
@@ -30,6 +30,7 @@ let teleportMarker;
 let teleportArc;
 let savedCamPos, savedCamQuat, savedTarget;
 let activeGrab = null;
+let bgSphere = null;
 
 const controllers = [];
 
@@ -59,30 +60,41 @@ const ARC_VELOCITY = 5.0;
 export async function initVR() {
   const renderer = State.renderer;
 
-  const vrSupported = navigator.xr &&
-    await navigator.xr.isSessionSupported('immersive-vr').catch(() => false);
+  if (!navigator.xr) return;
 
-  renderer.xr.enabled = !!vrSupported;
+  const arSupported = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
+  const vrSupported = await navigator.xr.isSessionSupported('immersive-vr').catch(() => false);
+  const xrMode = arSupported ? 'immersive-ar' : vrSupported ? 'immersive-vr' : null;
 
-  const btn = VRButton.createButton(renderer);
-  btn.style.zIndex = '9999';
-  btn.style.transition = 'opacity 1s ease';
+  renderer.xr.enabled = !!xrMode;
+
+  if (!xrMode) return;
+
+  let currentSession = null;
+  const btn = document.createElement('button');
+  btn.textContent = 'ENTER VR';
+  btn.style.cssText = 'position:absolute;bottom:20px;left:calc(50% - 50px);width:100px;padding:12px 6px;border:1px solid #fff;border-radius:4px;background:rgba(0,0,0,0.1);color:#fff;font:normal 13px sans-serif;text-align:center;cursor:pointer;opacity:0.5;z-index:9999;transition:opacity 1s ease;';
+  btn.onmouseenter = () => { btn.style.opacity = '1.0'; };
+  btn.onmouseleave = () => { btn.style.opacity = '0.5'; };
+
+  btn.onclick = async () => {
+    if (currentSession) { currentSession.end(); return; }
+    const sessionOpts = {
+      optionalFeatures: ['local-floor', 'bounded-floor', 'layers', 'hand-tracking'],
+    };
+    const session = await navigator.xr.requestSession(xrMode, sessionOpts);
+    session.addEventListener('end', () => { currentSession = null; btn.textContent = 'ENTER VR'; });
+    await renderer.xr.setSession(session);
+    currentSession = session;
+    btn.textContent = 'EXIT VR';
+  };
   document.body.appendChild(btn);
 
   const exitBtn = document.getElementById('exitVRBtn');
   if (exitBtn) {
     exitBtn.addEventListener('click', () => {
-      const session = renderer.xr.getSession();
-      if (session) session.end();
+      if (currentSession) currentSession.end();
     });
-  }
-
-  if (!vrSupported) {
-    setTimeout(() => {
-      btn.style.opacity = '0';
-      setTimeout(() => { btn.style.display = 'none'; }, 1000);
-    }, 10000);
-    return;
   }
 
   const rig = new THREE.Group();
@@ -164,6 +176,9 @@ function onSessionStart() {
   State.setVRActive(true);
   if (State.orthoOn) setOrtho(false);
 
+  State.scene.background = null;
+  setPassthrough(true);
+
   savedCamPos = State.camera.position.clone();
   savedCamQuat = State.camera.quaternion.clone();
   savedTarget = State.orbitControls.target.clone();
@@ -183,6 +198,10 @@ function onSessionStart() {
 function onSessionEnd() {
   State.setVRActive(false);
 
+  State.scene.background = new THREE.Color(0x2a2a3a);
+  State.setPassthroughOn(false);
+  if (bgSphere) bgSphere.visible = false;
+
   const exitBtn = document.getElementById('exitVRBtn');
   if (exitBtn) exitBtn.style.display = 'none';
 
@@ -201,6 +220,32 @@ function onSessionEnd() {
   teleportActive = false;
   activeGrab = null;
   destroyVRPanel();
+}
+
+// ============================================================
+// Passthrough toggle
+// ============================================================
+
+function setPassthrough(on) {
+  State.setPassthroughOn(on);
+  if (on) {
+    State.scene.background = null;
+    if (bgSphere) bgSphere.visible = false;
+  } else {
+    State.scene.background = null;
+    if (!bgSphere) {
+      const geo = new THREE.SphereGeometry(20, 32, 16);
+      const mat = new THREE.MeshBasicMaterial({ color: 0x2a2a3a, side: THREE.BackSide });
+      bgSphere = new THREE.Mesh(geo, mat);
+      bgSphere.renderOrder = -1;
+      State.scene.add(bgSphere);
+    }
+    bgSphere.visible = true;
+  }
+}
+
+function togglePassthrough() {
+  setPassthrough(!State.passthroughOn);
 }
 
 // ============================================================
@@ -615,6 +660,11 @@ function pollGamepads(dt) {
         updateFK(State.activeDevice);
         refreshVRPanel();
       }
+    }
+
+    // Thumbstick press (index 3) — toggle passthrough
+    if (gp.buttons[3] && buttonEdge(idx, 3, gp.buttons[3].pressed)) {
+      togglePassthrough();
     }
   }
 
