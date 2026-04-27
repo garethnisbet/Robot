@@ -58,6 +58,26 @@ function _parentLinkToStable(parentLink) {
   return devIdx + ':' + linkName;
 }
 
+function _buildDevicesPayload() {
+  return State.devices.map((dev) => ({
+    configFile: dev.configFile,
+    name: dev.name,
+    jointAngles: [...dev.jointAngles],
+    position: [dev.rootGroup.position.x, dev.rootGroup.position.y, dev.rootGroup.position.z],
+    rotation: [dev.rootGroup.rotation.x, dev.rootGroup.rotation.y, dev.rootGroup.rotation.z],
+    parentLink: _parentLinkToStable(dev.parentLink),
+  }));
+}
+
+function _buildCameraPayload() {
+  const cam = State.camera;
+  const ctrl = State.orbitControls;
+  return {
+    position: [cam.position.x, cam.position.y, cam.position.z],
+    target: [ctrl.target.x, ctrl.target.y, ctrl.target.z],
+  };
+}
+
 export function buildScenePayload() {
   const stls = State.importedSTLs.map(entry => {
     const m = entry.mesh;
@@ -76,24 +96,30 @@ export function buildScenePayload() {
       parentLink: _parentLinkToStable(entry.parentLink),
     };
   });
+  return { version: 1, devices: _buildDevicesPayload(), stls, camera: _buildCameraPayload(), floorSize: State.floorSize };
+}
 
-  const devices = State.devices.map((dev, i) => ({
-    configFile: dev.configFile,
-    name: dev.name,
-    jointAngles: [...dev.jointAngles],
-    position: [dev.rootGroup.position.x, dev.rootGroup.position.y, dev.rootGroup.position.z],
-    rotation: [dev.rootGroup.rotation.x, dev.rootGroup.rotation.y, dev.rootGroup.rotation.z],
-    parentLink: _parentLinkToStable(dev.parentLink),
-  }));
-
-  const cam = State.camera;
-  const ctrl = State.orbitControls;
-  const camera = {
-    position: [cam.position.x, cam.position.y, cam.position.z],
-    target: [ctrl.target.x, ctrl.target.y, ctrl.target.z],
-  };
-
-  return { version: 1, devices, stls, camera, floorSize: State.floorSize };
+// DB variant — stores raw ArrayBuffers (no base64), used by IndexedDB auto-save.
+// Avoids localStorage quota errors for large imported meshes.
+export function buildScenePayloadForDB() {
+  const stls = State.importedSTLs.map(entry => {
+    const m = entry.mesh;
+    return {
+      id: entry.stlId,
+      name: entry.name,
+      color: entry.color,
+      opacity: entry.opacity,
+      buffer: entry._buffer,
+      fileType: entry.fileType || 'stl',
+      isPointCloud: entry.isPointCloud || false,
+      position: [m.position.x, m.position.y, m.position.z],
+      rotation: [m.rotation.x, m.rotation.y, m.rotation.z],
+      scale: [m.scale.x, m.scale.y, m.scale.z],
+      visible: m.visible,
+      parentLink: _parentLinkToStable(entry.parentLink),
+    };
+  });
+  return { version: 1, devices: _buildDevicesPayload(), stls, camera: _buildCameraPayload(), floorSize: State.floorSize };
 }
 
 export async function exportSceneState() {
@@ -163,7 +189,8 @@ export async function restoreSTLsFromState(records) {
   // ── Phase 1: create meshes WITHOUT transforms (default positions) ──
   const created = [];
   for (const rec of records) {
-    const buffer = _base64ToArrayBuffer(rec.buffer);
+    // Buffer may be a raw ArrayBuffer (IndexedDB) or a base64 string (file export)
+    const buffer = rec.buffer instanceof ArrayBuffer ? rec.buffer : _base64ToArrayBuffer(rec.buffer);
     let entry = null;
     const fileType = rec.fileType || 'stl';
     if (fileType === 'stl') {

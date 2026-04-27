@@ -39,11 +39,13 @@ import {
   rebuildPrimaryModelDropdown,
 } from './panel.js';
 import {
-  buildScenePayload, exportSceneState, importSceneState, restoreSTLsFromState,
+  buildScenePayload, buildScenePayloadForDB,
+  exportSceneState, importSceneState, restoreSTLsFromState,
   loadSTLFile, loadOBJFile, loadPLYFile, loadGLBFile,
   addPrimitive,
   selectSTL, deselectSTL, setSTLTransformMode, setSTLParent,
 } from './stl.js';
+import { dbSave, dbLoad } from './storage.js';
 import { checkCollisions, clearCollisionHighlights, initCollisionWorker } from './collision.js';
 import { initVR, updateVR } from './vr.js';
 import {
@@ -675,43 +677,64 @@ window.addEventListener('resize', () => {
 // ============================================================
 const configParam = new URLSearchParams(window.location.search).get('config') || 'meca500_config.json';
 
-// Try restoring from localStorage first
+// Try restoring from IndexedDB first, then fall back to localStorage for legacy data
 const SCENE_STORAGE_KEY = 'robotvis_scene';
 let restoredFromStorage = false;
 
 const MAX_RESTORE_ATTEMPTS = 3;
-const saved = localStorage.getItem(SCENE_STORAGE_KEY);
 
-if (saved) {
-  let data;
-  try { data = JSON.parse(saved); } catch (_) { data = null; }
-
-  if (data && data.version && Array.isArray(data.devices) && data.devices.length > 0) {
-    for (let attempt = 1; attempt <= MAX_RESTORE_ATTEMPTS && !restoredFromStorage; attempt++) {
-      try {
-        document.getElementById('loading').textContent =
-          attempt === 1 ? 'Restoring scene...' : `Restoring scene (attempt ${attempt}/${MAX_RESTORE_ATTEMPTS})...`;
-        await restoreScene(data);
-        restoredFromStorage = true;
-        console.log(`[Auto-restore] Scene restored from localStorage (attempt ${attempt})`);
-      } catch (err) {
-        console.warn(`[Auto-restore] Attempt ${attempt}/${MAX_RESTORE_ATTEMPTS} failed:`, err);
-        // Clean up partial restore before retrying or falling back
-        for (const dev of [...State.devices]) {
-          State.transformControls.detach();
-          State.deviceTransformControls.detach();
-          State.scene.remove(dev.rootGroup);
-        }
-        State.devices.length = 0;
-        State.resetDeviceIdCounter();
-        if (attempt < MAX_RESTORE_ATTEMPTS) {
-          await new Promise(r => setTimeout(r, 1000 * attempt));
-        }
+async function _tryLoadSavedScene() {
+  // 1. Prefer IndexedDB (supports large mesh buffers)
+  try {
+    const dbData = await dbLoad();
+    if (dbData && dbData.version && Array.isArray(dbData.devices) && dbData.devices.length > 0) {
+      return dbData;
+    }
+  } catch (e) {
+    console.warn('[Auto-restore] IndexedDB read failed:', e);
+  }
+  // 2. Fall back to localStorage (legacy saves or small scenes)
+  try {
+    const raw = localStorage.getItem(SCENE_STORAGE_KEY);
+    if (raw) {
+      const data = JSON.parse(raw);
+      if (data && data.version && Array.isArray(data.devices) && data.devices.length > 0) {
+        console.log('[Auto-restore] Using legacy localStorage save');
+        return data;
       }
     }
-    if (!restoredFromStorage) {
-      console.warn('[Auto-restore] All attempts failed — saved state kept in localStorage for next load');
+  } catch (e) {
+    console.warn('[Auto-restore] localStorage read failed:', e);
+  }
+  return null;
+}
+
+const savedData = await _tryLoadSavedScene();
+
+if (savedData) {
+  for (let attempt = 1; attempt <= MAX_RESTORE_ATTEMPTS && !restoredFromStorage; attempt++) {
+    try {
+      document.getElementById('loading').textContent =
+        attempt === 1 ? 'Restoring scene...' : `Restoring scene (attempt ${attempt}/${MAX_RESTORE_ATTEMPTS})...`;
+      await restoreScene(savedData);
+      restoredFromStorage = true;
+      console.log(`[Auto-restore] Scene restored (attempt ${attempt})`);
+    } catch (err) {
+      console.warn(`[Auto-restore] Attempt ${attempt}/${MAX_RESTORE_ATTEMPTS} failed:`, err);
+      for (const dev of [...State.devices]) {
+        State.transformControls.detach();
+        State.deviceTransformControls.detach();
+        State.scene.remove(dev.rootGroup);
+      }
+      State.devices.length = 0;
+      State.resetDeviceIdCounter();
+      if (attempt < MAX_RESTORE_ATTEMPTS) {
+        await new Promise(r => setTimeout(r, 1000 * attempt));
+      }
     }
+  }
+  if (!restoredFromStorage) {
+    console.warn('[Auto-restore] All attempts failed — starting fresh');
   }
 }
 
@@ -777,18 +800,18 @@ window.debugEE = () => {
            R: [[m[0],m[4],m[8]],[m[1],m[5],m[9]],[m[2],m[6],m[10]]] };
 };
 
-// Auto-save scene to localStorage periodically and on page unload
-function autoSaveScene() {
+// Auto-save scene to IndexedDB periodically and on page unload.
+// IndexedDB handles large mesh buffers that would overflow localStorage's ~5 MB quota.
+async function autoSaveScene() {
   if (State.devices.length === 0) return;
   try {
-    const payload = buildScenePayload();
-    localStorage.setItem(SCENE_STORAGE_KEY, JSON.stringify(payload));
+    await dbSave(buildScenePayloadForDB());
   } catch (e) {
-    console.warn('[Auto-save] Failed to save scene to localStorage:', e);
+    console.warn('[Auto-save] IndexedDB save failed:', e);
   }
 }
 setInterval(autoSaveScene, 30_000);
-window.addEventListener('beforeunload', autoSaveScene);
+window.addEventListener('beforeunload', () => autoSaveScene());
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') autoSaveScene();
 });
