@@ -83,8 +83,8 @@ const eePosEl = document.getElementById('eePos');
 const tgtPosEl = document.getElementById('tgtPos');
 const ikErrEl  = document.getElementById('ikErr');
 
-function animate() {
-  updateVR();
+function animate(time, frame) {
+  updateVR(frame);
 
   if (State.activeDevice) {
     if (State.activeDevice.ikMode) {

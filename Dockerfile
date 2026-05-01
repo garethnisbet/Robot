@@ -24,6 +24,7 @@ RUN echo "=== Copying application files ==="
 COPY server.py robot_ipython.py RemoteAPI.zip threejs_scene.html viewer.css *.glb ./
 COPY js/ ./js/
 COPY *.json ./
+COPY node_modules/ ./node_modules/
 
 RUN echo "=== Files in /app ===" && ls -lh /app && \
     echo "=== Verifying Python ===" && \

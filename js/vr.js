@@ -32,6 +32,12 @@ let savedCamPos, savedCamQuat, savedTarget;
 let activeGrab = null;
 let bgSphere = null;
 
+// Anchor-based drift correction (survives headset removal/re-don)
+let sceneAnchor = null;
+let needsAnchor = false;
+let lastAnchorPos = null;
+let lastAnchorQuat = null;
+
 const controllers = [];
 
 // VR panel
@@ -80,7 +86,7 @@ export async function initVR() {
   btn.onclick = async () => {
     if (currentSession) { currentSession.end(); return; }
     const sessionOpts = {
-      optionalFeatures: ['local-floor', 'bounded-floor', 'layers', 'hand-tracking'],
+      optionalFeatures: ['local-floor', 'bounded-floor', 'layers', 'hand-tracking', 'anchors'],
     };
     const session = await navigator.xr.requestSession(xrMode, sessionOpts);
     session.addEventListener('end', () => { currentSession = null; btn.textContent = 'ENTER VR'; });
@@ -189,6 +195,11 @@ function onSessionStart() {
   State.camera.quaternion.identity();
   State.orbitControls.enabled = false;
 
+  sceneAnchor = null;
+  lastAnchorPos = null;
+  lastAnchorQuat = null;
+  needsAnchor = true;
+
   const exitBtn = document.getElementById('exitVRBtn');
   if (exitBtn) exitBtn.style.display = '';
 
@@ -197,6 +208,11 @@ function onSessionStart() {
 
 function onSessionEnd() {
   State.setVRActive(false);
+
+  if (sceneAnchor) { sceneAnchor.delete(); sceneAnchor = null; }
+  lastAnchorPos = null;
+  lastAnchorQuat = null;
+  needsAnchor = false;
 
   State.scene.background = new THREE.Color(0x2a2a3a);
   State.setPassthroughOn(false);
@@ -716,13 +732,70 @@ function isPointingAtPanelAny() {
 }
 
 // ============================================================
+// Anchor-based drift correction
+// ============================================================
+
+async function createSceneAnchor(frame) {
+  needsAnchor = false;
+  if (!frame.createAnchor) return;
+  const refSpace = State.renderer.xr.getReferenceSpace();
+  if (!refSpace) return;
+
+  const rig = State.vrRig;
+  const pose = new XRRigidTransform(
+    { x: rig.position.x, y: rig.position.y, z: rig.position.z, w: 1 },
+    { x: rig.quaternion.x, y: rig.quaternion.y, z: rig.quaternion.z, w: rig.quaternion.w }
+  );
+  try {
+    sceneAnchor = await frame.createAnchor(pose, refSpace);
+    lastAnchorPos = null;
+    lastAnchorQuat = null;
+  } catch (e) {
+    console.warn('XR anchor creation failed:', e);
+  }
+}
+
+function applyAnchorDriftCorrection(frame) {
+  if (!sceneAnchor) return;
+  if (!frame.trackedAnchors || !frame.trackedAnchors.has(sceneAnchor)) return;
+
+  const refSpace = State.renderer.xr.getReferenceSpace();
+  const anchorPose = frame.getPose(sceneAnchor.anchorSpace, refSpace);
+  if (!anchorPose) return;
+
+  const ap = anchorPose.transform.position;
+  const ao = anchorPose.transform.orientation;
+  const curPos = new THREE.Vector3(ap.x, ap.y, ap.z);
+  const curQuat = new THREE.Quaternion(ao.x, ao.y, ao.z, ao.w);
+
+  if (lastAnchorPos) {
+    const drift = curPos.clone().sub(lastAnchorPos);
+    if (drift.lengthSq() > 1e-8) {
+      State.vrRig.position.add(drift);
+    }
+    const rotDrift = curQuat.clone().multiply(lastAnchorQuat.clone().invert());
+    if (Math.abs(rotDrift.w) < 0.99999) {
+      State.vrRig.quaternion.premultiply(rotDrift);
+    }
+  }
+
+  lastAnchorPos = curPos;
+  lastAnchorQuat = curQuat;
+}
+
+// ============================================================
 // updateVR — called each frame from animate()
 // ============================================================
 
 let lastFrameTime = 0;
 
-export function updateVR() {
+export function updateVR(frame) {
   if (!State.vrActive) return;
+
+  if (frame) {
+    if (needsAnchor && !sceneAnchor) createSceneAnchor(frame);
+    applyAnchorDriftCorrection(frame);
+  }
 
   const now = performance.now();
   const dt = lastFrameTime ? Math.min((now - lastFrameTime) / 1000, 0.1) : 0.016;
