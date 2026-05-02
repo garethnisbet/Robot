@@ -6,8 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm && \
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+COPY package.json ./
+RUN npm install --omit=dev
 
 RUN pip install uv && \
     uv venv /app/.venv && \
