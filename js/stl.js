@@ -180,7 +180,8 @@ function _parentLinkFromStable(parentLink) {
   }
   // Legacy format (e.g. "dev_0:L1") — search by link name across all devices
   for (const dev of State.devices) {
-    if (dev.linkToJoint[linkName] !== undefined) {
+    if (dev.linkToJoint[linkName] !== undefined ||
+        (dev.parentGroups && dev.parentGroups[linkName])) {
       return dev.id + ':' + linkName;
     }
   }
@@ -763,16 +764,23 @@ export function setSTLParent(entry, parentValue, preserveLocal = false) {
 
   mesh.removeFromParent();
 
-  if (dev && linkName && dev.linkToJoint[linkName] !== undefined) {
-    const jointIdx  = dev.linkToJoint[linkName];
-    const linkGroup = dev.jointRotGroups[jointIdx];
+  let targetGroup = null;
+  if (dev && linkName) {
+    if (dev.linkToJoint[linkName] !== undefined) {
+      targetGroup = dev.jointRotGroups[dev.linkToJoint[linkName]];
+    } else if (dev.parentGroups && dev.parentGroups[linkName]) {
+      targetGroup = dev.parentGroups[linkName];
+    }
+  }
+
+  if (targetGroup) {
     if (!preserveLocal) {
-      linkGroup.updateWorldMatrix(true, false);
-      const localMat = linkGroup.matrixWorld.clone().invert().multiply(_reparentMat);
+      targetGroup.updateWorldMatrix(true, false);
+      const localMat = targetGroup.matrixWorld.clone().invert().multiply(_reparentMat);
       localMat.decompose(mesh.position, mesh.quaternion, mesh.scale);
       mesh.rotation.setFromQuaternion(mesh.quaternion);
     }
-    linkGroup.add(mesh);
+    targetGroup.add(mesh);
     entry.parentLink = dev.id + ':' + linkName;
   } else {
     if (!preserveLocal) {

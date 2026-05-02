@@ -100,6 +100,7 @@ export async function loadHexapod(configFile) {
     sliderJointMap: [],
     kappaSliderNames: {},
     linkToJoint: {},
+    parentGroups: {},
     isBranching: true,
     isKappaGeometry: false,
     eeMarker: new THREE.Group(),
@@ -227,6 +228,15 @@ export async function loadHexapod(configFile) {
           console.warn(`[Hexapod] Upper mesh "${leg.upperMeshName}" not found`);
         }
       }
+
+      const platName = config.platform.mesh;
+      const baseName = config.base.mesh;
+      dev.parentGroups[platName] = platformGroup;
+      dev.parentGroups[baseName] = rootGroup;
+      config.links = [
+        { name: platName, label: 'Top Plate (platform)' },
+        { name: baseName, label: 'Base Plate (fixed)' },
+      ];
 
       dev.loaded = true;
       resolve();

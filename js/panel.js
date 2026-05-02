@@ -658,15 +658,22 @@ export function setDeviceParent(dev, parentValue, preserveLocal = false) {
 
   rootGroup.removeFromParent();
 
-  if (parentDev && linkName && parentDev.linkToJoint[linkName] !== undefined) {
-    const jointIdx = parentDev.linkToJoint[linkName];
-    const linkGroup = parentDev.jointRotGroups[jointIdx];
+  let targetGroup = null;
+  if (parentDev && linkName) {
+    if (parentDev.linkToJoint[linkName] !== undefined) {
+      targetGroup = parentDev.jointRotGroups[parentDev.linkToJoint[linkName]];
+    } else if (parentDev.parentGroups && parentDev.parentGroups[linkName]) {
+      targetGroup = parentDev.parentGroups[linkName];
+    }
+  }
+
+  if (targetGroup) {
     if (!preserveLocal) {
-      linkGroup.updateWorldMatrix(true, false);
-      const localMat = linkGroup.matrixWorld.clone().invert().multiply(_devReparentMat);
+      targetGroup.updateWorldMatrix(true, false);
+      const localMat = targetGroup.matrixWorld.clone().invert().multiply(_devReparentMat);
       localMat.decompose(rootGroup.position, rootGroup.quaternion, rootGroup.scale);
     }
-    linkGroup.add(rootGroup);
+    targetGroup.add(rootGroup);
     dev.parentLink = parentDev.id + ':' + linkName;
   } else {
     if (!preserveLocal) {
