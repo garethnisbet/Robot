@@ -59,14 +59,18 @@ function _parentLinkToStable(parentLink) {
 }
 
 function _buildDevicesPayload() {
-  return State.devices.map((dev) => ({
-    configFile: dev.configFile,
-    name: dev.name,
-    jointAngles: [...dev.jointAngles],
-    position: [dev.rootGroup.position.x, dev.rootGroup.position.y, dev.rootGroup.position.z],
-    rotation: [dev.rootGroup.rotation.x, dev.rootGroup.rotation.y, dev.rootGroup.rotation.z],
-    parentLink: _parentLinkToStable(dev.parentLink),
-  }));
+  return State.devices.map((dev) => {
+    const entry = {
+      configFile: dev.configFile,
+      name: dev.name,
+      jointAngles: [...dev.jointAngles],
+      position: [dev.rootGroup.position.x, dev.rootGroup.position.y, dev.rootGroup.position.z],
+      rotation: [dev.rootGroup.rotation.x, dev.rootGroup.rotation.y, dev.rootGroup.rotation.z],
+      parentLink: _parentLinkToStable(dev.parentLink),
+    };
+    if (dev.type === 'hexapod') entry.platformPose = [...dev.platformPose];
+    return entry;
+  });
 }
 
 function _buildCameraPayload() {

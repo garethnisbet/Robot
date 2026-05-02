@@ -4,18 +4,18 @@ Interactive 3D visualisation and control for robots and scientific instruments. 
 
 ## Supported Devices
 
-| Device | Config | Joints | Description |
-|--------|--------|--------|-------------|
-| Meca500 R3 | `meca500_config.json` | 6 (serial) | 6-DOF compact industrial manipulator |
-| i16 Diffractometer | `i16_config.json` | 10 movable (branching) | Diamond Light Source 6-circle diffractometer with merlin and crystal detectors |
-| i19 Kappa Diffractometer | `i19_config.json` | branching | Diamond Light Source kappa diffractometer (2θ / θ / κ / φ chain) |
-| Yaskawa GP225 | `gp225_config.json` | 6 (serial) | 6-DOF heavy-payload industrial robot |
-| Yaskawa GP280 | `gp280_config.json` | 6 (serial) | 6-DOF heavy-payload industrial robot |
-| Yaskawa GP180-120 | `gp180_config.json` | 6 (serial) | 6-DOF heavy-payload industrial robot |
-| Yaskawa MotoMini | `motomini_config.json` | 6 (serial) | 6-DOF compact industrial robot |
-| Mecademic Meca500 (B) | `meca500_config.json` | 6 (serial) | 6-DOF compact manipulator (Blender import) |
+| Device | Config | Type | Description |
+|--------|--------|------|-------------|
+| Meca500 R3 | `meca500_config.json` | 6-DOF serial | Compact industrial manipulator |
+| i16 Diffractometer | `i16_config.json` | Branching (10 movable) | Diamond Light Source 6-circle diffractometer with merlin and crystal detectors |
+| i19 Kappa Diffractometer | `i19_config.json` | Branching | Diamond Light Source kappa diffractometer (2θ / θ / κ / φ chain) |
+| Yaskawa GP225 | `gp225_config.json` | 6-DOF serial | Heavy-payload industrial robot |
+| Yaskawa GP280 | `gp280_config.json` | 6-DOF serial | Heavy-payload industrial robot |
+| Yaskawa GP180-120 | `gp180_config.json` | 6-DOF serial | Heavy-payload industrial robot |
+| Yaskawa MotoMini | `motomini_config.json` | 6-DOF serial | Compact industrial robot |
+| Hexapod | `hexapod_config.json` | Stewart platform (6 legs) | 6-DOF parallel kinematic platform with Damped Track leg IK |
 
-New devices can be added from Blender scenes using `import_robot.py` (see [Adding New Devices](#adding-new-devices)).
+New devices can be added from Blender scenes using `import_robot.py` (serial robots) or `import_hexapod.py` (Stewart platforms). See [Adding New Devices](#adding-new-devices).
 
 ## Features
 
@@ -28,6 +28,9 @@ New devices can be added from Blender scenes using `import_robot.py` (see [Addin
 - **Forward Kinematics** — joint angle sliders for all movable joints (fixed kinematic links are hidden)
 - **Inverse Kinematics** — 6-DOF damped least-squares solver (position + ZYX Euler orientation)
 - **Branching kinematic chains** — supports devices with multiple independent chains and sub-branches (e.g., i16 has gamma and mu chains with merlin/crystal sub-branches)
+- **Stewart platform / hexapod support** — parallel kinematic platform with 6 two-bar linkage legs using Damped Track IK; platform pose control via translation (X/Y/Z mm) and rotation (Rx/Ry/Rz deg) sliders
+- **Hexapod FK solver** — Newton-Raphson solver computes platform pose from 6 leg lengths; interactive leg length sliders drive the platform in real time with bidirectional sync to pose sliders
+- **Drag Platform mode** — attach TransformControls gizmo directly to the hexapod platform for interactive 3D dragging with real-time leg tracking, slider sync, and limit clamping (keyboard: T for translate, R for rotate)
 - **Draggable IK target** — move the green sphere with the gizmo or use XYZ / alpha-beta-gamma sliders
 - **Orientation gizmo** — visual end-effector orientation indicator showing the current tool frame axes
 - **Double-click to type** — double-click any slider value label to enter a number directly
@@ -123,6 +126,60 @@ If rotation directions are wrong for specific joints, negate the `axis` array in
 
 If the robot manufacturer's joint angle convention is opposite to the viewer's for specific joints, add `"apiSign": -1` to those joints in the config. This flips the sign on the slider display and the WebSocket API without changing the physical rotation axis. For example, the Meca500 J4 has `"apiSign": -1` because the manufacturer defines positive J4 in the opposite direction.
 
+### Importing a Hexapod from Blender
+
+The `import_hexapod.py` script extracts pivot positions, mesh assignments, and platform limits from a Blender armature with Damped Track leg constraints.
+
+#### Blender Setup
+
+1. **Armature**: create an armature with bones for each leg segment plus a control bone for the platform.
+2. **Lower leg bones** (LL): one per leg, positioned at the base pivot. Each has a **Damped Track** constraint targeting its corresponding upper leg bone.
+3. **Upper leg bones** (UL): one per leg, positioned at the platform pivot. Each has a **Damped Track** constraint targeting its lower leg bone, plus a **Child Of** constraint targeting the control bone.
+4. **Control bone**: a single bone (e.g., `ControlHandle`) that the upper leg bones follow. Moving it moves the platform.
+5. **Mesh parenting**: parent each lower leg mesh to its LL bone, each upper leg mesh to its UL bone, and the top plate mesh to the control bone. The base plate can be unparented.
+6. **Platform limits** (optional): add **Limit Location** and **Limit Rotation** constraints to the control bone to define the platform's travel range. The importer reads these and converts to mm/degrees. If no constraints are found, reasonable defaults are used.
+
+#### Running the Importer
+
+```python
+exec(open('/path/to/RobotVisualisation/import_hexapod.py').read())
+```
+
+To override defaults:
+
+```python
+ARMATURE_NAME = 'MyHexapod'
+CONTROL_BONE  = 'ControlHandle'
+DEVICE_NAME   = 'Hexapod'
+BASE_MESH     = 'BasePlate'
+PLATFORM_MESH = 'TopPlate'
+exec(open('/path/to/RobotVisualisation/import_hexapod.py').read())
+```
+
+The script:
+1. Finds the armature and auto-detects the hexapod structure from Damped Track + Child Of constraints
+2. Identifies lower/upper leg bone pairs and the control bone
+3. Extracts rest-pose pivot positions (converted from Blender Z-up to Three.js Y-up)
+4. Maps meshes to bones (legs, platform, base)
+5. Reads Limit Location / Limit Rotation constraints for platform limits
+6. Exports a skin-free GLB
+7. Generates a `type: "hexapod"` config JSON
+8. Registers the config in `js/panel.js`
+
+#### Post-Import Checklist
+
+Open `http://localhost:8000/threejs_scene.html?config=hexapod_config.json` and verify:
+
+1. All meshes load and appear correctly
+2. Platform translation sliders move the platform
+3. Rotation sliders tilt the platform correctly
+4. Legs track correctly (no pass-through or separation)
+5. Demo pose button works
+6. FK solver (leg length sliders) converges
+7. Drag Platform mode works with TransformControls
+
+If pivots are wrong, check bone head positions in Blender edit mode. If limits are wrong, add Limit Location / Limit Rotation constraints to the control bone, or edit the limits in the config JSON.
+
 ### Adding Robot Kinematics Definitions
 
 To enable IK via the Python `GNKinematics` library (used by `robot_ipython.py`), add a kinematics definition to `RobotDefinitions.py`:
@@ -192,6 +249,45 @@ Key fields:
 - **eeOffset**: displacement from last joint to end-effector point (derived from last bone length)
 - **eeAxes**: end-effector crosshair axes — use `[[0,0,-1],[0,-1,0],[1,0,0]]` for all robots
 - **demoPose**: joint angles in degrees for the demo button (one per joint, fixed joints = 0)
+
+### Hexapod Config File Structure
+
+```json
+{
+  "name": "Hexapod",
+  "type": "hexapod",
+  "model": "hexapod_scene.glb",
+  "platform": {
+    "mesh": "TopPlate",
+    "restPosition": [0.0, 0.2, 0.0]
+  },
+  "base": {
+    "mesh": "BasePlate"
+  },
+  "legs": [
+    {
+      "basePivot": [0.125, 0.014, 0.029],
+      "platformPivotLocal": [0.058, -0.013, 0.068],
+      "lowerMesh": "LowerLeg_1",
+      "upperMesh": "UpperLeg_1"
+    }
+  ],
+  "limits": {
+    "x": [-30, 30], "y": [-30, 30], "z": [-20, 20],
+    "rx": [-11, 11], "ry": [-11, 11], "rz": [-20, 20]
+  },
+  "demoPose": [0, 0, 5, 5, 0, 10]
+}
+```
+
+Key fields:
+- **type**: must be `"hexapod"` to trigger the parallel kinematics loader
+- **platform.mesh**: GLB mesh name for the top plate (reparented to the platform group)
+- **platform.restPosition**: platform centre in Three.js Y-up coordinates (metres) at home pose
+- **base.mesh**: GLB mesh name for the base plate
+- **legs**: array of 6 leg entries — `basePivot` is the lower pivot in world coordinates (metres), `platformPivotLocal` is the upper pivot relative to the platform rest position
+- **limits**: platform travel limits — translation in mm (`x`, `y`, `z`) and rotation in degrees (`rx`, `ry`, `rz`)
+- **demoPose**: `[x, y, z, rx, ry, rz]` for the demo button (mm and degrees)
 
 ## Objects
 
@@ -401,6 +497,12 @@ All positions are in mm, angles in degrees, using Z-up robot convention. Most co
 {"cmd": "demoPose"}
 ```
 
+**Hexapod platform control:**
+```json
+{"cmd": "setPlatformPose", "pose": [0, 0, 5, 5, 0, 10]}
+```
+The pose is `[x, y, z, rx, ry, rz]` — translation in mm and rotation in degrees. The `getState` response for hexapod devices includes `platformPose` and `platformPosition` instead of `joints`.
+
 **Kappa virtual angles** (diffractometer geometry):
 ```json
 {"cmd": "setVirtualAngles", "chi": 45, "theta": 10, "phi": 20}
@@ -549,13 +651,15 @@ js/
   state.js               Shared mutable state (scene, cameras, controls, devices)
   scene.js               Three.js scene setup, cameras, lights, ground, nav gizmo
   device.js              Device loading, GLB import, slider/IK sync
+  hexapod.js             Hexapod loader, Damped Track IK, FK solver, platform sync
   kinematics.js          FK, IK solver, kappa geometry math
   panel.js               Control panel UI, device list, parent dropdowns
   stl.js                 Mesh import/export, primitives, duplication, IndexedDB persistence
   collision.js           BVH-accelerated collision detection (Web Worker + main-thread fallback)
   collision-worker.js    Background thread for collision math
   websocket.js           WebSocket client for remote control API
-import_robot.py          Blender import script — extracts armature to config JSON + GLB
+import_robot.py          Blender import script — extracts serial robot armature to config JSON + GLB
+import_hexapod.py        Blender import script — extracts hexapod (Damped Track legs) to config JSON + GLB
 server.py                WebSocket + HTTP server for remote control API
 robot_ipython.py         IPython remote control client (any device)
 GNKinematics/            Python forward/inverse kinematics library (matches viewer's ZYX Euler)
@@ -573,11 +677,13 @@ i19_scene.glb            i19 kappa diffractometer GLB model
 gp225_scene.glb          Yaskawa GP225 GLB model
 gp280_scene.glb          Yaskawa GP280 GLB model
 gp180_scene.glb          Yaskawa GP180-120 GLB model
+hexapod_config.json      Hexapod Stewart platform device config
+hexapod_scene.glb        Hexapod GLB model
 Dockerfile               Multi-stage container build
 helm/                    Kubernetes Helm chart
 ```
 
-## IK Solver
+## IK Solver (Serial Robots)
 
 The viewer uses a 6×N geometric Jacobian with damped least-squares (DLS):
 
@@ -586,3 +692,11 @@ The viewer uses a 6×N geometric Jacobian with damped least-squares (DLS):
 - **Convention**: ZYX Euler angles (alpha=Rz, beta=Ry, gamma=Rx)
 - Orientation is weighted at 0.3× relative to position to prioritise reach accuracy
 - For N < 6 joints: underdetermined for full 6-DOF; for N > 6: redundancy handled naturally by DLS
+
+## Hexapod Kinematics
+
+The hexapod uses two kinematics approaches:
+
+**Leg IK (Damped Track)**: given the platform pose [x, y, z, rx, ry, rz], each leg's lower and upper segments are oriented to track toward their respective pivot points using `Quaternion.setFromUnitVectors()` — the Three.js equivalent of Blender's Damped Track constraint. This runs every frame and is the primary visual update.
+
+**Platform FK (Newton-Raphson)**: given 6 target leg lengths, solves for the platform pose that produces those lengths. Uses a numerical 6×6 Jacobian (central finite differences) and Gaussian elimination with partial pivoting. Convergence is typically 3–5 iterations from a nearby starting pose. The solver clamps the result to the config's platform limits. This drives the leg length sliders in the UI — dragging a leg length slider triggers FK, which updates the pose and all other sliders bidirectionally.

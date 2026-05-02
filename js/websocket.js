@@ -21,6 +21,7 @@ import {
 } from './stl.js';
 import { clearCollisionHighlights } from './collision.js';
 import { setOrtho } from './scene.js';
+import { updateHexapodPose } from './hexapod.js';
 
 const deg2rad = Math.PI / 180;
 const rad2deg = 180 / Math.PI;
@@ -103,6 +104,21 @@ export function buildState(dev) {
   dev = dev || State.activeDevice;
   if (!dev) return { type: 'state' };
   State.scene.updateMatrixWorld(true);
+
+  if (dev.type === 'hexapod') {
+    const p = dev.platformGroup.position;
+    return {
+      type: 'state',
+      device: dev.name,
+      deviceType: 'hexapod',
+      platformPose: [...dev.platformPose],
+      platformPosition: [+(p.x * 1000).toFixed(4), +(p.z * 1000).toFixed(4), +(p.y * 1000).toFixed(4)],
+      collisionEnabled: State.collisionEnabled,
+      collision: State.collisionEnabled && State.lastCollisions.length > 0,
+      collisions: State.collisionEnabled ? State.lastCollisions.map(c => ({ link: c.linkName, object: c.stlName })) : [],
+    };
+  }
+
   const eePos  = getEEWorldPosition(dev);
   const eeQuat = getEEWorldQuaternion(dev);
   const relQuat = eeQuat.clone().multiply(dev.homeQuaternionInv);
@@ -228,8 +244,10 @@ function buildDeviceInfo(dev) {
     worldRotation: [+(we.x * rad2deg).toFixed(4), +(we.z * rad2deg).toFixed(4), +(we.y * rad2deg).toFixed(4)],
     parent: dev.parentLink || null,
     isKappa: dev.isKappaGeometry || false,
+    deviceType: dev.type || 'serial',
     mode: dev.ikMode ? 'IK' : 'FK',
     links: Object.keys(dev.linkToJoint || {}),
+    ...(dev.type === 'hexapod' ? { platformPose: [...dev.platformPose] } : {}),
   };
 }
 
@@ -381,7 +399,8 @@ export function handleCommand(data) {
     if (data.config) {
       loadDevice(data.config).then(newDev => {
         State.devices.push(newDev);
-        updateFK(newDev);
+        if (newDev.type === 'hexapod') updateHexapodPose(newDev);
+        else updateFK(newDev);
         rebuildDeviceList();
         rebuildParentDropdown();
         rebuildDeviceParentDropdown();
@@ -474,6 +493,13 @@ export function handleCommand(data) {
 
   } else if (cmd === 'home') {
     if (!dev) return;
+    if (dev.type === 'hexapod') {
+      dev.platformPose.fill(0);
+      updateHexapodPose(dev);
+      if (dev === State.activeDevice) buildControlPanel(dev);
+      wsSend(buildState(dev));
+      return;
+    }
     for (let i = 0; i < dev.numJoints; i++) dev.jointAngles[i] = 0;
     updateFK(dev);
     updateSliders(dev);
@@ -494,8 +520,29 @@ export function handleCommand(data) {
       wsSend(buildState(dev));
     }
 
+  } else if (cmd === 'setPlatformPose') {
+    if (!dev || dev.type !== 'hexapod') {
+      wsSend({ type: 'error', error: 'Device is not a hexapod' }); return;
+    }
+    const pose = data.pose;
+    if (Array.isArray(pose) && pose.length === 6) {
+      for (let i = 0; i < 6; i++) dev.platformPose[i] = pose[i];
+      updateHexapodPose(dev);
+      if (dev === State.activeDevice) buildControlPanel(dev);
+      wsSend(buildState(dev));
+    }
+
   } else if (cmd === 'demoPose') {
     if (!dev) return;
+    if (dev.type === 'hexapod') {
+      if (dev.config.demoPose) {
+        for (let i = 0; i < 6; i++) dev.platformPose[i] = dev.config.demoPose[i] || 0;
+        updateHexapodPose(dev);
+        if (dev === State.activeDevice) buildControlPanel(dev);
+      }
+      wsSend(buildState(dev));
+      return;
+    }
     if (dev.isKappaGeometry) {
       for (let i = 0; i < dev.numJoints; i++) dev.jointAngles[i] = 0;
       dev.jointAngles[dev.kappaJointIdx] = -134.6 * deg2rad;
@@ -901,8 +948,10 @@ export function handleCommand(data) {
         // Joints
         setJoints:        { params: 'device?, angles[]', description: 'Set all joint angles (degrees)' },
         setSingleJoint:   { params: 'device?, index, angle', description: 'Set one joint angle (degrees)' },
-        home:             { params: 'device?', description: 'Reset all joints to 0' },
+        home:             { params: 'device?', description: 'Reset all joints to 0 / platform to home' },
         demoPose:         { params: 'device?', description: 'Apply demo pose from config' },
+        // Hexapod
+        setPlatformPose:  { params: 'device?, pose[6]', description: 'Set hexapod platform pose [x,y,z,rx,ry,rz] (mm, deg)' },
         // Kappa
         setVirtualAngles: { params: 'device?, chi?, theta?, phi?', description: 'Set kappa virtual angles (degrees)' },
         getVirtualAngles: { params: 'device?', description: 'Get current kappa virtual angles' },

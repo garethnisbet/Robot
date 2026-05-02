@@ -32,6 +32,7 @@ import {
   loadDevice,
   updateSliders, setIKMode, syncIKSliders,
 } from './device.js';
+import { updateHexapodPose, syncHexapodFromTransform, syncHexapodSliders } from './hexapod.js';
 import {
   buildControlPanel, rebuildDeviceList,
   setActiveDevice, findDeviceForObject,
@@ -87,7 +88,14 @@ function animate(time, frame) {
   updateVR(frame);
 
   if (State.activeDevice) {
-    if (State.activeDevice.ikMode) {
+    if (State.activeDevice.ikMode && State.activeDevice.type === 'hexapod') {
+      syncHexapodFromTransform(State.activeDevice);
+      syncHexapodSliders(State.activeDevice);
+      const platPos = State.activeDevice.platformGroup.position;
+      eePosEl.textContent  = fmtV(platPos);
+      tgtPosEl.textContent = '-';
+      ikErrEl.textContent  = '-';
+    } else if (State.activeDevice.ikMode) {
       const err = solveIK(State.activeDevice, State.activeDevice.ikTarget.position, State.activeDevice.ikTargetQuat, 10, 0.00005);
       updateSliders(State.activeDevice);
 
@@ -102,6 +110,12 @@ function animate(time, frame) {
       ikErrEl.textContent  = (err * 1000).toFixed(2) + 'mm';
 
       syncIKSliders(State.activeDevice);
+    } else if (State.activeDevice.type === 'hexapod') {
+      State.activeDevice.platformGroup.updateWorldMatrix(true, false);
+      const platPos = new THREE.Vector3().setFromMatrixPosition(State.activeDevice.platformGroup.matrixWorld);
+      eePosEl.textContent  = fmtV(platPos);
+      tgtPosEl.textContent = '-';
+      ikErrEl.textContent  = '-';
     } else {
       const eePos = getEEWorldPosition(State.activeDevice);
       eePosEl.textContent  = fmtV(eePos);
@@ -160,46 +174,63 @@ function animate(time, frame) {
 
 document.getElementById('resetBtn').addEventListener('click', () => {
   if (!State.activeDevice) return;
-  for (let i = 0; i < State.activeDevice.numJoints; i++) State.activeDevice.jointAngles[i] = 0;
-  updateFK(State.activeDevice);
-  updateSliders(State.activeDevice);
-  if (State.activeDevice.ikMode) {
+  const dev = State.activeDevice;
+  if (dev.type === 'hexapod') {
+    dev.platformPose.fill(0);
+    updateHexapodPose(dev);
+    buildControlPanel(dev);
+    return;
+  }
+  for (let i = 0; i < dev.numJoints; i++) dev.jointAngles[i] = 0;
+  updateFK(dev);
+  updateSliders(dev);
+  if (dev.ikMode) {
     State.scene.updateMatrixWorld(true);
-    State.activeDevice.ikTarget.position.copy(getEEWorldPosition(State.activeDevice));
-    State.activeDevice.ikTargetQuat.copy(getEEWorldQuaternion(State.activeDevice));
-    State.activeDevice.ikTargetEuler.setFromQuaternion(State.activeDevice.ikTargetQuat, 'YZX');
-    State.activeDevice.ikTarget.quaternion.copy(State.activeDevice.ikTargetQuat);
-    syncIKSliders(State.activeDevice);
+    dev.ikTarget.position.copy(getEEWorldPosition(dev));
+    dev.ikTargetQuat.copy(getEEWorldQuaternion(dev));
+    dev.ikTargetEuler.setFromQuaternion(dev.ikTargetQuat, 'YZX');
+    dev.ikTarget.quaternion.copy(dev.ikTargetQuat);
+    syncIKSliders(dev);
   }
 });
 
 document.getElementById('demoBtn').addEventListener('click', () => {
   if (!State.activeDevice) return;
-  if (State.activeDevice.isKappaGeometry) {
-    for (let i = 0; i < State.activeDevice.numJoints; i++) State.activeDevice.jointAngles[i] = 0;
-    State.activeDevice.jointAngles[State.activeDevice.kappaJointIdx] = -134.6 * deg2rad;
-    State.activeDevice.jointAngles[State.activeDevice.thetaJointIdx] = -33.5 * deg2rad;
-    State.activeDevice.jointAngles[State.activeDevice.phiJointIdx]   = -146.9 * deg2rad;
-  } else if (State.activeDevice.config.demoPose) {
-    const pose = State.activeDevice.config.demoPose;
-    for (let i = 0; i < State.activeDevice.numJoints && i < pose.length; i++) {
-      State.activeDevice.jointAngles[i] = pose[i] * deg2rad;
+  const dev = State.activeDevice;
+  if (dev.type === 'hexapod') {
+    if (dev.config.demoPose) {
+      for (let i = 0; i < 6; i++) dev.platformPose[i] = dev.config.demoPose[i] || 0;
+      updateHexapodPose(dev);
+      buildControlPanel(dev);
+    }
+    return;
+  }
+  if (dev.isKappaGeometry) {
+    for (let i = 0; i < dev.numJoints; i++) dev.jointAngles[i] = 0;
+    dev.jointAngles[dev.kappaJointIdx] = -134.6 * deg2rad;
+    dev.jointAngles[dev.thetaJointIdx] = -33.5 * deg2rad;
+    dev.jointAngles[dev.phiJointIdx]   = -146.9 * deg2rad;
+  } else if (dev.config.demoPose) {
+    const pose = dev.config.demoPose;
+    for (let i = 0; i < dev.numJoints && i < pose.length; i++) {
+      dev.jointAngles[i] = pose[i] * deg2rad;
     }
   }
-  updateFK(State.activeDevice);
-  updateSliders(State.activeDevice);
-  if (State.activeDevice.ikMode) {
+  updateFK(dev);
+  updateSliders(dev);
+  if (dev.ikMode) {
     State.scene.updateMatrixWorld(true);
-    State.activeDevice.ikTarget.position.copy(getEEWorldPosition(State.activeDevice));
-    State.activeDevice.ikTargetQuat.copy(getEEWorldQuaternion(State.activeDevice));
-    State.activeDevice.ikTargetEuler.setFromQuaternion(State.activeDevice.ikTargetQuat, 'YZX');
-    State.activeDevice.ikTarget.quaternion.copy(State.activeDevice.ikTargetQuat);
-    syncIKSliders(State.activeDevice);
+    dev.ikTarget.position.copy(getEEWorldPosition(dev));
+    dev.ikTargetQuat.copy(getEEWorldQuaternion(dev));
+    dev.ikTargetEuler.setFromQuaternion(dev.ikTargetQuat, 'YZX');
+    dev.ikTarget.quaternion.copy(dev.ikTargetQuat);
+    syncIKSliders(dev);
   }
 });
 
 document.getElementById('ikBtn').addEventListener('click', () => {
-  if (!State.activeDevice || State.activeDevice.isBranching) return;
+  if (!State.activeDevice) return;
+  if (State.activeDevice.isBranching && State.activeDevice.type !== 'hexapod') return;
   setIKMode(State.activeDevice, !State.activeDevice.ikMode);
 });
 
@@ -363,20 +394,17 @@ document.getElementById('primaryModelSelect').addEventListener('change', async (
     // Insert new device at front as primary
     State.devices.unshift(dev);
     State.setActiveDevice(dev);
-    updateFK(dev);
+    if (dev.type === 'hexapod') updateHexapodPose(dev);
+    else updateFK(dev);
     buildControlPanel(dev);
     rebuildDeviceList();
 
     // Auto-fit camera to new primary
     const fitBox = new THREE.Box3();
-    for (const grp of dev.jointRotGroups) {
-      grp.updateWorldMatrix(true, true);
-      grp.traverse((child) => { if (child.isMesh) fitBox.expandByObject(child); });
-    }
-    for (const mesh of dev.staticMeshes) {
-      mesh.updateWorldMatrix(true, false);
-      fitBox.expandByObject(mesh);
-    }
+    dev.rootGroup.updateWorldMatrix(true, true);
+    dev.rootGroup.traverse((child) => {
+      if (child.isMesh) fitBox.expandByObject(child);
+    });
     if (!fitBox.isEmpty()) {
       const fitCenter = fitBox.getCenter(new THREE.Vector3());
       const fitSize   = fitBox.getSize(new THREE.Vector3());
@@ -415,7 +443,8 @@ document.getElementById('addDeviceBtn').addEventListener('click', async () => {
     document.getElementById('loading').textContent = `Loading device...`;
     const dev = await loadDevice(configFile);
     State.devices.push(dev);
-    updateFK(dev);
+    if (dev.type === 'hexapod') updateHexapodPose(dev);
+    else updateFK(dev);
     setActiveDevice(dev);
     document.getElementById('loading').style.display = 'none';
   } catch (err) {
@@ -743,23 +772,18 @@ if (!restoredFromStorage) {
     const initialDevice = await loadDevice(configParam);
     State.devices.push(initialDevice);
     State.setActiveDevice(initialDevice);
-    updateFK(initialDevice);
+    if (initialDevice.type === 'hexapod') updateHexapodPose(initialDevice);
+    else updateFK(initialDevice);
     buildControlPanel(initialDevice);
     rebuildDeviceList();
     rebuildPrimaryModelDropdown(configParam);
 
     // Auto-fit camera
     const fitBox = new THREE.Box3();
-    for (const grp of initialDevice.jointRotGroups) {
-      grp.updateWorldMatrix(true, true);
-      grp.traverse((child) => {
-        if (child.isMesh) fitBox.expandByObject(child);
-      });
-    }
-    for (const mesh of initialDevice.staticMeshes) {
-      mesh.updateWorldMatrix(true, false);
-      fitBox.expandByObject(mesh);
-    }
+    initialDevice.rootGroup.updateWorldMatrix(true, true);
+    initialDevice.rootGroup.traverse((child) => {
+      if (child.isMesh) fitBox.expandByObject(child);
+    });
     if (!fitBox.isEmpty()) {
       const fitCenter = fitBox.getCenter(new THREE.Vector3());
       const fitSize   = fitBox.getSize(new THREE.Vector3());
@@ -942,13 +966,17 @@ async function restoreScene(data) {
           dev.jointAngles[i] = devState.jointAngles[i];
         }
       }
+      if (devState.platformPose && dev.type === 'hexapod') {
+        for (let i = 0; i < 6; i++) dev.platformPose[i] = devState.platformPose[i] || 0;
+      }
       if (devState.position) {
         dev.rootGroup.position.set(...devState.position);
       }
       if (devState.rotation) {
         dev.rootGroup.rotation.set(...devState.rotation);
       }
-      updateFK(dev);
+      if (dev.type === 'hexapod') updateHexapodPose(dev);
+      else updateFK(dev);
       console.log('[Load Scene] Device:', dev.name, 'id:', dev.id,
         'joints:', dev.jointAngles.map(a => (a * 180 / Math.PI).toFixed(1)),
         'pos:', [dev.rootGroup.position.x, dev.rootGroup.position.y, dev.rootGroup.position.z]);
