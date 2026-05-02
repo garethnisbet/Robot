@@ -382,28 +382,40 @@ class RobotClient:
         lines = []
 
         if msg_type == "state":
-            all_joints = data["joints"]
-            ee = data["eePosition"]
-            ori = data.get("eeOrientation", [0, 0, 0])
-            mode = data.get("mode", "?")
-            err = data.get("ikError")
-
-            if self._movable_joints:
-                j_parts = []
-                for (si, name), val in zip(self._movable_joints, all_joints):
-                    j_parts.append(f"{name}={val:.1f}")
-                j_str = ", ".join(j_parts)
+            if data.get("deviceType") == "hexapod":
+                pose = data.get("platformPose", [0]*6)
+                legs = data.get("legLengths", [])
+                lines.append(f"  {_bold('STATE')} | {_bgreen('hexapod')}")
+                lines.append(
+                    f"         pose: x={_cyan(f'{pose[0]:.1f}')} y={_cyan(f'{pose[1]:.1f}')} z={_cyan(f'{pose[2]:.1f}')}mm  "
+                    f"rx={_magenta(f'{pose[3]:.2f}')} ry={_magenta(f'{pose[4]:.2f}')} rz={_magenta(f'{pose[5]:.2f}')}deg"
+                )
+                if legs:
+                    leg_str = ", ".join(f"{l:.2f}" for l in legs)
+                    lines.append(f"         legs: {_white(leg_str)}mm")
             else:
-                j_str = ", ".join(f"{a:7.1f}" for a in all_joints)
+                all_joints = data["joints"]
+                ee = data["eePosition"]
+                ori = data.get("eeOrientation", [0, 0, 0])
+                mode = data.get("mode", "?")
+                err = data.get("ikError")
 
-            mode_c = _bgreen(mode) if mode == "FK" else _bcyan(mode)
-            lines.append(f"  {_bold('STATE')} | mode={mode_c}")
-            lines.append(f"         joints: {_white(j_str)}")
-            lines.append(
-                f"         ee=({_cyan(f'{ee[0]:.1f}')}, {_cyan(f'{ee[1]:.1f}')}, {_cyan(f'{ee[2]:.1f}')})mm  "
-                f"ori=({_magenta(f'{ori[0]:.1f}')}, {_magenta(f'{ori[1]:.1f}')}, {_magenta(f'{ori[2]:.1f}')})deg  "
-                f"err={_yellow(f'{err:.2f}mm') if err is not None else _dim('-')}"
-            )
+                if self._movable_joints:
+                    j_parts = []
+                    for (si, name), val in zip(self._movable_joints, all_joints):
+                        j_parts.append(f"{name}={val:.1f}")
+                    j_str = ", ".join(j_parts)
+                else:
+                    j_str = ", ".join(f"{a:7.1f}" for a in all_joints)
+
+                mode_c = _bgreen(mode) if mode == "FK" else _bcyan(mode)
+                lines.append(f"  {_bold('STATE')} | mode={mode_c}")
+                lines.append(f"         joints: {_white(j_str)}")
+                lines.append(
+                    f"         ee=({_cyan(f'{ee[0]:.1f}')}, {_cyan(f'{ee[1]:.1f}')}, {_cyan(f'{ee[2]:.1f}')})mm  "
+                    f"ori=({_magenta(f'{ori[0]:.1f}')}, {_magenta(f'{ori[1]:.1f}')}, {_magenta(f'{ori[2]:.1f}')})deg  "
+                    f"err={_yellow(f'{err:.2f}mm') if err is not None else _dim('-')}"
+                )
             coll_on = data.get("collisionEnabled", False)
             collisions = data.get("collisions", [])
             if coll_on:
@@ -412,6 +424,39 @@ class RobotClient:
                     lines.append(f"         collision: {_bred('YES')} [{pairs}]")
                 else:
                     lines.append(f"         collision: {_green('none')}")
+
+        elif msg_type == "hexapodFK":
+            pose = data.get("pose", [0]*6)
+            legs = data.get("legLengths", [])
+            lines.append(f"  {_bold('HEXAPOD FK')} (pose → leg lengths)")
+            lines.append(
+                f"    pose: x={_cyan(f'{pose[0]:.1f}')} y={_cyan(f'{pose[1]:.1f}')} z={_cyan(f'{pose[2]:.1f}')}mm  "
+                f"rx={_magenta(f'{pose[3]:.2f}')} ry={_magenta(f'{pose[4]:.2f}')} rz={_magenta(f'{pose[5]:.2f}')}deg"
+            )
+            leg_str = ", ".join(f"{l:.2f}" for l in legs)
+            lines.append(f"    legs: {_white(leg_str)}mm")
+
+        elif msg_type == "hexapodIK":
+            pose = data.get("pose", [0]*6)
+            legs = data.get("legLengths", [])
+            lines.append(f"  {_bold('HEXAPOD IK')} (leg lengths → pose)")
+            leg_str = ", ".join(f"{l:.2f}" for l in legs)
+            lines.append(f"    legs: {_white(leg_str)}mm")
+            lines.append(
+                f"    pose: x={_cyan(f'{pose[0]:.1f}')} y={_cyan(f'{pose[1]:.1f}')} z={_cyan(f'{pose[2]:.1f}')}mm  "
+                f"rx={_magenta(f'{pose[3]:.2f}')} ry={_magenta(f'{pose[4]:.2f}')} rz={_magenta(f'{pose[5]:.2f}')}deg"
+            )
+
+        elif msg_type == "legLengths":
+            pose = data.get("platformPose", [0]*6)
+            legs = data.get("legLengths", [])
+            lines.append(f"  {_bold('LEG LENGTHS')}")
+            lines.append(
+                f"    pose: x={_cyan(f'{pose[0]:.1f}')} y={_cyan(f'{pose[1]:.1f}')} z={_cyan(f'{pose[2]:.1f}')}mm  "
+                f"rx={_magenta(f'{pose[3]:.2f}')} ry={_magenta(f'{pose[4]:.2f}')} rz={_magenta(f'{pose[5]:.2f}')}deg"
+            )
+            for i, l in enumerate(legs):
+                lines.append(f"    leg {i+1}: {_white(f'{l:.2f}')}mm")
 
         elif msg_type == "collisions":
             enabled = data.get("enabled", False)
@@ -1100,6 +1145,104 @@ class RobotClient:
         self._send({"cmd": "setIKTarget",
                      "position": [float(x), float(y), float(z)],
                      "orientation": [float(a), float(b), float(g)]})
+
+    # ═════════════════════════════════════════════════════════════════════
+    #  PUBLIC API — Hexapod
+    # ═════════════════════════════════════════════════════════════════════
+
+    def platform(self, pose):
+        """Set hexapod platform pose [x,y,z,rx,ry,rz] (mm, degrees).
+
+        Usage: robot.platform([0, 0, 10, 0, 0, 0])
+               robot.platform([5, 0, 0, 3, 0, 0])
+        """
+        if len(pose) != 6:
+            print(f"  {_yellow('Expected 6-element pose')} [x,y,z,rx,ry,rz], got {len(pose)}")
+            return
+        self._send({"cmd": "setPlatformPose",
+                     "pose": [float(v) for v in pose]})
+
+    @property
+    def platform_pose(self):
+        """Current hexapod platform pose [x,y,z,rx,ry,rz] (mm, deg).
+
+        Usage: robot.platform_pose  -> [0.0, 0.0, 10.0, 3.0, 0.0, 0.0]
+        """
+        data = self._get_state_silent()
+        return data.get("platformPose") if data else None
+
+    @property
+    def leg_lengths(self):
+        """Current hexapod leg lengths [l1..l6] in mm.
+
+        Usage: robot.leg_lengths  -> [150.12, 150.12, 150.12, 150.12, 150.12, 150.12]
+        """
+        data = self._get_state_silent()
+        return data.get("legLengths") if data else None
+
+    def hexapod_fk(self, pose=None):
+        """Forward kinematics: platform pose → leg lengths.
+
+        If pose is omitted, uses the current platform pose.
+        Returns dict with 'pose' and 'legLengths' (mm).
+
+        Usage: robot.hexapod_fk()                         # current pose
+               robot.hexapod_fk([5, 0, 10, 2, 0, 0])     # specific pose
+        """
+        msg = {"cmd": "hexapodFK"}
+        if pose is not None:
+            msg["pose"] = [float(v) for v in pose]
+        data = self._send_and_wait(msg, "hexapodFK")
+        if data:
+            output = self._format_message(data)
+            if output:
+                print(output)
+        return data
+
+    def hexapod_ik(self, leg_lengths):
+        """Inverse kinematics: leg lengths → platform pose.
+
+        Returns dict with 'pose' and 'legLengths' (mm).
+
+        Usage: robot.hexapod_ik([150.1, 150.1, 150.1, 150.1, 150.1, 150.1])
+        """
+        data = self._send_and_wait(
+            {"cmd": "hexapodIK", "legLengths": [float(l) for l in leg_lengths]},
+            "hexapodIK")
+        if data:
+            output = self._format_message(data)
+            if output:
+                print(output)
+        return data
+
+    def get_leg_lengths(self):
+        """Get current hexapod leg lengths with per-leg detail.
+
+        Usage: robot.get_leg_lengths()
+        """
+        data = self._send_and_wait({"cmd": "getLegLengths"}, "legLengths")
+        if data:
+            output = self._format_message(data)
+            if output:
+                print(output)
+        return data
+
+    def set_leg_lengths(self, *lengths):
+        """Set hexapod pose by specifying desired leg lengths in mm.
+
+        Solves IK to find the platform pose that produces the given lengths,
+        then applies it.
+
+        Usage: robot.set_leg_lengths(150.1, 150.1, 150.1, 150.1, 150.1, 150.1)
+               robot.set_leg_lengths([150.1, 150.1, 150.1, 150.1, 150.1, 150.1])
+        """
+        if len(lengths) == 1 and isinstance(lengths[0], (list, tuple)):
+            lengths = lengths[0]
+        if len(lengths) != 6:
+            print(f"  {_yellow('Expected 6 leg lengths')}, got {len(lengths)}")
+            return
+        self._send({"cmd": "setLegLengths",
+                     "legLengths": [float(l) for l in lengths]})
 
     # ═════════════════════════════════════════════════════════════════════
     #  PUBLIC API — Collision
@@ -2324,6 +2467,15 @@ class RobotClient:
             ("Inverse Kinematics", [
                 ("robot.move(x, y, z [, a, b, g])", "IK move to position (mm) + orientation (\u00b0)"),
                 ("robot.target(x, y, z [, a, b, g])", "Set IK target without switching mode"),
+            ]),
+            ("Hexapod (Stewart Platform)", [
+                ("robot.platform([x,y,z,rx,ry,rz])", "Set platform pose (mm, \u00b0)"),
+                ("robot.platform_pose", "Current platform pose [x,y,z,rx,ry,rz]"),
+                ("robot.leg_lengths", "Current leg lengths [l1..l6] mm"),
+                ("robot.hexapod_fk([pose])", "FK: pose \u2192 leg lengths"),
+                ("robot.hexapod_ik([l1..l6])", "IK: leg lengths \u2192 pose"),
+                ("robot.get_leg_lengths()", "Get current leg lengths (detailed)"),
+                ("robot.set_leg_lengths(l1..l6)", "Set pose via leg lengths (mm)"),
             ]),
             ("Collision", [
                 ("robot.collision([True|False])", "Toggle or set collision detection"),

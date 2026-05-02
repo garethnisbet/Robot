@@ -25,6 +25,11 @@ Commands (send TO the viewer):
   {"cmd": "rotateDevice", "delta": [rx,ry,rz], "space": "parent"}      # deg; space: parent|local|world
   {"cmd": "translateObject", "name": "Cube", "delta": [dx,dy,dz], "space": "parent"}
   {"cmd": "rotateObject", "name": "Cube", "delta": [rx,ry,rz], "space": "parent"}
+  {"cmd": "setPlatformPose", "pose": [x,y,z,rx,ry,rz]}                 # hexapod: set pose (mm, deg)
+  {"cmd": "hexapodFK", "pose": [x,y,z,rx,ry,rz]}                       # hexapod FK: pose → leg lengths
+  {"cmd": "hexapodIK", "legLengths": [l1..l6]}                         # hexapod IK: leg lengths (mm) → pose
+  {"cmd": "getLegLengths"}                                               # hexapod: get current leg lengths
+  {"cmd": "setLegLengths", "legLengths": [l1..l6]}                     # hexapod: set pose via leg lengths
 
 State (sent FROM the viewer):
   {

@@ -385,6 +385,8 @@ meca500 [5]: for a in range(0, 91, 10):              # full Python syntax
 | `robot.mode` | `robot.mode` | Current mode ('FK' or 'IK') |
 | `robot.get_device_pos('GP225')` | `d = robot.get_device_pos()` | Any device: pos, rot, joints, EE |
 | `robot.get_obj_pos('cube_1')` | `o = robot.get_obj_pos(0)` | Any object: pos, rot, scale, BB |
+| `robot.platform_pose` | `robot.platform_pose` | Hexapod platform pose [x,y,z,rx,ry,rz] |
+| `robot.leg_lengths` | `robot.leg_lengths` | Hexapod leg lengths [l1..l6] mm |
 
 **Device commands:**
 
@@ -415,6 +417,53 @@ meca500 [5]: for a in range(0, 91, 10):              # full Python syntax
 |--------|-------------|
 | `robot.devtranslate(dx, dy, dz, space='parent')` | Translate device origin by delta (mm) in parent/local/world frame |
 | `robot.devrotate(rx, ry, rz, space='parent')` | Rotate device origin by delta (deg) in parent/local/world frame |
+
+**Hexapod (Stewart platform) commands:**
+
+| Property / Method | Description |
+|---------|-------------|
+| `robot.platform([x,y,z,rx,ry,rz])` | Set platform pose (mm, degrees) |
+| `robot.platform_pose` | Current platform pose `[x, y, z, rx, ry, rz]` |
+| `robot.leg_lengths` | Current leg lengths `[l1..l6]` in mm |
+| `robot.hexapod_fk([pose])` | FK: pose → leg lengths (query only). Omit pose to use current |
+| `robot.hexapod_ik([l1..l6])` | IK: leg lengths (mm) → platform pose (query only) |
+| `robot.get_leg_lengths()` | Get current leg lengths with per-leg detail |
+| `robot.set_leg_lengths(l1..l6)` | Set platform pose by specifying desired leg lengths (mm) |
+
+```python
+hexapod [1]: robot.platform([0, 0, 10, 0, 0, 0])     # move platform up 10mm
+hexapod [2]: robot.platform_pose                        # read back current pose
+hexapod [3]: robot.leg_lengths                          # read current leg lengths
+hexapod [4]: result = robot.hexapod_fk([5, 0, 10, 2, 0, 0])  # compute leg lengths for a pose
+hexapod [5]: result = robot.hexapod_ik([150, 150, 150, 150, 150, 150])  # solve pose from leg lengths
+hexapod [6]: robot.set_leg_lengths([152, 148, 150, 150, 151, 149])      # drive platform via leg lengths
+```
+
+**Coordinate transform:**
+
+| Python | Description |
+|--------|-------------|
+| `robot.worldToLocal([x,y,z,rx,ry,rz])` | Transform a world-frame pose into the active device's local frame |
+| `robot.worldToLocal([x,y,z], [rx,ry,rz])` | Same, with separate position and orientation arguments |
+| `robot.worldToLocal(pos, ori, device='GP225')` | Transform relative to a specific device |
+
+`worldToLocal` converts a world-frame pose (position in mm, orientation as XYZ intrinsic Euler angles in degrees) into the coordinate frame of a device's origin. This is useful when a robot is mounted at an arbitrary position/rotation and you need to express a world target in the robot's own coordinate system — for example, to feed into an IK solver that expects local coordinates.
+
+The orientation convention is `R = Rx(α)·Ry(β)·Rz(γ)` in a right-handed Z-up frame (X right, Y into scene, Z up). Note that Y points *into* the scene, which is the negation of the viewer's Y readback from `dev_pose()`.
+
+When called with a 6-element list, returns a 6-element list `[x, y, z, rx, ry, rz]`. When called with separate position and orientation arguments, returns a `(position, orientation)` tuple.
+
+```python
+# Robot mounted at world position [500, 200, 0] with 45° rotation
+meca500 [1]: robot.worldToLocal([600, 200, 300, 0, 0, 0])
+# → [70.71, 70.71, 300.0, 0.0, 0.0, -45.0]   (position and orientation in robot's local frame)
+
+meca500 [2]: p, o = robot.worldToLocal([600, 200, 300], [0, 0, 0])
+# p = [70.71, 70.71, 300.0], o = [0.0, 0.0, -45.0]
+
+meca500 [3]: robot.worldToLocal([600, 200, 300], [0, 0, 0], device='GP225')
+# Transform relative to a different device
+```
 
 **Motion planning commands:**
 
@@ -500,8 +549,18 @@ All positions are in mm, angles in degrees, using Z-up robot convention. Most co
 **Hexapod platform control:**
 ```json
 {"cmd": "setPlatformPose", "pose": [0, 0, 5, 5, 0, 10]}
+{"cmd": "hexapodFK", "pose": [0, 0, 5, 5, 0, 10]}
+{"cmd": "hexapodIK", "legLengths": [150.1, 150.1, 150.1, 150.1, 150.1, 150.1]}
+{"cmd": "getLegLengths"}
+{"cmd": "setLegLengths", "legLengths": [150.1, 150.1, 150.1, 150.1, 150.1, 150.1]}
 ```
-The pose is `[x, y, z, rx, ry, rz]` — translation in mm and rotation in degrees. The `getState` response for hexapod devices includes `platformPose` and `platformPosition` instead of `joints`.
+- `setPlatformPose` — set the platform pose `[x, y, z, rx, ry, rz]` (mm, degrees) and update the visualisation
+- `hexapodFK` — forward kinematics: compute leg lengths from a pose (query only, does not move the platform). If `pose` is omitted, uses the current platform pose
+- `hexapodIK` — inverse kinematics: compute the platform pose from 6 leg lengths in mm (query only)
+- `getLegLengths` — return the current leg lengths for the current platform pose
+- `setLegLengths` — solve IK for the given leg lengths and apply the resulting pose
+
+The `getState` response for hexapod devices includes `platformPose`, `legLengths`, and `platformPosition` instead of `joints`.
 
 **Kappa virtual angles** (diffractometer geometry):
 ```json
@@ -564,7 +623,7 @@ Snap views: `+X`, `-X`, `+Y`, `-Y`, `+Z`, `-Z`, `top`, `bottom`, `front`, `back`
 {"cmd": "help"}
 ```
 
-**State response:**
+**State response (serial robot):**
 ```json
 {
   "type": "state",
@@ -582,6 +641,41 @@ Snap views: `+X`, `-X`, `+Y`, `-Y`, `+Z`, `-Z`, `top`, `bottom`, `front`, `back`
 ```
 
 The `chi` field is only present for kappa-geometry devices (diffractometers).
+
+**State response (hexapod):**
+```json
+{
+  "type": "state",
+  "device": "Hexapod",
+  "deviceType": "hexapod",
+  "platformPose": [0, 0, 5, 5, 0, 10],
+  "legLengths": [150.12, 149.88, 150.34, 149.66, 150.21, 149.79],
+  "platformPosition": [0.0, 0.0, 205.0],
+  "collisionEnabled": false,
+  "collision": false,
+  "collisions": []
+}
+```
+
+**Hexapod FK response:**
+```json
+{
+  "type": "hexapodFK",
+  "device": "Hexapod",
+  "pose": [0, 0, 5, 5, 0, 10],
+  "legLengths": [150.12, 149.88, 150.34, 149.66, 150.21, 149.79]
+}
+```
+
+**Hexapod IK response:**
+```json
+{
+  "type": "hexapodIK",
+  "device": "Hexapod",
+  "pose": [0.0, 0.0, 5.0, 5.0, 0.0, 10.0],
+  "legLengths": [150.12, 149.88, 150.34, 149.66, 150.21, 149.79]
+}
+```
 
 ### Custom Client Example (Python)
 

@@ -21,7 +21,7 @@ import {
 } from './stl.js';
 import { clearCollisionHighlights } from './collision.js';
 import { setOrtho } from './scene.js';
-import { updateHexapodPose } from './hexapod.js';
+import { updateHexapodPose, computeLegLengthsFromPose, solveHexapodFK } from './hexapod.js';
 
 const deg2rad = Math.PI / 180;
 const rad2deg = 180 / Math.PI;
@@ -107,11 +107,13 @@ export function buildState(dev) {
 
   if (dev.type === 'hexapod') {
     const p = dev.platformGroup.position;
+    const lengths = computeLegLengthsFromPose(dev, dev.platformPose).map(l => +(l * 1000).toFixed(4));
     return {
       type: 'state',
       device: dev.name,
       deviceType: 'hexapod',
       platformPose: [...dev.platformPose],
+      legLengths: lengths,
       platformPosition: [+(p.x * 1000).toFixed(4), +(p.z * 1000).toFixed(4), +(p.y * 1000).toFixed(4)],
       collisionEnabled: State.collisionEnabled,
       collision: State.collisionEnabled && State.lastCollisions.length > 0,
@@ -531,6 +533,52 @@ export function handleCommand(data) {
       if (dev === State.activeDevice) buildControlPanel(dev);
       wsSend(buildState(dev));
     }
+
+  } else if (cmd === 'hexapodFK') {
+    if (!dev || dev.type !== 'hexapod') {
+      wsSend({ type: 'error', error: 'Device is not a hexapod' }); return;
+    }
+    const pose = data.pose || [...dev.platformPose];
+    if (!Array.isArray(pose) || pose.length !== 6) {
+      wsSend({ type: 'error', error: 'pose must be [x,y,z,rx,ry,rz]' }); return;
+    }
+    const lengths = computeLegLengthsFromPose(dev, pose).map(l => +(l * 1000).toFixed(4));
+    wsSend({ type: 'hexapodFK', device: dev.name, pose, legLengths: lengths });
+
+  } else if (cmd === 'hexapodIK') {
+    if (!dev || dev.type !== 'hexapod') {
+      wsSend({ type: 'error', error: 'Device is not a hexapod' }); return;
+    }
+    const lengths = data.legLengths;
+    if (!Array.isArray(lengths) || lengths.length !== 6) {
+      wsSend({ type: 'error', error: 'legLengths must be [l1,l2,l3,l4,l5,l6] in mm' }); return;
+    }
+    const lengthsM = lengths.map(l => l / 1000);
+    const pose = solveHexapodFK(dev, lengthsM);
+    const finalLengths = computeLegLengthsFromPose(dev, pose).map(l => +(l * 1000).toFixed(4));
+    wsSend({ type: 'hexapodIK', device: dev.name, pose: pose.map(v => +v.toFixed(4)), legLengths: finalLengths });
+
+  } else if (cmd === 'getLegLengths') {
+    if (!dev || dev.type !== 'hexapod') {
+      wsSend({ type: 'error', error: 'Device is not a hexapod' }); return;
+    }
+    const lengths = computeLegLengthsFromPose(dev, dev.platformPose).map(l => +(l * 1000).toFixed(4));
+    wsSend({ type: 'legLengths', device: dev.name, platformPose: [...dev.platformPose], legLengths: lengths });
+
+  } else if (cmd === 'setLegLengths') {
+    if (!dev || dev.type !== 'hexapod') {
+      wsSend({ type: 'error', error: 'Device is not a hexapod' }); return;
+    }
+    const lengths = data.legLengths;
+    if (!Array.isArray(lengths) || lengths.length !== 6) {
+      wsSend({ type: 'error', error: 'legLengths must be [l1,l2,l3,l4,l5,l6] in mm' }); return;
+    }
+    const lengthsM = lengths.map(l => l / 1000);
+    const pose = solveHexapodFK(dev, lengthsM);
+    for (let i = 0; i < 6; i++) dev.platformPose[i] = pose[i];
+    updateHexapodPose(dev);
+    if (dev === State.activeDevice) buildControlPanel(dev);
+    wsSend(buildState(dev));
 
   } else if (cmd === 'demoPose') {
     if (!dev) return;
@@ -952,6 +1000,10 @@ export function handleCommand(data) {
         demoPose:         { params: 'device?', description: 'Apply demo pose from config' },
         // Hexapod
         setPlatformPose:  { params: 'device?, pose[6]', description: 'Set hexapod platform pose [x,y,z,rx,ry,rz] (mm, deg)' },
+        hexapodFK:        { params: 'device?, pose?[6]', description: 'FK: platform pose → leg lengths (mm). Uses current pose if omitted' },
+        hexapodIK:        { params: 'device?, legLengths[6]', description: 'IK: leg lengths (mm) → platform pose' },
+        getLegLengths:    { params: 'device?', description: 'Get current leg lengths (mm) for hexapod' },
+        setLegLengths:    { params: 'device?, legLengths[6]', description: 'Set hexapod pose by specifying leg lengths (mm)' },
         // Kappa
         setVirtualAngles: { params: 'device?, chi?, theta?, phi?', description: 'Set kappa virtual angles (degrees)' },
         getVirtualAngles: { params: 'device?', description: 'Get current kappa virtual angles' },
