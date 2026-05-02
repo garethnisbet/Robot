@@ -8,29 +8,16 @@ import { resolveParentLink } from './stl.js';
 // ============================================================
 // Highlight helpers
 // ============================================================
-const materialOriginalEmissive  = new WeakMap();
-const highlightedMaterials      = new Set();
-const materialOriginalColor     = new WeakMap();
-const highlightedPointMaterials = new Set();
-
-function saveOriginalEmissive(material) {
-  if (!materialOriginalEmissive.has(material)) {
-    materialOriginalEmissive.set(material, material.emissive.clone());
-  }
-}
+const highlightedMeshes = new Set();
+const meshOriginalMaterial = new WeakMap();
 
 export function clearCollisionHighlights() {
-  if (highlightedMaterials.size === 0 && highlightedPointMaterials.size === 0) return;
-  for (const material of highlightedMaterials) {
-    const original = materialOriginalEmissive.get(material);
-    if (original) material.emissive.copy(original);
+  if (highlightedMeshes.size === 0) return;
+  for (const mesh of highlightedMeshes) {
+    const orig = meshOriginalMaterial.get(mesh);
+    if (orig) mesh.material = orig;
   }
-  highlightedMaterials.clear();
-  for (const material of highlightedPointMaterials) {
-    const original = materialOriginalColor.get(material);
-    if (original) material.color.copy(original);
-  }
-  highlightedPointMaterials.clear();
+  highlightedMeshes.clear();
   const collisionInfoEl  = document.getElementById('collision-info');
   const collisionTextEl  = document.getElementById('collision-text');
   collisionInfoEl.classList.remove('hit');
@@ -39,16 +26,14 @@ export function clearCollisionHighlights() {
 }
 
 function _highlightObject(obj) {
-  const mat = obj.material;
-  if (mat.emissive) {
-    saveOriginalEmissive(mat);
-    mat.emissive.set(0xff2200);
-    highlightedMaterials.add(mat);
-  } else {
-    if (!materialOriginalColor.has(mat)) materialOriginalColor.set(mat, mat.color.clone());
-    mat.color.set(0xff2200);
-    highlightedPointMaterials.add(mat);
-  }
+  if (highlightedMeshes.has(obj)) return;
+  const orig = obj.material;
+  meshOriginalMaterial.set(obj, orig);
+  const clone = orig.clone();
+  if (clone.emissive) clone.emissive.set(0xff2200);
+  else clone.color.set(0xff2200);
+  obj.material = clone;
+  highlightedMeshes.add(obj);
 }
 
 function highlightCollisionMeshes(meshA, meshB) {
@@ -249,6 +234,7 @@ function checkCollisionsOffThread() {
       const linkB = allExtendedLinks[j];
       if (linkA.deviceId === linkB.deviceId) {
         const dev = State.devices.find(d => d.id === linkA.deviceId);
+        if (dev && dev.type === 'hexapod') continue;
         if (dev && dev.adjPairs.has([linkA.name, linkB.name].sort().join('|'))) continue;
       }
       for (const meshA of linkA.meshes) {
@@ -514,6 +500,7 @@ function checkCollisionsMainThread() {
       const linkB = allExtendedLinks[j];
       if (linkA.deviceId === linkB.deviceId) {
         const dev = State.devices.find(d => d.id === linkA.deviceId);
+        if (dev && dev.type === 'hexapod') continue;
         if (dev && dev.adjPairs.has([linkA.name, linkB.name].sort().join('|'))) continue;
       }
       for (const meshA of linkA.meshes) {

@@ -19,6 +19,7 @@ import { setOrtho } from './scene.js';
 import { findDeviceForObject, setActiveDevice } from './panel.js';
 import { updateFK } from './kinematics.js';
 import { selectSTL } from './stl.js';
+import { syncHexapodFromTransform, syncHexapodSliders, updateHexapodPose } from './hexapod.js';
 
 const _raycaster = new THREE.Raycaster();
 const _tempMatrix = new THREE.Matrix4();
@@ -530,6 +531,37 @@ function onGripStart(controller) {
     }
   }
 
+  // Hexapod platform grab: same interaction pattern as IK target
+  if (!ikHit && State.activeDevice?.ikMode && State.activeDevice.type === 'hexapod') {
+    const platGroup = State.activeDevice.platformGroup;
+    const platWorldPos = new THREE.Vector3();
+    platGroup.getWorldPosition(platWorldPos);
+    const closest = new THREE.Vector3();
+    _raycaster.ray.closestPointToPoint(platWorldPos, closest);
+    const dist = closest.distanceTo(platWorldPos);
+    const rayDist = _raycaster.ray.origin.distanceTo(closest);
+
+    if (dist < 0.15 && rayDist < 5) {
+      controller.getWorldPosition(_worldPos);
+      const objWorld = new THREE.Vector3();
+      platGroup.getWorldPosition(objWorld);
+
+      const ctrlQuat = new THREE.Quaternion();
+      controller.getWorldQuaternion(ctrlQuat);
+
+      activeGrab = {
+        controller,
+        object: platGroup,
+        offset: objWorld.clone().sub(_worldPos),
+        isIKTarget: false,
+        isHexapodPlatform: true,
+        startCtrlQuat: ctrlQuat,
+        startObjQuat: platGroup.quaternion.clone(),
+      };
+      return;
+    }
+  }
+
   if (ikHit) {
     const ikTarget = State.activeDevice.ikTarget;
     controller.getWorldPosition(_worldPos);
@@ -669,11 +701,17 @@ function pollGamepads(dt) {
       toggleVRPanel();
     }
 
-    // A / X button (index 4) — reset joints to home
+    // A / X button (index 4) — reset to home
     if (gp.buttons[4] && buttonEdge(idx, 4, gp.buttons[4].pressed)) {
       if (State.activeDevice) {
-        State.activeDevice.jointAngles.fill(0);
-        updateFK(State.activeDevice);
+        if (State.activeDevice.type === 'hexapod') {
+          State.activeDevice.platformPose.fill(0);
+          updateHexapodPose(State.activeDevice);
+          syncHexapodSliders(State.activeDevice);
+        } else {
+          State.activeDevice.jointAngles.fill(0);
+          updateFK(State.activeDevice);
+        }
         refreshVRPanel();
       }
     }
@@ -824,6 +862,11 @@ export function updateVR(frame) {
         State.activeDevice.ikTargetQuat.copy(newQuat);
         State.activeDevice.ikTargetEuler.setFromQuaternion(newQuat, 'YZX');
       }
+    }
+
+    if (activeGrab.isHexapodPlatform && State.activeDevice?.type === 'hexapod') {
+      syncHexapodFromTransform(State.activeDevice);
+      syncHexapodSliders(State.activeDevice);
     }
   }
 

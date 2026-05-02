@@ -169,9 +169,14 @@ export async function loadHexapod(configFile) {
       const baseMesh = findNode(config.base.mesh);
       if (baseMesh) {
         reparentTo(baseMesh, rootGroup);
-        dev.staticMeshes.push(baseMesh);
         baseMesh.userData.deviceId = dev.id;
-        baseMesh.traverse(c => { if (c.isMesh) c.userData.deviceId = dev.id; });
+        baseMesh.traverse(c => {
+          if (c.isMesh) {
+            c.geometry.boundsTree = new MeshBVH(c.geometry);
+            c.userData.deviceId = dev.id;
+          }
+        });
+        dev.robotLinkMeshes.push({ name: 'BasePlate', meshes: [baseMesh], jointIdx: -1 });
         createLabel('Base Plate', baseMesh);
       }
 
