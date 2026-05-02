@@ -93,7 +93,13 @@ def blender_to_threejs(vec):
 # ── Step 1: Find the armature ────────────────────────────────────────────────
 
 if armature_name:
-    arm_obj = bpy.data.objects[armature_name]
+    arm_obj = bpy.data.objects.get(armature_name)
+    if arm_obj is None:
+        available = [o.name for o in bpy.data.objects if o.type == 'ARMATURE']
+        raise RuntimeError(
+            f"Armature '{armature_name}' not found.\n"
+            f"Available armatures: {available}"
+        )
 else:
     arm_obj = None
     for obj in bpy.data.objects:
@@ -136,7 +142,7 @@ print("Step 2: Identifying hexapod structure...")
 pose = arm_obj.pose
 
 damped_track_pairs = {}   # bone_name → target_bone_name
-child_of_targets = {}     # bone_name → target_bone_name
+child_of_targets = {}     # bone_name → (target_armature_obj, target_bone_name)
 
 for pb in pose.bones:
     for con in pb.constraints:
@@ -147,62 +153,95 @@ for pb in pose.bones:
         if con.type == 'CHILD_OF' and con.subtarget:
             target_obj = con.target
             if target_obj and target_obj.type == 'ARMATURE':
-                child_of_targets[pb.name] = con.subtarget
+                child_of_targets[pb.name] = (target_obj, con.subtarget)
 
 print(f"  Damped Track constraints: {len(damped_track_pairs)}")
 print(f"  Child Of constraints:     {len(child_of_targets)}")
 
 # Find the control bone: the one that most upper-leg bones follow
+control_arm_obj = None
 if control_bone_name is None:
     target_counts = {}
-    for target in child_of_targets.values():
-        target_counts[target] = target_counts.get(target, 0) + 1
+    target_arm_objs = {}
+    for (target_arm, target_bone) in child_of_targets.values():
+        target_counts[target_bone] = target_counts.get(target_bone, 0) + 1
+        target_arm_objs[target_bone] = target_arm
     if target_counts:
         control_bone_name = max(target_counts, key=target_counts.get)
+        control_arm_obj = target_arm_objs[control_bone_name]
     else:
         raise RuntimeError(
             "No Child Of constraints found — cannot identify control bone.\n"
             "Set CONTROL_BONE explicitly."
         )
-
-print(f"  Control bone: {control_bone_name}")
-
-# Upper leg bones = those with Child Of constraint targeting the control bone
-upper_bones = set()
-for bone_name, target in child_of_targets.items():
-    if target == control_bone_name:
-        upper_bones.add(bone_name)
-
-print(f"  Upper leg bones: {sorted(upper_bones)}")
-
-# Build leg pairs: for each upper bone, find its lower partner via Damped Track
-legs = []
-
-for upper_name in sorted(upper_bones):
-    lower_name = None
-
-    # Case 1: a non-upper bone has a Damped Track pointing at this upper bone
-    for src, tgt in damped_track_pairs.items():
-        if tgt == upper_name and src not in upper_bones:
-            lower_name = src
+else:
+    for (target_arm, target_bone) in child_of_targets.values():
+        if target_bone == control_bone_name:
+            control_arm_obj = target_arm
             break
 
-    # Case 2: this upper bone has a Damped Track pointing at a non-upper bone
-    if lower_name is None and upper_name in damped_track_pairs:
-        candidate = damped_track_pairs[upper_name]
-        if candidate not in upper_bones:
-            lower_name = candidate
+# Control bone may be in the same armature or a different one
+if control_arm_obj is None:
+    control_arm_obj = arm_obj
+control_arm_data = control_arm_obj.data
 
-    if lower_name:
-        legs.append((lower_name, upper_name))
-        print(f"  Leg {len(legs)}: lower={lower_name}  upper={upper_name}")
+print(f"  Control bone: {control_bone_name} (in '{control_arm_obj.name}')")
+
+# Bones directly connected to the control bone via Child Of
+child_of_bones = set()
+for bone_name, (target_arm, target_bone) in child_of_targets.items():
+    if target_bone == control_bone_name:
+        child_of_bones.add(bone_name)
+
+# Build the set of platform-connected bones: child_of_bones + any armature
+# descendants of those bones (the upper leg bones may be children of helper bones)
+platform_connected = set(child_of_bones)
+for bone in arm.bones:
+    parent = bone.parent
+    while parent:
+        if parent.name in platform_connected:
+            platform_connected.add(bone.name)
+            break
+        parent = parent.parent
+
+print(f"  Platform-connected bones: {sorted(platform_connected)}")
+
+# Build leg pairs from bidirectional Damped Track connections
+seen_pairs = set()
+dt_pairs = []
+for src, tgt in damped_track_pairs.items():
+    pair = frozenset((src, tgt))
+    if pair not in seen_pairs:
+        seen_pairs.add(pair)
+        dt_pairs.append((src, tgt))
+
+legs = []
+for a, b in sorted(dt_pairs):
+    a_platform = a in platform_connected
+    b_platform = b in platform_connected
+    if a_platform and not b_platform:
+        legs.append((b, a))
+    elif b_platform and not a_platform:
+        legs.append((a, b))
     else:
-        print(f"  WARNING: No lower-leg partner for upper bone '{upper_name}'")
+        # Neither bone in platform set — use rest position distance to control bone
+        control_head = control_arm_data.bones[control_bone_name].head_local
+        dist_a = (arm.bones[a].head_local - control_head).length
+        dist_b = (arm.bones[b].head_local - control_head).length
+        if dist_a < dist_b:
+            legs.append((b, a))
+        else:
+            legs.append((a, b))
+
+legs.sort(key=lambda pair: pair[0])
 
 if not legs:
     raise RuntimeError(
-        "No leg pairs found. Check that the armature has Damped Track + Child Of constraints."
+        "No leg pairs found. Check that the armature has Damped Track constraints linking leg bones."
     )
+
+for i, (lower_name, upper_name) in enumerate(legs):
+    print(f"  Leg {i+1}: lower={lower_name}  upper={upper_name}")
 
 print(f"  Total legs: {len(legs)}")
 
@@ -213,9 +252,10 @@ print(f"  Total legs: {len(legs)}")
 print("\nStep 3: Extracting pivot positions...")
 
 arm_world = arm_obj.matrix_world
+control_arm_world = control_arm_obj.matrix_world
 
-control_bone_rest = arm.bones[control_bone_name]
-control_head_world = arm_world @ control_bone_rest.head_local
+control_bone_rest = control_arm_data.bones[control_bone_name]
+control_head_world = control_arm_world @ control_bone_rest.head_local
 platform_rest_pos = blender_to_threejs(control_head_world)
 
 print(f"  Platform rest position (Three.js): {platform_rest_pos}")
@@ -331,7 +371,8 @@ print("\nStep 5: Extracting platform limits...")
 limits = {k: list(v) for k, v in DEFAULT_LIMITS.items()}
 found_limits = False
 
-control_pb = pose.bones.get(control_bone_name)
+control_pose = control_arm_obj.pose
+control_pb = control_pose.bones.get(control_bone_name)
 if control_pb:
     for con in control_pb.constraints:
         if con.type == 'LIMIT_LOCATION' and not con.mute:
