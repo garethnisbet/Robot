@@ -696,6 +696,39 @@ export function handleCommand(data) {
     applyIKTarget(dev, data);
     wsSend(buildState(dev));
 
+  // ── Coordinate transforms ──────────────────────────────────
+
+  } else if (cmd === 'worldToLocal') {
+    if (!dev) { wsSend({ type: 'error', error: 'Device not found', _reqId: data._reqId }); return; }
+    State.scene.updateMatrixWorld(true);
+    const rg = dev.rootGroup;
+
+    let localPos = null;
+    if (Array.isArray(data.position) && data.position.length === 3) {
+      const wp = new THREE.Vector3(data.position[0] / 1000, data.position[2] / 1000, data.position[1] / 1000);
+      rg.worldToLocal(wp);
+      localPos = [+(wp.x * 1000).toFixed(4), +(wp.z * 1000).toFixed(4), +(wp.y * 1000).toFixed(4)];
+    }
+
+    let localOri = null;
+    if (Array.isArray(data.orientation) && data.orientation.length === 3) {
+      const worldQ = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(data.orientation[0] * deg2rad, data.orientation[2] * deg2rad, data.orientation[1] * deg2rad, 'XYZ'));
+      const devQ = new THREE.Quaternion();
+      rg.getWorldQuaternion(devQ);
+      const localQ = devQ.invert().multiply(worldQ);
+      const localE = new THREE.Euler().setFromQuaternion(localQ, 'XYZ');
+      localOri = [+(localE.x * rad2deg).toFixed(4), +(localE.z * rad2deg).toFixed(4), +(localE.y * rad2deg).toFixed(4)];
+    }
+
+    wsSend({
+      type: 'worldToLocal',
+      device: dev.name,
+      position: localPos,
+      orientation: localOri,
+      _reqId: data._reqId,
+    });
+
   // ── Collision ───────────────────────────────────────────────
 
   } else if (cmd === 'setCollision') {
@@ -1012,6 +1045,8 @@ export function handleCommand(data) {
         setMode:          { params: 'device?, mode', description: 'Set FK or IK mode' },
         setIKTarget:      { params: 'device?, position?, orientation?', description: 'Set IK target (mm, deg)' },
         moveTo:           { params: 'device?, position?, orientation?', description: 'Switch to IK and set target' },
+        // Coordinate transforms
+        worldToLocal:     { params: 'device?, position?, orientation?', description: 'Transform world-frame position/orientation to device-local frame (mm, deg)' },
         // Collision
         setCollision:     { params: 'enabled?', description: 'Toggle or set collision detection' },
         getCollisions:    { params: '', description: 'Get current collision pairs' },
