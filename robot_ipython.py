@@ -1385,6 +1385,29 @@ class RobotClient:
             msg["device"] = device
         self._send(msg)
 
+    def devpose(self, position=None, rotation=None, device=None):
+        """Set the device origin position and/or rotation (parent-local frame).
+
+        position: [x, y, z] in mm, or [x, y, z, rx, ry, rz] for full pose
+        rotation: [rx, ry, rz] in degrees
+
+        Usage: r.devpose([100, 0, 0])                                # position only
+               r.devpose([100, 0, 0], [0, 0, 90])                   # position + rotation
+               r.devpose([100, 0, 0, 0, 0, 90])                     # full pose as one list
+               r.devpose(rotation=[0, 0, 90])                       # rotation only
+               r.devpose([0, 0, 0], device='GP225')                 # specific device
+        """
+        if position is not None and len(position) == 6:
+            position, rotation = position[:3], position[3:]
+        msg = {"cmd": "setDeviceOrigin"}
+        if position is not None:
+            msg["position"] = [float(v) for v in position]
+        if rotation is not None:
+            msg["rotation"] = [float(v) for v in rotation]
+        if device:
+            msg["device"] = device
+        self._send(msg)
+
     # ═════════════════════════════════════════════════════════════════════
     #  PUBLIC API — Devices & Sessions
     # ═════════════════════════════════════════════════════════════════════

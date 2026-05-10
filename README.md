@@ -22,7 +22,7 @@ New devices can be added from Blender scenes using `import_robot.py` (serial rob
 - **Config-driven viewer** — a single generic `threejs_scene.html` viewer loads any device via JSON config
 - **Multi-device scene** — load multiple devices simultaneously from the add-device dropdown; click a device in the list or click its mesh to switch active device
 - **Device renaming** — double-click a device name in the device list to rename it
-- **Device origin transform** — move and rotate device origins with translate/rotate gizmo modes; World/Local space toggle for gizmo axis alignment
+- **Device origin transform** — move and rotate device origins with translate/rotate gizmo modes; World/Local space toggle for gizmo axis alignment; numeric X/Y/Z (mm) and Rx/Ry/Rz (deg) inputs for precise positioning, synced live with the gizmo
 - **Device parenting** — parent a device to a link on another device so it follows the kinematic chain
 - **Auto-fit camera** — camera automatically frames the loaded model on startup
 - **Forward Kinematics** — joint angle sliders for all movable joints (fixed kinematic links are hidden)
@@ -415,8 +415,19 @@ meca500 [5]: for a in range(0, 91, 10):              # full Python syntax
 
 | Python | Description |
 |--------|-------------|
+| `robot.devpose([x,y,z], [rx,ry,rz])` | Set device origin position (mm) and/or rotation (deg); also accepts a single 6-element list |
 | `robot.devtranslate(dx, dy, dz, space='parent')` | Translate device origin by delta (mm) in parent/local/world frame |
 | `robot.devrotate(rx, ry, rz, space='parent')` | Rotate device origin by delta (deg) in parent/local/world frame |
+
+`devpose` sets the absolute position and/or rotation of the device origin in its parent frame (the same values shown in the numeric inputs when **Move Device Origin** is active). Both arguments are optional — pass only `position` or only `rotation` to change one without affecting the other.
+
+```python
+r.devpose([100, 0, 0])                  # position only
+r.devpose([100, 0, 0], [0, 0, 90])      # position + rotation
+r.devpose([100, 0, 0, 0, 0, 90])        # full pose as one list
+r.devpose(rotation=[0, 0, 90])          # rotation only
+r.devpose([0, 0, 0], device='GP225')    # specific device
+```
 
 **Hexapod (Stewart platform) commands:**
 

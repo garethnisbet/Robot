@@ -49,6 +49,22 @@
         <button id="devResetPos" style="flex:1; margin:0; padding:4px 0; font-size:11px;">Reset Position</button>
         <button id="devResetOri" style="flex:1; margin:0; padding:4px 0; font-size:11px;">Reset Orientation</button>
       </div>
+      <div id="dev-numeric" style="margin-top:6px; font-size:11px; color:#889;">
+        <div style="display:grid; grid-template-columns:18px 1fr 18px 1fr 18px 1fr; align-items:center; gap:2px 4px; margin-bottom:3px;">
+          <span style="color:#f88;">X</span><input class="val-input" id="devPosX" type="number" step="1" style="width:100%;min-width:0;">
+          <span style="color:#8f8;">Y</span><input class="val-input" id="devPosY" type="number" step="1" style="width:100%;min-width:0;">
+          <span style="color:#88f;">Z</span><input class="val-input" id="devPosZ" type="number" step="1" style="width:100%;min-width:0;">
+        </div>
+        <div style="display:grid; grid-template-columns:18px 1fr 18px 1fr 18px 1fr; align-items:center; gap:2px 4px;">
+          <span style="color:#f88;">Rx</span><input class="val-input" id="devRotX" type="number" step="1" style="width:100%;min-width:0;">
+          <span style="color:#8f8;">Ry</span><input class="val-input" id="devRotY" type="number" step="1" style="width:100%;min-width:0;">
+          <span style="color:#88f;">Rz</span><input class="val-input" id="devRotZ" type="number" step="1" style="width:100%;min-width:0;">
+        </div>
+        <div style="display:flex; gap:4px; margin-top:3px; color:#556; font-size:10px;">
+          <span style="flex:1; text-align:center;">mm</span>
+          <span style="flex:1; text-align:center;">deg</span>
+        </div>
+      </div>
     </div>
     <div id="device-parent" style="margin-top:4px;">
       <label style="font-size:11px; color:#889;">Parent:</label>

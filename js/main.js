@@ -306,6 +306,7 @@ document.getElementById('moveDeviceBtn').addEventListener('click', () => {
   btn.classList.toggle('active', State.moveDeviceActive);
   document.getElementById('device-mode').style.display = State.moveDeviceActive ? 'block' : 'none';
   if (State.moveDeviceActive) {
+    _syncDevNumericInputs(State.activeDevice);
     State.deviceTransformControls.attach(State.activeDevice.rootGroup);
   } else {
     State.deviceTransformControls.detach();
@@ -335,11 +336,51 @@ document.getElementById('devSpaceBtn').addEventListener('click', () => {
 document.getElementById('devResetPos').addEventListener('click', () => {
   if (!State.activeDevice) return;
   State.activeDevice.rootGroup.position.set(0, 0, 0);
+  _syncDevNumericInputs(State.activeDevice);
 });
 document.getElementById('devResetOri').addEventListener('click', () => {
   if (!State.activeDevice) return;
   State.activeDevice.rootGroup.rotation.set(0, 0, 0);
   State.activeDevice.rootGroup.quaternion.identity();
+  _syncDevNumericInputs(State.activeDevice);
+});
+
+// Numeric position/rotation inputs
+function _syncDevNumericInputs(dev) {
+  if (!dev) return;
+  const p = dev.rootGroup.position;
+  const r = dev.rootGroup.rotation;
+  const fmt = v => +v.toFixed(2);
+  document.getElementById('devPosX').value = fmt(p.x * 1000);
+  document.getElementById('devPosY').value = fmt(p.z * 1000);
+  document.getElementById('devPosZ').value = fmt(p.y * 1000);
+  document.getElementById('devRotX').value = fmt(r.x * (180 / Math.PI));
+  document.getElementById('devRotY').value = fmt(r.z * (180 / Math.PI));
+  document.getElementById('devRotZ').value = fmt(r.y * (180 / Math.PI));
+}
+
+function _applyDevNumericInputs() {
+  const dev = State.activeDevice;
+  if (!dev) return;
+  const x  = parseFloat(document.getElementById('devPosX').value) || 0;
+  const y  = parseFloat(document.getElementById('devPosY').value) || 0;
+  const z  = parseFloat(document.getElementById('devPosZ').value) || 0;
+  const rx = parseFloat(document.getElementById('devRotX').value) || 0;
+  const ry = parseFloat(document.getElementById('devRotY').value) || 0;
+  const rz = parseFloat(document.getElementById('devRotZ').value) || 0;
+  const d  = Math.PI / 180;
+  dev.rootGroup.position.set(x / 1000, z / 1000, y / 1000);
+  dev.rootGroup.rotation.set(rx * d, rz * d, ry * d);
+}
+
+['devPosX', 'devPosY', 'devPosZ', 'devRotX', 'devRotY', 'devRotZ'].forEach(id => {
+  const el = document.getElementById(id);
+  el.addEventListener('change', _applyDevNumericInputs);
+  el.addEventListener('keydown', e => { if (e.key === 'Enter') { _applyDevNumericInputs(); el.blur(); } });
+});
+
+State.deviceTransformControls.addEventListener('objectChange', () => {
+  if (State.activeDevice) _syncDevNumericInputs(State.activeDevice);
 });
 
 // Device parent dropdown
