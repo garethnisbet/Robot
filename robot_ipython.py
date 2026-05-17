@@ -571,6 +571,34 @@ class RobotClient:
             pass
         return None
 
+    def _expand_vector_device_names(self, axis_names):
+        """Expand bare device names into per-joint axis names for array scans.
+
+        Returns the expanded list, or None on error.
+        """
+        expanded = []
+        for name in axis_names:
+            if ':' in name or self._parse_virtual_axis(name) is not None:
+                expanded.append(name)
+                continue
+            if self._resolve_axis_name(name) is not None:
+                expanded.append(name)
+                continue
+            # Not a known axis — try as a device name
+            if name == self._device_name:
+                for _, jname in self._movable_joints:
+                    expanded.append(jname.split()[0])
+                continue
+            dc = self._fetch_device_configs([name])
+            if dc is not None:
+                for _, jname in dc[name]["movable_joints"]:
+                    expanded.append(f"{name}:{jname.split()[0]}")
+                continue
+            names = ", ".join(n for _, n in self._movable_joints)
+            print(f"  {_yellow('Error')}: {name!r} is not a known axis or device. Available axes: {names}")
+            return None
+        return expanded
+
     def _angles_from_spec(self, spec):
         """Convert an angle spec (list or dict) to a flat list of floats."""
         if isinstance(spec, (list, tuple)):
@@ -1601,6 +1629,10 @@ class RobotClient:
             'world'  — world coordinates
 
         Array scan: pass axis names (strings) followed by a callable or 2D array.
+        A device name can be used in place of listing all its joints:
+            robot.scan('GP180_120', waypoints)                   # full-vector array scan
+            robot.scan('Meca500', 'GP225', waypoints)            # multi-device vector (N, 12)
+            robot.scan('GP180_120', 'Meca500', pts)              # cols = 6+6 joints
 
         Virtual axes (kappa diffractometers) use a 'v:' prefix — chi/theta/phi:
             robot.scan(('v:chi', 0, 90, 5))                             # 1D virtual
@@ -1626,11 +1658,13 @@ class RobotClient:
             ex3 = f"robot.scan(('{first}', 0, 20, 1), ('{second}', 0, 30, 2))"
             ex4 = f"robot.scan('{first}', '{second}', my_array_func)"
             ex5 = "robot.scan(('@Cube:tx', 0, 100, 10), space='world')"
+            ex6 = f"robot.scan('{self._device_name}', my_array)"
             print(f"  {_yellow('Usage')}: robot.scan((axis, start, end, step), ...)")
             print(f"  1D:      {_dim(ex1)}")
             print(f"  Coupled: {_dim(ex2)}")
             print(f"  Grid:    {_dim(ex3)}")
             print(f"  Array:   {_dim(ex4)}")
+            print(f"  Vector:  {_dim(ex6)}")
             print(f"  Object:  {_dim(ex5)}")
             return
 
@@ -1645,6 +1679,9 @@ class RobotClient:
         if is_array_scan:
             axis_names = list(axis_specs[:-1])
             data = last() if callable(last) else last
+            axis_names = self._expand_vector_device_names(axis_names)
+            if axis_names is None:
+                return
             virt_flags = [self._parse_virtual_axis(n) is not None for n in axis_names]
             if any(virt_flags) and not all(virt_flags):
                 print(f"  {_yellow('Error')}: cannot mix virtual (v:) and physical axes in one scan")
@@ -3008,10 +3045,16 @@ def _register_magics(ipython, robot):
     def _m_scan(line):
         """scan <axis> <start> <end> <step> [<axis> ...] [--steptime ms]
         scan <axis> [<axis> ...] func_or_expr() [--steptime ms]
+        scan <device> array_var [--steptime ms]
 
         Kappa virtual axes use a 'v:' prefix, e.g.:
             scan v:chi 0 90 5
             scan v:chi 0 90 5 v:theta 0 2
+
+        Vector scan with device name:
+            scan GP180_120 scanpoints
+            scan GP180_120 Meca500 combined_pts
+            scan robot1 robot2 my_func()
         """
         raw = line.split()
         if not raw:
@@ -3052,6 +3095,21 @@ def _register_magics(ipython, robot):
                 return
             robot.scan(*axis_names, data, steptime=steptime)
             return
+
+        # Detect vector/array scan: last token is a variable that evaluates
+        # to an array-like or callable, preceding tokens are axis or device names.
+        # e.g. "scan GP180_120 scanpoints" or "scan J1 J2 my_array"
+        if len(raw) >= 2 and not _is_number(raw[-1]):
+            from IPython import get_ipython
+            ip = get_ipython()
+            try:
+                data = ip.ev(raw[-1])
+                if _is_array_like(data) or callable(data):
+                    axis_names = raw[:-1]
+                    robot.scan(*axis_names, data, steptime=steptime)
+                    return
+            except Exception:
+                pass
 
         if len(raw) < 4:
             robot.scan()

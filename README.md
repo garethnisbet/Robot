@@ -488,6 +488,9 @@ meca500 [3]: robot.worldToLocal([600, 200, 300], [0, 0, 0], device='GP225')
 | `scan DevA:J1 0 50 5 DevB:J1 0 30 5` | `robot.scan(('DevA:J1',0,50,5), ('DevB:J1',0,30,5))` | Multi-device scan |
 | `scan v:chi 0 90 5` | `robot.scan(('v:chi', 0, 90, 5))` | Kappa virtual-axis scan (chi/theta/phi) |
 | `scan v:chi 0 45 5 v:phi 0 30 5` | `robot.scan(('v:chi',0,45,5), ('v:phi',0,30,5))` | Virtual-axis grid/coupled scan |
+| `scan GP180_120 scanpoints` | `robot.scan('GP180_120', scanpoints)` | Full-vector array scan (device name expands to all joints) |
+| `scan GP180_120 Meca500 combined_pts` | `robot.scan('GP180_120', 'Meca500', combined_pts)` | Multi-device vector scan (cols = joints of each device) |
+| `scan robot1 robot2 my_func()` | `robot.scan('robot1', 'robot2', my_func)` | Multi-device vector scan with callable |
 | — | `robot.scan(('@Cube:tx', 0, 100, 10))` | Object translation scan |
 | — | `robot.scan(('@Cube:rz', 0, 360, 10))` | Object rotation scan |
 | — | `robot.scan(('@Cube:tx',0,100,10), space='world')` | Object scan in world coords |
