@@ -788,7 +788,7 @@ class RobotClient:
         """Get a device's origin pose as (position, orientation).
 
         Parameters:
-            device: device name (default: active device)
+            device: device name (default: this client's device)
             space:  'world' (default) or 'local' — frame to report the
                     pose in. Local = relative to the device's parent.
 
@@ -802,6 +802,8 @@ class RobotClient:
             p, o = robot.dev_pose('GP225')
             p, o = robot.dev_pose('GP225', space='local')
         """
+        if device is None:
+            device = self._device_name
         info = self.get_device_pos(device)
         if not info:
             return None, None
@@ -822,29 +824,20 @@ class RobotClient:
     def worldToLocal(self, pose_or_position=None, orientation=None, device=None):
         """Transform a world-frame pose into the device's local frame.
 
-        Both input and output use the setEulerTarget convention:
-        positions in mm [x, y, z] and orientations as XYZ intrinsic
-        Euler angles [alpha, beta, gamma] in degrees, where the
-        rotation matrix is ``Rx(alpha)·Ry(beta)·Rz(gamma)`` in a
-        right-handed Z-up frame (X right, Y into scene, Z up).
-
-        Note: the Y axis points *into* the scene, which is the
-        negation of the viewer's Y readback from ``dev_pose()``.
+        Input uses the viewer convention (matching readback):
+          positions [x, y, z] in mm, orientations [alpha, beta, gamma] degrees.
+        Output uses the kinematic convention for setEulerTarget:
+          positions [x, y, z] in mm, orientations [alpha, beta, gamma] degrees.
 
         Parameters:
-            pose_or_position: [x, y, z, alpha, beta, gamma] in mm/degrees
-                              (6-element), or [x, y, z] in mm (3-element,
-                              use with orientation)
+            pose_or_position: [x, y, z, alpha, beta, gamma] (6-element), or
+                              [x, y, z] (3-element, with orientation param)
             orientation:      [alpha, beta, gamma] in degrees, or None
-            device:           device name (default: active device)
+            device:           device name (default: this client's device)
 
         Returns:
-            [x, y, z, alpha, beta, gamma] when a 6-element pose is given, or
-            (local_position, local_orientation) when called with separate args.
-
-        Usage:
-            result = robot.worldToLocal([100, 0, 50, 0, 0, 90])
-            p, o = robot.worldToLocal([100, 0, 50], [0, 0, 90])
+            [x, y, z, alpha, beta, gamma] for 6-element input, or
+            (local_position, local_orientation) for separate args.
         """
         six_form = pose_or_position is not None and len(pose_or_position) == 6 and orientation is None
         if six_form:
@@ -853,6 +846,8 @@ class RobotClient:
         else:
             position = pose_or_position
 
+        if device is None:
+            device = self._device_name
         info = self.get_device_pos(device)
         if not info:
             return None if six_form else (None, None)
@@ -861,40 +856,34 @@ class RobotClient:
         if dev_pos is None or dev_rot is None:
             return None if six_form else (None, None)
 
-        # The viewer websocket reports positions/rotations with
-        # Y = +Three_Z (toward viewer), but the kinematics and the
-        # Python coordinate helpers use a right-handed Z-up convention
-        # where Y = -Three_Z (into scene).  Negate the Y components
-        # so the helpers produce correct results.
-        dev_pos = [dev_pos[0], -dev_pos[1], dev_pos[2]]
-        dev_rot = [dev_rot[0], -dev_rot[1], dev_rot[2]]
-
-        # Device rotation in Three.js Y-up space, then convert to API Z-up.
-        # _P is the proper orthogonal basis-change (det=+1): API = _P @ Three.
-        _P = np.array([[1,0,0],[0,0,-1],[0,1,0]], dtype=float)
-        R_dev_three = _rot_xyz_three(*_api_euler_to_three(dev_rot))
-        R_dev_api = _P @ R_dev_three @ _P.T
+        # Device rotation in Three.js Y-up: viewer [rx,ry,rz] → Three.js Euler (rx,rz,ry).
+        R_dev_three = _rot_xyz_three(np.radians(dev_rot[0]),
+                                     np.radians(dev_rot[2]),
+                                     np.radians(dev_rot[1]))
+        # Basis change to kinematic Z-up via W = Rx(90°): R_kin = W · R_three · W^T.
+        _W = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=float)
+        R_dev_kin = _W @ R_dev_three @ _W.T
 
         local_pos = None
         if position is not None:
-            p_world = _api_to_three_vec(position)
-            origin = _api_to_three_vec(dev_pos)
-            p_local = R_dev_three.T @ (p_world - origin)
-            local_pos = _three_to_api_vec(p_local).tolist()
+            # Viewer → kinematic world coords: negate Y (viewer Y = -kin Y).
+            p_kin = np.array([position[0], -position[1], position[2]], dtype=float)
+            o_kin = np.array([dev_pos[0], -dev_pos[1], dev_pos[2]], dtype=float)
+            local_pos = (R_dev_kin.T @ (p_kin - o_kin)).tolist()
 
         local_ori = None
         if orientation is not None:
-            # Build world rotation directly in API Z-up using
-            # setEulerTarget convention: R = Rx(alpha) · Ry(beta) · Rz(gamma).
-            R_world_api = _rot_xyz_three(np.radians(orientation[0]),
-                                         np.radians(orientation[1]),
-                                         np.radians(orientation[2]))
-            R_local_api = R_dev_api.T @ R_world_api
-            ex, ey, ez = _euler_xyz_from_matrix(R_local_api)
+            # pyEuler: em = Rx(α)·Ry(β)·Rz(γ).  Local em = R_dev_kin^T · em_world
+            # (the Ry(±90°) factors in pyEuler↔quat cancel in the conjugation).
+            em_world = _rot_xyz_three(np.radians(orientation[0]),
+                                      np.radians(orientation[1]),
+                                      np.radians(orientation[2]))
+            em_local = R_dev_kin.T @ em_world
+            ex, ey, ez = _euler_xyz_from_matrix(em_local)
             local_ori = [float(np.degrees(ex)), float(np.degrees(ey)), float(np.degrees(ez))]
 
         if six_form:
-            return (local_pos + local_ori)
+            return local_pos + local_ori
         return local_pos, local_ori
 
     # ═════════════════════════════════════════════════════════════════════
