@@ -20,6 +20,7 @@ import { findDeviceForObject, setActiveDevice } from './panel.js';
 import { updateFK } from './kinematics.js';
 import { selectSTL } from './stl.js';
 import { syncHexapodFromTransform, syncHexapodSliders, updateHexapodPose } from './hexapod.js';
+import { dbSaveVRAnchor, dbLoadVRAnchor } from './storage.js';
 
 const _raycaster = new THREE.Raycaster();
 const _tempMatrix = new THREE.Matrix4();
@@ -38,6 +39,14 @@ let sceneAnchor = null;
 let needsAnchor = false;
 let lastAnchorPos = null;
 let lastAnchorQuat = null;
+
+// Persistent anchor — survives across VR sessions using room environment map
+let persistentHandle = null;
+let preloadedAnchorData = null;
+let savedVRAnchorData = null;
+let rigRepositioned = false;
+const VR_ANCHOR_SAVE_INTERVAL = 30_000;
+let lastAnchorSave = 0;
 
 const controllers = [];
 
@@ -77,6 +86,8 @@ export async function initVR() {
 
   if (!xrMode) return;
 
+  try { preloadedAnchorData = await dbLoadVRAnchor(); } catch (e) {}
+
   let currentSession = null;
   const btn = document.createElement('button');
   btn.textContent = 'ENTER VR';
@@ -87,7 +98,7 @@ export async function initVR() {
   btn.onclick = async () => {
     if (currentSession) { currentSession.end(); return; }
     const sessionOpts = {
-      optionalFeatures: ['local-floor', 'bounded-floor', 'layers', 'hand-tracking', 'anchors'],
+      optionalFeatures: ['local-floor', 'bounded-floor', 'layers', 'hand-tracking', 'anchors', 'persistent-anchors'],
     };
     const session = await navigator.xr.requestSession(xrMode, sessionOpts);
     session.addEventListener('end', () => { currentSession = null; btn.textContent = 'ENTER VR'; });
@@ -199,6 +210,10 @@ function onSessionStart() {
   sceneAnchor = null;
   lastAnchorPos = null;
   lastAnchorQuat = null;
+  persistentHandle = null;
+  savedVRAnchorData = preloadedAnchorData;
+  rigRepositioned = false;
+  lastAnchorSave = 0;
   needsAnchor = true;
 
   const exitBtn = document.getElementById('exitVRBtn');
@@ -210,9 +225,12 @@ function onSessionStart() {
 function onSessionEnd() {
   State.setVRActive(false);
 
-  if (sceneAnchor) { sceneAnchor.delete(); sceneAnchor = null; }
+  saveVRAnchorState();
+  if (sceneAnchor && !persistentHandle) sceneAnchor.delete();
+  sceneAnchor = null;
   lastAnchorPos = null;
   lastAnchorQuat = null;
+  persistentHandle = null;
   needsAnchor = false;
 
   State.scene.background = new THREE.Color(0x2a2a3a);
@@ -733,6 +751,7 @@ function pollGamepads(dt) {
       State.camera.getWorldPosition(_worldPos);
       rig.position.x += teleportMarker.position.x - _worldPos.x;
       rig.position.z += teleportMarker.position.z - _worldPos.z;
+      saveVRAnchorState();
     }
     teleportActive = false;
     teleportMarker.visible = false;
@@ -751,6 +770,7 @@ function pollGamepads(dt) {
       const angle = turnInput > 0 ? -SNAP_ANGLE : SNAP_ANGLE;
       State.vrRig.rotateY(angle);
       snapTurnCooldown = 0.3;
+      saveVRAnchorState();
     }
   }
 
@@ -775,10 +795,32 @@ function isPointingAtPanelAny() {
 
 async function createSceneAnchor(frame) {
   needsAnchor = false;
-  if (!frame.createAnchor) return;
   const refSpace = State.renderer.xr.getReferenceSpace();
   if (!refSpace) return;
 
+  // Try restoring a persistent anchor from a previous session
+  if (savedVRAnchorData?.anchorUUID) {
+    const session = State.renderer.xr.getSession();
+    if (session.restorePersistentAnchor) {
+      try {
+        sceneAnchor = await session.restorePersistentAnchor(savedVRAnchorData.anchorUUID);
+        persistentHandle = savedVRAnchorData.anchorUUID;
+        rigRepositioned = false;
+        lastAnchorPos = null;
+        lastAnchorQuat = null;
+        console.log('[VR] Restored persistent anchor:', persistentHandle);
+        return;
+      } catch (e) {
+        console.warn('[VR] Persistent anchor restore failed, creating new:', e);
+        savedVRAnchorData = null;
+      }
+    } else {
+      savedVRAnchorData = null;
+    }
+  }
+
+  // Create a new anchor at the rig position
+  if (!frame.createAnchor) return;
   const rig = State.vrRig;
   const pose = new XRRigidTransform(
     { x: rig.position.x, y: rig.position.y, z: rig.position.z, w: 1 },
@@ -788,8 +830,20 @@ async function createSceneAnchor(frame) {
     sceneAnchor = await frame.createAnchor(pose, refSpace);
     lastAnchorPos = null;
     lastAnchorQuat = null;
+    rigRepositioned = true;
+
+    // Request a persistent handle so this anchor survives across sessions
+    if (sceneAnchor.requestPersistentHandle) {
+      try {
+        persistentHandle = await sceneAnchor.requestPersistentHandle();
+        console.log('[VR] Created persistent anchor:', persistentHandle);
+        saveVRAnchorState();
+      } catch (e) {
+        console.warn('[VR] Persistent handle unavailable:', e);
+      }
+    }
   } catch (e) {
-    console.warn('XR anchor creation failed:', e);
+    console.warn('[VR] Anchor creation failed:', e);
   }
 }
 
@@ -806,6 +860,21 @@ function applyAnchorDriftCorrection(frame) {
   const curPos = new THREE.Vector3(ap.x, ap.y, ap.z);
   const curQuat = new THREE.Quaternion(ao.x, ao.y, ao.z, ao.w);
 
+  // Reposition rig on first tracked frame after restoring a persistent anchor
+  if (!rigRepositioned && savedVRAnchorData) {
+    const off = savedVRAnchorData.rigOffset;
+    const qOff = savedVRAnchorData.rigQuatOffset;
+    // Offset was saved in anchor-local space; rotate back to world
+    const worldOffset = new THREE.Vector3(off.x, off.y, off.z).applyQuaternion(curQuat);
+    State.vrRig.position.copy(curPos).add(worldOffset);
+    const offsetQuat = new THREE.Quaternion(qOff.x, qOff.y, qOff.z, qOff.w);
+    State.vrRig.quaternion.copy(offsetQuat.multiply(curQuat));
+    rigRepositioned = true;
+    savedVRAnchorData = null;
+    console.log('[VR] Rig repositioned from persistent anchor');
+  }
+
+  // Ongoing drift correction
   if (lastAnchorPos) {
     const drift = curPos.clone().sub(lastAnchorPos);
     if (drift.lengthSq() > 1e-8) {
@@ -819,6 +888,26 @@ function applyAnchorDriftCorrection(frame) {
 
   lastAnchorPos = curPos;
   lastAnchorQuat = curQuat;
+}
+
+// ============================================================
+// Persistent anchor save — stores rig-to-anchor offset in IndexedDB
+// ============================================================
+
+function saveVRAnchorState() {
+  if (!persistentHandle || !lastAnchorPos || !lastAnchorQuat) return;
+  const rig = State.vrRig;
+  // Store offset in anchor-local space so it survives reference-space rotation
+  const worldOffset = rig.position.clone().sub(lastAnchorPos);
+  const localOffset = worldOffset.applyQuaternion(lastAnchorQuat.clone().invert());
+  const quatOffset = rig.quaternion.clone().multiply(lastAnchorQuat.clone().invert());
+  const data = {
+    anchorUUID: persistentHandle,
+    rigOffset: { x: localOffset.x, y: localOffset.y, z: localOffset.z },
+    rigQuatOffset: { x: quatOffset.x, y: quatOffset.y, z: quatOffset.z, w: quatOffset.w },
+  };
+  preloadedAnchorData = data;
+  dbSaveVRAnchor(data).catch(e => console.warn('[VR] Anchor save failed:', e));
 }
 
 // ============================================================
@@ -882,5 +971,11 @@ export function updateVR(frame) {
         tex.update();
       }
     }
+  }
+
+  // Periodic persistent anchor save
+  if (persistentHandle && now - lastAnchorSave > VR_ANCHOR_SAVE_INTERVAL) {
+    lastAnchorSave = now;
+    saveVRAnchorState();
   }
 }

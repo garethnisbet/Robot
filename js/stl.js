@@ -801,8 +801,24 @@ export function selectSTL(entry, listItem) {
   stlModePanel.style.display = 'block';
   stlSelName.textContent = entry.name;
   document.getElementById('stlParentSelect').value = entry.parentLink || '';
+  syncSTLNumericInputs(entry);
 
   if (listItem) listItem.classList.add('selected');
+}
+
+export function syncSTLNumericInputs(entry) {
+  if (!entry) return;
+  const m = entry.mesh;
+  const fmt = v => +v.toFixed(2);
+  document.getElementById('stlPosX').value = fmt(m.position.x * 1000);
+  document.getElementById('stlPosY').value = fmt(m.position.z * 1000);
+  document.getElementById('stlPosZ').value = fmt(m.position.y * 1000);
+  document.getElementById('stlRotX').value = fmt(m.rotation.x * (180 / Math.PI));
+  document.getElementById('stlRotY').value = fmt(m.rotation.z * (180 / Math.PI));
+  document.getElementById('stlRotZ').value = fmt(m.rotation.y * (180 / Math.PI));
+  document.getElementById('stlScX').value = fmt(m.scale.x);
+  document.getElementById('stlScY').value = fmt(m.scale.z);
+  document.getElementById('stlScZ').value = fmt(m.scale.y);
 }
 
 export function deselectSTL() {

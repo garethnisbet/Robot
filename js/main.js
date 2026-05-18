@@ -44,7 +44,7 @@ import {
   exportSceneState, importSceneState, restoreSTLsFromState,
   loadSTLFile, loadOBJFile, loadPLYFile, loadGLBFile,
   addPrimitive,
-  selectSTL, deselectSTL, setSTLTransformMode, setSTLParent,
+  selectSTL, deselectSTL, setSTLTransformMode, setSTLParent, syncSTLNumericInputs,
 } from './stl.js';
 import { dbSave, dbLoad } from './storage.js';
 import { checkCollisions, clearCollisionHighlights, initCollisionWorker } from './collision.js';
@@ -548,14 +548,52 @@ document.getElementById('lockAspectCb').addEventListener('change', (e) => {
   State.setLockAspect(e.target.checked);
 });
 
+document.getElementById('stlResetPos').addEventListener('click', () => {
+  if (!State.selectedSTL) return;
+  State.selectedSTL.mesh.position.set(0, 0, 0);
+  syncSTLNumericInputs(State.selectedSTL);
+});
+
 document.getElementById('stlResetRot').addEventListener('click', () => {
   if (!State.selectedSTL) return;
   State.selectedSTL.mesh.rotation.set(0, 0, 0);
+  syncSTLNumericInputs(State.selectedSTL);
 });
 
 document.getElementById('stlResetScale').addEventListener('click', () => {
   if (!State.selectedSTL) return;
   State.selectedSTL.mesh.scale.set(1, 1, 1);
+  syncSTLNumericInputs(State.selectedSTL);
+});
+
+// STL numeric position/rotation/scale inputs
+function _applySTLNumericInputs() {
+  const entry = State.selectedSTL;
+  if (!entry) return;
+  const m  = entry.mesh;
+  const x  = parseFloat(document.getElementById('stlPosX').value) || 0;
+  const y  = parseFloat(document.getElementById('stlPosY').value) || 0;
+  const z  = parseFloat(document.getElementById('stlPosZ').value) || 0;
+  const rx = parseFloat(document.getElementById('stlRotX').value) || 0;
+  const ry = parseFloat(document.getElementById('stlRotY').value) || 0;
+  const rz = parseFloat(document.getElementById('stlRotZ').value) || 0;
+  const sx = parseFloat(document.getElementById('stlScX').value) || 1;
+  const sy = parseFloat(document.getElementById('stlScY').value) || 1;
+  const sz = parseFloat(document.getElementById('stlScZ').value) || 1;
+  const d  = Math.PI / 180;
+  m.position.set(x / 1000, z / 1000, y / 1000);
+  m.rotation.set(rx * d, rz * d, ry * d);
+  m.scale.set(sx, sz, sy);
+}
+
+['stlPosX', 'stlPosY', 'stlPosZ', 'stlRotX', 'stlRotY', 'stlRotZ', 'stlScX', 'stlScY', 'stlScZ'].forEach(id => {
+  const el = document.getElementById(id);
+  el.addEventListener('change', _applySTLNumericInputs);
+  el.addEventListener('keydown', e => { if (e.key === 'Enter') { _applySTLNumericInputs(); el.blur(); } });
+});
+
+State.stlTransformControls.addEventListener('objectChange', () => {
+  if (State.selectedSTL) syncSTLNumericInputs(State.selectedSTL);
 });
 
 document.getElementById('stlParentSelect').addEventListener('change', (e) => {
