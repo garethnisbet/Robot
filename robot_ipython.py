@@ -850,10 +850,12 @@ class RobotClient:
             device = self._device_name
         info = self.get_device_pos(device)
         if not info:
+            print(f"  worldToLocal: no data returned for device '{device}'")
             return None if six_form else (None, None)
         dev_pos = info.get("worldPosition") or info.get("position")
         dev_rot = info.get("worldRotation") or info.get("rotation")
         if dev_pos is None or dev_rot is None:
+            print(f"  worldToLocal: device '{device}' has no position/rotation (pos={dev_pos}, rot={dev_rot})")
             return None if six_form else (None, None)
 
         # Device rotation in Three.js Y-up: viewer [rx,ry,rz] → Three.js Euler (rx,rz,ry).

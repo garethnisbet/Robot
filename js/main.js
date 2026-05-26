@@ -562,7 +562,8 @@ document.getElementById('stlResetRot').addEventListener('click', () => {
 
 document.getElementById('stlResetScale').addEventListener('click', () => {
   if (!State.selectedSTL) return;
-  State.selectedSTL.mesh.scale.set(1, 1, 1);
+  const s = State.selectedSTL.importScale;
+  State.selectedSTL.mesh.scale.copy(s || new THREE.Vector3(1, 1, 1));
   syncSTLNumericInputs(State.selectedSTL);
 });
 
@@ -577,9 +578,12 @@ function _applySTLNumericInputs() {
   const rx = parseFloat(document.getElementById('stlRotX').value) || 0;
   const ry = parseFloat(document.getElementById('stlRotY').value) || 0;
   const rz = parseFloat(document.getElementById('stlRotZ').value) || 0;
-  const sx = parseFloat(document.getElementById('stlScX').value) || 1;
-  const sy = parseFloat(document.getElementById('stlScY').value) || 1;
-  const sz = parseFloat(document.getElementById('stlScZ').value) || 1;
+  const rawSx = parseFloat(document.getElementById('stlScX').value);
+  const rawSy = parseFloat(document.getElementById('stlScY').value);
+  const rawSz = parseFloat(document.getElementById('stlScZ').value);
+  const sx = isNaN(rawSx) ? m.scale.x : rawSx;
+  const sy = isNaN(rawSy) ? m.scale.z : rawSy;
+  const sz = isNaN(rawSz) ? m.scale.y : rawSz;
   const d  = Math.PI / 180;
   m.position.set(x / 1000, z / 1000, y / 1000);
   m.rotation.set(rx * d, rz * d, ry * d);

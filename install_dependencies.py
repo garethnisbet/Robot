@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Install Python API dependencies without requiring sudo.
+Install Python API dependencies into /scratch/bin.
 
-Installs packages into the user's local site-packages (~/.local/lib/...).
 Run with:  python3 install_dependencies.py
 """
 
@@ -20,10 +19,19 @@ PACKAGES = [
 
 
 def main():
-    pip = [sys.executable, "-m", "pip", "install", "--user"]
+    target = "/scratch/bin"
+    pip = [sys.executable, "-m", "pip", "install", "--target", target]
 
     print(f"Using Python: {sys.executable}")
-    print(f"Installing: {', '.join(PACKAGES)}\n")
+    print(f"Installing into: {target}")
+
+    print("Installing prerequisite: wheel\n")
+    pre = subprocess.run([sys.executable, "-m", "pip", "install", "--user", "wheel"])
+    if pre.returncode != 0:
+        print("\nFailed to install wheel.", file=sys.stderr)
+        sys.exit(pre.returncode)
+
+    print(f"\nInstalling: {', '.join(PACKAGES)}\n")
 
     result = subprocess.run(pip + PACKAGES)
 
@@ -32,8 +40,8 @@ def main():
         sys.exit(result.returncode)
 
     print("\nAll dependencies installed.")
-    print("If this is your first install, you may need to add ~/.local/bin to PATH:")
-    print("  export PATH=\"$HOME/.local/bin:$PATH\"")
+    print(f"If needed, add the target to PYTHONPATH:")
+    print(f"  export PYTHONPATH=\"{target}:$PYTHONPATH\"")
 
 
 if __name__ == "__main__":

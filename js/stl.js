@@ -367,7 +367,7 @@ export function _addPointsToScene(geometry, buffer, name, color, stlId, transfor
   label.position.copy(center);
   points.add(label);
 
-  const entry = { mesh: points, label, name, color: matColor, opacity: material.opacity, stlId, _buffer: buffer, fileType: 'ply', isPointCloud: true, parentLink: null };
+  const entry = { mesh: points, label, name, color: matColor, opacity: material.opacity, stlId, _buffer: buffer, fileType: 'ply', isPointCloud: true, parentLink: null, importScale: points.scale.clone() };
   State.importedSTLs.push(entry);
   State.setStlColorIdx(Math.max(State.stlColorIdx, stlColors.indexOf(color) + 1));
   addSTLListItem(entry);
@@ -415,7 +415,7 @@ export function _addMeshToScene(geometry, buffer, fileType, name, color, stlId, 
   label.position.copy(center);
   mesh.add(label);
 
-  const entry = { mesh, label, name, color, opacity: material.opacity, stlId, _buffer: buffer, fileType, parentLink: null };
+  const entry = { mesh, label, name, color, opacity: material.opacity, stlId, _buffer: buffer, fileType, parentLink: null, importScale: mesh.scale.clone() };
   State.importedSTLs.push(entry);
   State.setStlColorIdx(Math.max(State.stlColorIdx, stlColors.indexOf(color) + 1));
   addSTLListItem(entry);
@@ -810,15 +810,16 @@ export function syncSTLNumericInputs(entry) {
   if (!entry) return;
   const m = entry.mesh;
   const fmt = v => +v.toFixed(2);
+  const fmtScale = v => +v.toFixed(6);
   document.getElementById('stlPosX').value = fmt(m.position.x * 1000);
   document.getElementById('stlPosY').value = fmt(m.position.z * 1000);
   document.getElementById('stlPosZ').value = fmt(m.position.y * 1000);
   document.getElementById('stlRotX').value = fmt(m.rotation.x * (180 / Math.PI));
   document.getElementById('stlRotY').value = fmt(m.rotation.z * (180 / Math.PI));
   document.getElementById('stlRotZ').value = fmt(m.rotation.y * (180 / Math.PI));
-  document.getElementById('stlScX').value = fmt(m.scale.x);
-  document.getElementById('stlScY').value = fmt(m.scale.z);
-  document.getElementById('stlScZ').value = fmt(m.scale.y);
+  document.getElementById('stlScX').value = fmtScale(m.scale.x);
+  document.getElementById('stlScY').value = fmtScale(m.scale.z);
+  document.getElementById('stlScZ').value = fmtScale(m.scale.y);
 }
 
 export function deselectSTL() {
