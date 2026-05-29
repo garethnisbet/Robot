@@ -42,7 +42,7 @@ import {
 import {
   buildScenePayload, buildScenePayloadForDB,
   exportSceneState, importSceneState, restoreSTLsFromState,
-  loadSTLFile, loadOBJFile, loadPLYFile, loadGLBFile,
+  loadSTLFile, loadOBJFile, loadPLYFile, loadGLBFile, loadSplatFile,
   addPrimitive,
   selectSTL, deselectSTL, setSTLTransformMode, setSTLParent, syncSTLNumericInputs,
 } from './stl.js';
@@ -521,6 +521,7 @@ document.getElementById('stlFile').addEventListener('change', (e) => {
     }
     else if (ext === 'ply')                   loadPLYFile(file);
     else if (ext === 'glb' || ext === 'gltf') loadGLBFile(file);
+    else if (ext === 'splat' || ext === 'ksplat' || ext === 'spz') loadSplatFile(file);
   }
   e.target.value = '';
 });
@@ -972,8 +973,17 @@ document.getElementById('clearSceneBtn').addEventListener('click', () => {
   for (const entry of [...State.importedSTLs]) {
     if (State.selectedSTL === entry) deselectSTL();
     entry.mesh.removeFromParent();
-    entry.mesh.geometry.dispose();
-    entry.mesh.material.dispose();
+    if (entry.isSplat) {
+      if (entry._splatViewer) entry._splatViewer.dispose();
+      if (entry._blobUrl) URL.revokeObjectURL(entry._blobUrl);
+      if (entry._collisionPoints) {
+        entry._collisionPoints.geometry.dispose();
+        entry._collisionPoints.material.dispose();
+      }
+    } else {
+      entry.mesh.geometry.dispose();
+      entry.mesh.material.dispose();
+    }
   }
   State.importedSTLs.length = 0;
   document.getElementById('stl-list').innerHTML = '';
@@ -1011,8 +1021,17 @@ async function restoreScene(data) {
   for (const entry of [...State.importedSTLs]) {
     if (State.selectedSTL === entry) deselectSTL();
     entry.mesh.removeFromParent();
-    entry.mesh.geometry.dispose();
-    entry.mesh.material.dispose();
+    if (entry.isSplat) {
+      if (entry._splatViewer) entry._splatViewer.dispose();
+      if (entry._blobUrl) URL.revokeObjectURL(entry._blobUrl);
+      if (entry._collisionPoints) {
+        entry._collisionPoints.geometry.dispose();
+        entry._collisionPoints.material.dispose();
+      }
+    } else {
+      entry.mesh.geometry.dispose();
+      entry.mesh.material.dispose();
+    }
   }
   State.importedSTLs.length = 0;
   document.getElementById('stl-list').innerHTML = '';

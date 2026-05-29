@@ -11,6 +11,7 @@ import { PLYLoader }  from 'three/addons/loaders/PLYLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { MeshBVH } from 'three-mesh-bvh';
+import { DropInViewer, SceneFormat } from 'gaussian-splats-3d';
 
 import * as State from './state.js';
 
@@ -82,47 +83,34 @@ function _buildCameraPayload() {
   };
 }
 
+function _buildSTLPayload(entry, bufferFn, includeSplatBuffers) {
+  const m = entry.mesh;
+  const rec = {
+    id: entry.stlId,
+    name: entry.name,
+    color: entry.color,
+    opacity: entry.opacity,
+    fileType: entry.fileType || 'stl',
+    isPointCloud: entry.isPointCloud || false,
+    isSplat: entry.isSplat || false,
+    position: [m.position.x, m.position.y, m.position.z],
+    rotation: [m.rotation.x, m.rotation.y, m.rotation.z],
+    scale: [m.scale.x, m.scale.y, m.scale.z],
+    visible: m.visible,
+    parentLink: _parentLinkToStable(entry.parentLink),
+  };
+  if (!entry.isSplat || includeSplatBuffers) rec.buffer = bufferFn(entry._buffer);
+  return rec;
+}
+
 export function buildScenePayload() {
-  const stls = State.importedSTLs.map(entry => {
-    const m = entry.mesh;
-    return {
-      id: entry.stlId,
-      name: entry.name,
-      color: entry.color,
-      opacity: entry.opacity,
-      buffer: _arrayBufferToBase64(entry._buffer),
-      fileType: entry.fileType || 'stl',
-      isPointCloud: entry.isPointCloud || false,
-      position: [m.position.x, m.position.y, m.position.z],
-      rotation: [m.rotation.x, m.rotation.y, m.rotation.z],
-      scale: [m.scale.x, m.scale.y, m.scale.z],
-      visible: m.visible,
-      parentLink: _parentLinkToStable(entry.parentLink),
-    };
-  });
+  const stls = State.importedSTLs.map(entry => _buildSTLPayload(entry, _arrayBufferToBase64, false));
   return { version: 1, devices: _buildDevicesPayload(), stls, camera: _buildCameraPayload(), floorSize: State.floorSize };
 }
 
 // DB variant — stores raw ArrayBuffers (no base64), used by IndexedDB auto-save.
-// Avoids localStorage quota errors for large imported meshes.
 export function buildScenePayloadForDB() {
-  const stls = State.importedSTLs.map(entry => {
-    const m = entry.mesh;
-    return {
-      id: entry.stlId,
-      name: entry.name,
-      color: entry.color,
-      opacity: entry.opacity,
-      buffer: entry._buffer,
-      fileType: entry.fileType || 'stl',
-      isPointCloud: entry.isPointCloud || false,
-      position: [m.position.x, m.position.y, m.position.z],
-      rotation: [m.rotation.x, m.rotation.y, m.rotation.z],
-      scale: [m.scale.x, m.scale.y, m.scale.z],
-      visible: m.visible,
-      parentLink: _parentLinkToStable(entry.parentLink),
-    };
-  });
+  const stls = State.importedSTLs.map(entry => _buildSTLPayload(entry, buf => buf, true));
   return { version: 1, devices: _buildDevicesPayload(), stls, camera: _buildCameraPayload(), floorSize: State.floorSize };
 }
 
@@ -194,12 +182,19 @@ export async function restoreSTLsFromState(records) {
   // ── Phase 1: create meshes WITHOUT transforms (default positions) ──
   const created = [];
   for (const rec of records) {
+    if (rec.isSplat && !rec.buffer) {
+      console.log('[Load Scene] Skipping splat (no buffer):', rec.name, '— re-import the file to restore');
+      created.push({ rec, entry: null });
+      continue;
+    }
     // Buffer may be a raw ArrayBuffer (IndexedDB) or a base64 string (file export)
     const buffer = rec.buffer instanceof ArrayBuffer ? rec.buffer : _base64ToArrayBuffer(rec.buffer);
     let entry = null;
     const fileType = rec.fileType || 'stl';
     if (fileType === 'stl') {
       entry = createSTLFromBuffer(buffer, rec.name, rec.color, rec.id, null);
+    } else if (fileType === 'ply' && (rec.isSplat || _isPLYGaussianSplat(buffer))) {
+      entry = _addSplatToScene(buffer, 'ply', rec.name, rec.color, rec.id, null);
     } else if (fileType === 'ply') {
       const geometry = plyLoader.parse(buffer);
       if (rec.isPointCloud || _isPLYPointCloud(buffer)) {
@@ -222,6 +217,8 @@ export async function restoreSTLsFromState(records) {
       } catch (e) {
         console.warn('Failed to restore GLB mesh:', rec.name, e);
       }
+    } else if (rec.isSplat || (_splatFormatMap[fileType] && fileType !== 'ply')) {
+      entry = _addSplatToScene(buffer, fileType, rec.name, rec.color, rec.id, null);
     }
     created.push({ rec, entry });
   }
@@ -237,7 +234,7 @@ export async function restoreSTLsFromState(records) {
     if (rec.rotation) m.rotation.set(rec.rotation[0], rec.rotation[1], rec.rotation[2]);
     if (rec.scale)    m.scale.set(rec.scale[0], rec.scale[1], rec.scale[2]);
     if (rec.visible !== undefined) m.visible = rec.visible;
-    if (rec.opacity !== undefined) {
+    if (rec.opacity !== undefined && !entry.isSplat) {
       m.material.opacity = rec.opacity;
       entry.opacity = rec.opacity;
     }
@@ -332,6 +329,11 @@ export function _mergeObject3D(object3D) {
 export function _isPLYPointCloud(buffer) {
   const header = new TextDecoder().decode(new Uint8Array(buffer, 0, Math.min(2048, buffer.byteLength)));
   return !header.includes('element face');
+}
+
+export function _isPLYGaussianSplat(buffer) {
+  const header = new TextDecoder().decode(new Uint8Array(buffer, 0, Math.min(4096, buffer.byteLength)));
+  return header.includes('f_dc_0') || header.includes('rot_0') || header.includes('scale_0');
 }
 
 export function _addPointsToScene(geometry, buffer, name, color, stlId, transforms) {
@@ -481,13 +483,16 @@ export function loadPLYFile(file) {
   const reader = new FileReader();
   reader.onload = (e) => {
     const buffer = e.target.result;
-    const geometry = plyLoader.parse(buffer);
     const baseName = file.name.replace(/\.ply$/i, '');
     const color = nextColor();
     const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    if (_isPLYPointCloud(buffer)) {
+    if (_isPLYGaussianSplat(buffer)) {
+      _addSplatToScene(buffer, 'ply', baseName, color, stlId, null);
+    } else if (_isPLYPointCloud(buffer)) {
+      const geometry = plyLoader.parse(buffer);
       _addPointsToScene(geometry, buffer, baseName, color, stlId, null);
     } else {
+      const geometry = plyLoader.parse(buffer);
       geometry.computeVertexNormals();
       _addMeshToScene(geometry, buffer, 'ply', baseName, color, stlId, null);
     }
@@ -509,6 +514,175 @@ export async function loadGLBFile(file) {
     console.error('GLB load error:', err);
     alert(`Failed to load GLB/GLTF file: ${err.message}`);
   }
+}
+
+// ============================================================
+// Gaussian Splat loading (.splat, .ksplat, .spz)
+// ============================================================
+const _splatFormatMap = {
+  'splat':  SceneFormat.Splat,
+  'ksplat': SceneFormat.KSplat,
+  'spz':    SceneFormat.Spz,
+  'ply':    SceneFormat.Ply,
+};
+
+function _parseSplatPLYHeader(buffer) {
+  if (!buffer || buffer.byteLength < 100) return null;
+  const headerBytes = new Uint8Array(buffer, 0, Math.min(8192, buffer.byteLength));
+  const header = new TextDecoder().decode(headerBytes);
+  const vertexMatch = header.match(/element vertex (\d+)/);
+  if (!vertexMatch) return null;
+  const vertexCount = parseInt(vertexMatch[1], 10);
+
+  const props = [];
+  for (const line of header.split('\n')) {
+    const m = line.match(/^property (\w+) (\w+)/);
+    if (m) props.push({ type: m[1], name: m[2] });
+  }
+  const bytesPerVertex = props.reduce((s, p) => s + (p.type === 'double' ? 8 : 4), 0);
+  const headerEnd = header.indexOf('end_header');
+  if (headerEnd < 0) return null;
+  const dataOffset = new TextEncoder().encode(header.substring(0, headerEnd) + 'end_header\n').byteLength;
+
+  return { vertexCount, bytesPerVertex, dataOffset };
+}
+
+function _estimateSplatBounds(buffer, ext) {
+  if (ext !== 'ply') return null;
+  const info = _parseSplatPLYHeader(buffer);
+  if (!info) return null;
+  const { vertexCount, bytesPerVertex, dataOffset } = info;
+
+  const step = Math.max(1, Math.floor(vertexCount / 500));
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  const view = new DataView(buffer);
+  for (let i = 0; i < vertexCount; i += step) {
+    const off = dataOffset + i * bytesPerVertex;
+    if (off + 12 > buffer.byteLength) break;
+    const x = view.getFloat32(off, true);
+    const y = view.getFloat32(off + 4, true);
+    const z = view.getFloat32(off + 8, true);
+    if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
+    if (x < min[0]) min[0] = x; if (x > max[0]) max[0] = x;
+    if (y < min[1]) min[1] = y; if (y > max[1]) max[1] = y;
+    if (z < min[2]) min[2] = z; if (z > max[2]) max[2] = z;
+  }
+  if (!isFinite(min[0])) return null;
+  return {
+    center: [(min[0]+max[0])/2, (min[1]+max[1])/2, (min[2]+max[2])/2],
+    size: [max[0]-min[0], max[1]-min[1], max[2]-min[2]],
+  };
+}
+
+function _extractSplatPointCloud(buffer) {
+  const info = _parseSplatPLYHeader(buffer);
+  if (!info) return null;
+  const { vertexCount, bytesPerVertex, dataOffset } = info;
+
+  const positions = new Float32Array(vertexCount * 3);
+  const view = new DataView(buffer);
+  for (let i = 0; i < vertexCount; i++) {
+    const off = dataOffset + i * bytesPerVertex;
+    if (off + 12 > buffer.byteLength) break;
+    positions[i * 3]     = view.getFloat32(off, true);
+    positions[i * 3 + 1] = view.getFloat32(off + 4, true);
+    positions[i * 3 + 2] = view.getFloat32(off + 8, true);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.computeBoundingBox();
+  const material = new THREE.PointsMaterial({ size: 0.001, visible: false });
+  const points = new THREE.Points(geometry, material);
+  points.visible = false;
+  return points;
+}
+
+export function _addSplatToScene(buffer, ext, name, color, stlId, transforms) {
+  const format = _splatFormatMap[ext] ?? SceneFormat.Splat;
+  const blob = new Blob([buffer]);
+  const blobUrl = URL.createObjectURL(blob);
+
+  const bounds = _estimateSplatBounds(buffer, ext);
+
+  const wrapper = new THREE.Group();
+  wrapper.name = 'splat_' + name;
+
+  const viewer = new DropInViewer({
+    gpuAcceleratedSort: false,
+    sharedMemoryForWorkers: false,
+  });
+  wrapper.add(viewer);
+
+  if (transforms) {
+    wrapper.position.set(...transforms.position);
+    wrapper.rotation.set(...transforms.rotation);
+    wrapper.scale.set(...transforms.scale);
+    wrapper.visible = transforms.visible;
+  }
+
+  State.scene.add(wrapper);
+
+  const div = document.createElement('div');
+  div.className = 'mesh-label';
+  div.textContent = name;
+  const label = new CSS2DObject(div);
+  label.visible = State.labelsOn;
+  label.position.set(0, 0.05, 0);
+  wrapper.add(label);
+
+  const collisionPoints = (ext === 'ply') ? _extractSplatPointCloud(buffer) : null;
+  if (collisionPoints) wrapper.add(collisionPoints);
+
+  const entry = {
+    mesh: wrapper, label, name, color, opacity: 1, stlId, _buffer: buffer,
+    fileType: ext, isSplat: true, isPointCloud: false, parentLink: null,
+    importScale: wrapper.scale.clone(), _splatViewer: viewer, _blobUrl: blobUrl,
+    _collisionPoints: collisionPoints,
+  };
+  State.importedSTLs.push(entry);
+  State.setStlColorIdx(Math.max(State.stlColorIdx, stlColors.indexOf(color) + 1));
+  addSTLListItem(entry);
+
+  viewer.addSplatScene(blobUrl, {
+    format,
+    splatAlphaRemovalThreshold: 5,
+    showLoadingUI: false,
+  }).then(() => {
+    if (bounds && !transforms) {
+      const sizeLen = Math.sqrt(bounds.size[0]**2 + bounds.size[1]**2 + bounds.size[2]**2);
+      if (sizeLen > 100) {
+        wrapper.scale.setScalar(0.001);
+        entry.importScale.copy(wrapper.scale);
+      }
+      label.position.set(
+        bounds.center[0] * wrapper.scale.x,
+        bounds.center[2] * wrapper.scale.y,
+        bounds.center[1] * wrapper.scale.z
+      );
+    }
+  }).catch((err) => {
+    console.error('[Splat] Failed to load', name, err);
+  });
+
+  if (transforms && transforms.parentLink) {
+    setSTLParent(entry, transforms.parentLink, true);
+  }
+  return entry;
+}
+
+export function loadSplatFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const buffer = e.target.result;
+    const ext = file.name.split('.').pop().toLowerCase();
+    const baseName = file.name.replace(/\.(splat|ksplat|spz)$/i, '');
+    const color = nextColor();
+    const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    _addSplatToScene(buffer, ext, baseName, color, stlId, null);
+  };
+  reader.readAsArrayBuffer(file);
 }
 
 // ============================================================
@@ -588,7 +762,9 @@ export async function duplicateSTL(srcEntry) {
 
   let newEntry;
   const ft = srcEntry.fileType || 'stl';
-  if (ft === 'stl') {
+  if (srcEntry.isSplat) {
+    newEntry = _addSplatToScene(srcEntry._buffer, ft, name, color, stlId, transforms);
+  } else if (ft === 'stl') {
     newEntry = createSTLFromBuffer(srcEntry._buffer, name, color, stlId, transforms);
   } else if (ft === 'ply' && srcEntry.isPointCloud) {
     const geometry = plyLoader.parse(srcEntry._buffer);
@@ -612,9 +788,11 @@ export async function duplicateSTL(srcEntry) {
       console.warn('Failed to duplicate GLB mesh:', name, e);
       return;
     }
+  } else if (_splatFormatMap[ft] && ft !== 'ply') {
+    newEntry = _addSplatToScene(srcEntry._buffer, ft, name, color, stlId, transforms);
   }
   // Copy opacity from source
-  if (newEntry) {
+  if (newEntry && !newEntry.isSplat) {
     newEntry.opacity = srcEntry.opacity;
     newEntry.mesh.material.opacity = srcEntry.opacity;
   }
@@ -633,23 +811,33 @@ export function addSTLListItem(entry) {
   colorSwatch.className = 'stl-color';
   colorSwatch.value = '#' + new THREE.Color(entry.color).getHexString();
   colorSwatch.title = 'Change color';
-  colorSwatch.addEventListener('input', () => {
-    entry.mesh.material.color.set(colorSwatch.value);
-    entry.color = entry.mesh.material.color.getHex();
-  });
+  if (entry.isSplat) {
+    colorSwatch.disabled = true;
+    colorSwatch.style.opacity = '0.3';
+  } else {
+    colorSwatch.addEventListener('input', () => {
+      entry.mesh.material.color.set(colorSwatch.value);
+      entry.color = entry.mesh.material.color.getHex();
+    });
+  }
 
   const alphaSlider = document.createElement('input');
   alphaSlider.type = 'range';
   alphaSlider.className = 'stl-alpha';
   alphaSlider.min = '0';
   alphaSlider.max = '100';
-  alphaSlider.value = Math.round((entry.opacity ?? entry.mesh.material.opacity) * 100);
+  alphaSlider.value = entry.isSplat ? 100 : Math.round((entry.opacity ?? entry.mesh.material.opacity) * 100);
   alphaSlider.title = 'Opacity';
-  alphaSlider.addEventListener('input', () => {
-    const val = parseInt(alphaSlider.value, 10) / 100;
-    entry.mesh.material.opacity = val;
-    entry.opacity = val;
-  });
+  if (entry.isSplat) {
+    alphaSlider.disabled = true;
+    alphaSlider.style.opacity = '0.3';
+  } else {
+    alphaSlider.addEventListener('input', () => {
+      const val = parseInt(alphaSlider.value, 10) / 100;
+      entry.mesh.material.opacity = val;
+      entry.opacity = val;
+    });
+  }
 
   const nameSpan = document.createElement('span');
   nameSpan.className = 'stl-name';
@@ -695,6 +883,22 @@ export function addSTLListItem(entry) {
     visBtn.style.opacity = entry.mesh.visible ? 1 : 0.3;
   });
 
+  let splatToggleBtn = null;
+  if (entry.isSplat && entry._collisionPoints) {
+    splatToggleBtn = document.createElement('button');
+    splatToggleBtn.className = 'stl-vis';
+    splatToggleBtn.textContent = '\u2b22';
+    splatToggleBtn.title = 'Toggle splat / point cloud';
+    splatToggleBtn.style.opacity = 1;
+    splatToggleBtn.addEventListener('click', () => {
+      const splatOn = entry._splatViewer.visible;
+      entry._splatViewer.visible = !splatOn;
+      entry._collisionPoints.visible = splatOn;
+      entry._collisionPoints.material.visible = splatOn;
+      splatToggleBtn.style.opacity = entry._splatViewer.visible ? 1 : 0.3;
+    });
+  }
+
   const rmBtn = document.createElement('button');
   rmBtn.className = 'stl-rm';
   rmBtn.textContent = '\u2715';
@@ -702,8 +906,17 @@ export function addSTLListItem(entry) {
   rmBtn.addEventListener('click', () => {
     if (State.selectedSTL === entry) deselectSTL();
     entry.mesh.removeFromParent();
-    entry.mesh.geometry.dispose();
-    entry.mesh.material.dispose();
+    if (entry.isSplat) {
+      if (entry._splatViewer) entry._splatViewer.dispose();
+      if (entry._blobUrl) URL.revokeObjectURL(entry._blobUrl);
+      if (entry._collisionPoints) {
+        entry._collisionPoints.geometry.dispose();
+        entry._collisionPoints.material.dispose();
+      }
+    } else {
+      entry.mesh.geometry.dispose();
+      entry.mesh.material.dispose();
+    }
     const si = State.importedSTLs.indexOf(entry);
     if (si >= 0) State.importedSTLs.splice(si, 1);
     item.remove();
@@ -722,6 +935,7 @@ export function addSTLListItem(entry) {
   item.appendChild(alphaSlider);
   item.appendChild(nameSpan);
   item.appendChild(dupBtn);
+  if (splatToggleBtn) item.appendChild(splatToggleBtn);
   item.appendChild(visBtn);
   item.appendChild(rmBtn);
   list.appendChild(item);

@@ -125,8 +125,12 @@ export function removeCollisionMesh(mesh) {
 // Shared: build extended links + pair context
 // ============================================================
 function buildCollisionContext() {
-  const visibleSTLs       = State.importedSTLs.filter(e => e.mesh.visible && !e.isPointCloud);
+  const visibleSTLs       = State.importedSTLs.filter(e => e.mesh.visible && !e.isPointCloud && !e.isSplat);
   const visiblePointClouds = State.importedSTLs.filter(e => e.mesh.visible && e.isPointCloud);
+  const visibleSplatClouds = State.importedSTLs.filter(e => e.mesh.visible && e.isSplat && e._collisionPoints);
+  for (const s of visibleSplatClouds) {
+    visiblePointClouds.push({ mesh: s._collisionPoints, name: s.name, parentLink: s.parentLink, isPointCloud: true });
+  }
 
   const worldSTLs    = visibleSTLs.filter(e => !e.parentLink);
   const parentedSTLs = visibleSTLs.filter(e => e.parentLink);
