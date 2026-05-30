@@ -403,8 +403,10 @@ export function _mergeObject3D(object3D) {
 }
 
 export function _isPLYPointCloud(buffer) {
-  const header = new TextDecoder().decode(new Uint8Array(buffer, 0, Math.min(2048, buffer.byteLength)));
-  return !header.includes('element face');
+  const header = new TextDecoder().decode(new Uint8Array(buffer, 0, Math.min(4096, buffer.byteLength)));
+  const faceMatch = header.match(/element\s+face\s+(\d+)/);
+  if (!faceMatch) return true;
+  return parseInt(faceMatch[1], 10) === 0;
 }
 
 export function _isPLYGaussianSplat(buffer) {
