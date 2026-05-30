@@ -100,6 +100,7 @@ function _buildSTLPayload(entry, bufferFn, includeSplatBuffers) {
     parentLink: _parentLinkToStable(entry.parentLink),
   };
   if (!entry.isSplat || includeSplatBuffers) rec.buffer = bufferFn(entry._buffer);
+  if (entry.isSplat && entry._fileName) rec.splatFile = entry._fileName;
   return rec;
 }
 
@@ -176,8 +177,83 @@ function _parentLinkFromStable(parentLink) {
   return null;
 }
 
+async function _promptForSplatFiles(expectedNames) {
+  const extensions = [...new Set(expectedNames.map(n => '.' + n.split('.').pop().toLowerCase()))];
+  const map = new Map();
+
+  if (window.showOpenFilePicker) {
+    try {
+      const handles = await window.showOpenFilePicker({
+        multiple: true,
+        types: [{
+          description: 'Gaussian Splat files',
+          accept: { 'application/octet-stream': extensions },
+        }],
+      });
+      for (const handle of handles) {
+        const file = await handle.getFile();
+        map.set(file.name, file);
+        map.set(file.name.toLowerCase(), file);
+      }
+    } catch { /* user cancelled */ }
+  } else {
+    await new Promise((resolve) => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.multiple = true;
+      input.accept = extensions.join(',');
+      input.style.display = 'none';
+      document.body.appendChild(input);
+      let done = false;
+      const cleanup = () => {
+        if (done) return;
+        done = true;
+        if (input.parentNode) input.parentNode.removeChild(input);
+        resolve();
+      };
+      input.addEventListener('change', () => {
+        for (const file of input.files) {
+          map.set(file.name, file);
+          map.set(file.name.toLowerCase(), file);
+        }
+        cleanup();
+      });
+      window.addEventListener('focus', function onFocus() {
+        setTimeout(() => {
+          if (!done && input.files.length === 0) cleanup();
+          window.removeEventListener('focus', onFocus);
+        }, 500);
+      });
+      input.click();
+    });
+  }
+
+  return map;
+}
+
 export async function restoreSTLsFromState(records) {
   console.log('[Load Scene v3] Restoring', records.length, 'objects — two-phase restore');
+
+  // ── Pre-phase: resolve missing splat files by prompting the user ──
+  const missingSplats = records.filter(r => r.isSplat && !r.buffer && r.splatFile);
+  if (missingSplats.length > 0) {
+    const names = missingSplats.map(r => r.splatFile);
+    console.log('[Load Scene] Need splat files:', names.join(', '));
+    const loadingEl = document.getElementById('loading');
+    if (loadingEl) {
+      loadingEl.style.display = 'block';
+      loadingEl.textContent = 'Select splat file' + (names.length > 1 ? 's' : '') + ': ' + names.join(', ');
+    }
+    const fileMap = await _promptForSplatFiles(names);
+    for (const rec of missingSplats) {
+      const file = fileMap.get(rec.splatFile) || fileMap.get(rec.splatFile.toLowerCase());
+      if (file) {
+        rec.buffer = await file.arrayBuffer();
+        console.log('[Load Scene] Resolved splat file:', rec.splatFile);
+      }
+    }
+    if (loadingEl) loadingEl.textContent = 'Loading scene...';
+  }
 
   // ── Phase 1: create meshes WITHOUT transforms (default positions) ──
   const created = [];
@@ -194,7 +270,7 @@ export async function restoreSTLsFromState(records) {
     if (fileType === 'stl') {
       entry = createSTLFromBuffer(buffer, rec.name, rec.color, rec.id, null);
     } else if (fileType === 'ply' && (rec.isSplat || _isPLYGaussianSplat(buffer))) {
-      entry = _addSplatToScene(buffer, 'ply', rec.name, rec.color, rec.id, null);
+      entry = _addSplatToScene(buffer, 'ply', rec.name, rec.color, rec.id, null, rec.splatFile);
     } else if (fileType === 'ply') {
       const geometry = plyLoader.parse(buffer);
       if (rec.isPointCloud || _isPLYPointCloud(buffer)) {
@@ -218,7 +294,7 @@ export async function restoreSTLsFromState(records) {
         console.warn('Failed to restore GLB mesh:', rec.name, e);
       }
     } else if (rec.isSplat || (_splatFormatMap[fileType] && fileType !== 'ply')) {
-      entry = _addSplatToScene(buffer, fileType, rec.name, rec.color, rec.id, null);
+      entry = _addSplatToScene(buffer, fileType, rec.name, rec.color, rec.id, null, rec.splatFile);
     }
     created.push({ rec, entry });
   }
@@ -487,7 +563,7 @@ export function loadPLYFile(file) {
     const color = nextColor();
     const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
     if (_isPLYGaussianSplat(buffer)) {
-      _addSplatToScene(buffer, 'ply', baseName, color, stlId, null);
+      _addSplatToScene(buffer, 'ply', baseName, color, stlId, null, file.name);
     } else if (_isPLYPointCloud(buffer)) {
       const geometry = plyLoader.parse(buffer);
       _addPointsToScene(geometry, buffer, baseName, color, stlId, null);
@@ -599,7 +675,7 @@ function _extractSplatPointCloud(buffer) {
   return points;
 }
 
-export function _addSplatToScene(buffer, ext, name, color, stlId, transforms) {
+export function _addSplatToScene(buffer, ext, name, color, stlId, transforms, fileName) {
   const format = _splatFormatMap[ext] ?? SceneFormat.Splat;
   const blob = new Blob([buffer]);
   const blobUrl = URL.createObjectURL(blob);
@@ -640,6 +716,7 @@ export function _addSplatToScene(buffer, ext, name, color, stlId, transforms) {
     fileType: ext, isSplat: true, isPointCloud: false, parentLink: null,
     importScale: wrapper.scale.clone(), _splatViewer: viewer, _blobUrl: blobUrl,
     _collisionPoints: collisionPoints,
+    _fileName: fileName || null,
   };
   State.importedSTLs.push(entry);
   State.setStlColorIdx(Math.max(State.stlColorIdx, stlColors.indexOf(color) + 1));
@@ -680,7 +757,7 @@ export function loadSplatFile(file) {
     const baseName = file.name.replace(/\.(splat|ksplat|spz)$/i, '');
     const color = nextColor();
     const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    _addSplatToScene(buffer, ext, baseName, color, stlId, null);
+    _addSplatToScene(buffer, ext, baseName, color, stlId, null, file.name);
   };
   reader.readAsArrayBuffer(file);
 }
