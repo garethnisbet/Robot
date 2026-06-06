@@ -722,18 +722,40 @@ document.getElementById('floorSize').addEventListener('input', (e) => {
 
 // ============================================================
 // Click-to-select STL meshes or activate devices
+// ------------------------------------------------------------
+// Selection runs on pointer-up only when the pointer did NOT move (a click in
+// place), never on a drag. This matters because raycasting a THREE.Points cloud
+// tests every point on the main thread — running that at the start of every
+// orbit gesture stalled the initial frames of a rotation whenever a point cloud
+// was present. A camera drag now skips the raycast entirely.
 // ============================================================
+const _CLICK_DRAG_PX = 5;
+let _ptrDownX = 0, _ptrDownY = 0, _ptrDownValid = false;
+
 State.renderer.domElement.addEventListener('pointerdown', (e) => {
+  _ptrDownValid = false;
   if (State.stlTransformControls.dragging || State.transformControls.dragging || State.deviceTransformControls.dragging) return;
   if (e.button !== 0) return;
+  _ptrDownX = e.clientX; _ptrDownY = e.clientY; _ptrDownValid = true;
+});
+
+State.renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!_ptrDownValid || e.button !== 0) return;
+  _ptrDownValid = false;
+  // Treat anything past the drag threshold as a camera move, not a selection.
+  if (Math.hypot(e.clientX - _ptrDownX, e.clientY - _ptrDownY) > _CLICK_DRAG_PX) return;
 
   mouse.x = (e.clientX / innerWidth) * 2 - 1;
   mouse.y = -(e.clientY / innerHeight) * 2 + 1;
   raycaster.setFromCamera(mouse, State.activeCamera);
 
-  // Test against all imported STL meshes first (if selection enabled)
+  // Test against imported STL meshes first (if selection enabled). Point clouds
+  // and splats are excluded — picking them would raycast every point on the main
+  // thread; select those from the object list instead.
   if (State.stlSelectable) {
-    const stlMeshes = State.importedSTLs.filter(s => s.mesh.visible).map(s => s.mesh);
+    const stlMeshes = State.importedSTLs
+      .filter(s => s.mesh.visible && !s.isPointCloud && !s.isSplat)
+      .map(s => s.mesh);
     const stlHits = raycaster.intersectObjects(stlMeshes, false);
 
     if (stlHits.length > 0) {
@@ -748,7 +770,7 @@ State.renderer.domElement.addEventListener('pointerdown', (e) => {
     }
   }
 
-  // Test against all device meshes
+  // No STL hit — test device meshes for activation.
   const allDeviceMeshes = [];
   for (const dev of State.devices) {
     for (const link of dev.robotLinkMeshes) {
@@ -768,20 +790,9 @@ State.renderer.domElement.addEventListener('pointerdown', (e) => {
       setActiveDevice(hitDev);
     }
   }
-});
 
-// Click on empty space to deselect
-State.renderer.domElement.addEventListener('click', (e) => {
-  if (State.stlTransformControls.dragging || State.transformControls.dragging || State.deviceTransformControls.dragging) return;
-  if (!State.selectedSTL) return;
-
-  mouse.x = (e.clientX / innerWidth) * 2 - 1;
-  mouse.y = -(e.clientY / innerHeight) * 2 + 1;
-  raycaster.setFromCamera(mouse, State.activeCamera);
-
-  const stlMeshes = State.importedSTLs.filter(s => s.mesh.visible).map(s => s.mesh);
-  const hits = raycaster.intersectObjects(stlMeshes, false);
-  if (hits.length === 0) {
+  // Clicked away from any STL — deselect (unless the gizmo itself was clicked).
+  if (State.selectedSTL) {
     const gizmoHits = raycaster.intersectObjects(State.stlTransformControls.children, true);
     if (gizmoHits.length === 0) deselectSTL();
   }
