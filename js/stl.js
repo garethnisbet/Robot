@@ -99,7 +99,8 @@ function _buildSTLPayload(entry, bufferFn, includeSplatBuffers) {
     visible: m.visible,
     parentLink: _parentLinkToStable(entry.parentLink),
   };
-  if (!entry.isSplat || includeSplatBuffers) rec.buffer = bufferFn(entry._buffer);
+  // bufferFn === null builds a metadata-only record (buffers saved separately).
+  if (bufferFn && (!entry.isSplat || includeSplatBuffers)) rec.buffer = bufferFn(entry._buffer);
   if (entry.isSplat && entry._fileName) rec.splatFile = entry._fileName;
   return rec;
 }
@@ -113,6 +114,33 @@ export function buildScenePayload() {
 export function buildScenePayloadForDB() {
   const stls = State.importedSTLs.map(entry => _buildSTLPayload(entry, buf => buf, true));
   return { version: 1, devices: _buildDevicesPayload(), stls, camera: _buildCameraPayload(), floorSize: State.floorSize };
+}
+
+// Metadata-only DB payload — omits the heavy mesh/point-cloud/splat buffers,
+// which are saved separately (keyed by stl id) and merged back on restore.
+// Cheap enough to clone into IndexedDB on every auto-save tick.
+export function buildSceneMetadataForDB() {
+  const stls = State.importedSTLs.map(entry => _buildSTLPayload(entry, null, false));
+  return { version: 1, devices: _buildDevicesPayload(), stls, camera: _buildCameraPayload(), floorSize: State.floorSize };
+}
+
+// The heavy buffers only, keyed by stl id. Re-written only when the buffer set
+// actually changes (see sceneBufferSignature).
+export function buildSceneBuffersForDB() {
+  const buffers = State.importedSTLs
+    .filter(e => e._buffer)
+    .map(e => ({ id: e.stlId, buffer: e._buffer }));
+  return { version: 1, buffers };
+}
+
+// Cheap fingerprint of the heavy buffer set (ids + byte lengths). While this is
+// unchanged between auto-saves, the buffers record is left untouched and only
+// the lightweight metadata is re-written — avoiding the multi-MB structured
+// clone that otherwise hitched the frame every 30 s.
+export function sceneBufferSignature() {
+  return State.importedSTLs
+    .map(e => e.stlId + ':' + (e._buffer ? e._buffer.byteLength : 0))
+    .join(',');
 }
 
 export async function exportSceneState() {
@@ -429,10 +457,6 @@ export function _addPointsToScene(geometry, buffer, name, color, stlId, transfor
     points.rotation.set(...transforms.rotation);
     points.scale.set(...transforms.scale);
     points.visible = transforms.visible;
-  } else {
-    const box = new THREE.Box3().setFromObject(points);
-    const size = box.getSize(new THREE.Vector3());
-    if (size.length() > 1) points.scale.setScalar(0.001);
   }
 
   State.scene.add(points);
@@ -455,6 +479,7 @@ export function _addPointsToScene(geometry, buffer, name, color, stlId, transfor
   if (transforms && transforms.parentLink) {
     setSTLParent(entry, transforms.parentLink, true);
   }
+  State.requestRender();
   return entry;
 }
 
@@ -503,6 +528,7 @@ export function _addMeshToScene(geometry, buffer, fileType, name, color, stlId, 
   if (transforms && transforms.parentLink) {
     setSTLParent(entry, transforms.parentLink, true);
   }
+  State.requestRender();
   return entry;
 }
 
@@ -724,6 +750,10 @@ export function _addSplatToScene(buffer, ext, name, color, stlId, transforms, fi
   State.setStlColorIdx(Math.max(State.stlColorIdx, stlColors.indexOf(color) + 1));
   addSTLListItem(entry);
 
+  // A splat viewer re-sorts by camera direction and loads progressively,
+  // so keep drawing every frame while any splat is present.
+  State.setContinuousRender('splat', true);
+
   viewer.addSplatScene(blobUrl, {
     format,
     splatAlphaRemovalThreshold: 5,
@@ -741,6 +771,7 @@ export function _addSplatToScene(buffer, ext, name, color, stlId, transforms, fi
         bounds.center[1] * wrapper.scale.z
       );
     }
+    State.requestRender();
   }).catch((err) => {
     console.error('[Splat] Failed to load', name, err);
   });
@@ -748,6 +779,7 @@ export function _addSplatToScene(buffer, ext, name, color, stlId, transforms, fi
   if (transforms && transforms.parentLink) {
     setSTLParent(entry, transforms.parentLink, true);
   }
+  State.requestRender();
   return entry;
 }
 
@@ -999,6 +1031,10 @@ export function addSTLListItem(entry) {
     const si = State.importedSTLs.indexOf(entry);
     if (si >= 0) State.importedSTLs.splice(si, 1);
     item.remove();
+    if (entry.isSplat && !State.importedSTLs.some(s => s.isSplat)) {
+      State.setContinuousRender('splat', false);
+    }
+    State.requestRender();
   });
 
   const dupBtn = document.createElement('button');

@@ -40,13 +40,14 @@ import {
   rebuildPrimaryModelDropdown,
 } from './panel.js';
 import {
-  buildScenePayload, buildScenePayloadForDB,
+  buildScenePayload,
+  buildSceneMetadataForDB, buildSceneBuffersForDB, sceneBufferSignature,
   exportSceneState, importSceneState, restoreSTLsFromState,
   loadSTLFile, loadOBJFile, loadPLYFile, loadGLBFile, loadSplatFile,
   addPrimitive,
   selectSTL, deselectSTL, setSTLTransformMode, setSTLParent, syncSTLNumericInputs,
 } from './stl.js';
-import { dbSave, dbLoad } from './storage.js';
+import { dbSave, dbLoad, BUFFERS_KEY } from './storage.js';
 import { checkCollisions, clearCollisionHighlights, initCollisionWorker } from './collision.js';
 import { initVR, updateVR } from './vr.js';
 import {
@@ -77,6 +78,12 @@ function fmtV(v) {
   return `(${(v.x*1000).toFixed(1)}, ${(v.z*1000).toFixed(1)}, ${(v.y*1000).toFixed(1)})mm`;
 }
 
+// Write textContent only when it actually changes — avoids needless
+// style/layout invalidation on the readout elements every frame.
+function setText(el, str) {
+  if (el.textContent !== str) el.textContent = str;
+}
+
 // ============================================================
 // Animate loop
 // ============================================================
@@ -84,72 +91,39 @@ const eePosEl = document.getElementById('eePos');
 const tgtPosEl = document.getElementById('tgtPos');
 const ikErrEl  = document.getElementById('ikErr');
 
+// Scratch state for the IK driver's end-effector movement test
+const _ikEEPos = new THREE.Vector3();
+const _ikPrevEE = new THREE.Vector3(NaN, NaN, NaN);
+let _ikLastErr = 0;
+
 function animate(time, frame) {
   updateVR(frame);
 
-  if (State.activeDevice) {
-    if (State.activeDevice.ikMode && State.activeDevice.type === 'hexapod') {
-      syncHexapodFromTransform(State.activeDevice);
-      syncHexapodSliders(State.activeDevice);
-      const platPos = State.activeDevice.platformGroup.position;
-      eePosEl.textContent  = fmtV(platPos);
-      tgtPosEl.textContent = '-';
-      ikErrEl.textContent  = '-';
-    } else if (State.activeDevice.ikMode) {
-      const err = solveIK(State.activeDevice, State.activeDevice.ikTarget.position, State.activeDevice.ikTargetQuat, 10, 0.00005);
-      updateSliders(State.activeDevice);
+  const dev = State.activeDevice;
 
-      const eePos = getEEWorldPosition(State.activeDevice);
-      const pts = State.activeDevice.ikLine.geometry.attributes.position;
-      pts.setXYZ(0, eePos.x, eePos.y, eePos.z);
-      pts.setXYZ(1, State.activeDevice.ikTarget.position.x, State.activeDevice.ikTarget.position.y, State.activeDevice.ikTarget.position.z);
-      pts.needsUpdate = true;
-
-      eePosEl.textContent  = fmtV(eePos);
-      tgtPosEl.textContent = fmtV(State.activeDevice.ikTarget.position);
-      ikErrEl.textContent  = (err * 1000).toFixed(2) + 'mm';
-
-      syncIKSliders(State.activeDevice);
-    } else if (State.activeDevice.type === 'hexapod') {
-      State.activeDevice.platformGroup.updateWorldMatrix(true, false);
-      const platPos = new THREE.Vector3().setFromMatrixPosition(State.activeDevice.platformGroup.matrixWorld);
-      eePosEl.textContent  = fmtV(platPos);
-      tgtPosEl.textContent = '-';
-      ikErrEl.textContent  = '-';
-    } else {
-      const eePos = getEEWorldPosition(State.activeDevice);
-      eePosEl.textContent  = fmtV(eePos);
-      tgtPosEl.textContent = '-';
-      ikErrEl.textContent  = '-';
+  // --- IK driver -----------------------------------------------------
+  // IK must keep solving every frame so the arm animates toward a
+  // (possibly moving) target. It is cheap once converged — solveIK
+  // returns on the first iteration. A render is requested only while the
+  // end-effector is actually moving, so a settled IK pose stays idle.
+  if (dev && dev.ikMode && dev.type !== 'hexapod') {
+    _ikLastErr = solveIK(dev, dev.ikTarget.position, dev.ikTargetQuat, 10, 0.00005);
+    _ikEEPos.copy(getEEWorldPosition(dev));
+    if (_ikEEPos.distanceToSquared(_ikPrevEE) > 1e-12) {
+      _ikPrevEE.copy(_ikEEPos);
+      State.requestRender();
     }
   }
 
-  // Chain visualization for all devices
-  for (const dev of State.devices) {
-    if (dev.chainVisible) updateChain(dev);
-  }
-
-  // Origin coordinate labels
-  if (State.originsOn) {
-    for (const dev of State.devices) {
-      dev.rootGroup.getWorldPosition(_originWP);
-      const x = +(_originWP.x * 1000).toFixed(1);
-      const y = +(_originWP.z * 1000).toFixed(1);
-      const z = +(_originWP.y * 1000).toFixed(1);
-      dev.originLabels[0].element.textContent = `${dev.name} ${x}, ${y}, ${z}`;
-    }
-  }
-
-  checkCollisions();
-
+  // --- Camera snap animation + controls ------------------------------
   if (!State.vrActive) {
-    // Camera snap animation
     const currentSnapAnim = snapAnim;
     if (currentSnapAnim) {
       currentSnapAnim.t = Math.min(1, currentSnapAnim.t + snapClock.getDelta() / 0.4);
       const t = easeNavSnap(currentSnapAnim.t);
       State.activeCamera.position.lerpVectors(currentSnapAnim.sp, currentSnapAnim.ep, t);
       State.activeCamera.up.lerpVectors(currentSnapAnim.su, currentSnapAnim.eu, t).normalize();
+      State.requestRender();
       if (currentSnapAnim.t >= 1) {
         setSnapAnim(null); State.orbitControls.enabled = true;
         if (State.orthoOn) updateOrthoFrustum();
@@ -157,14 +131,73 @@ function animate(time, frame) {
     } else {
       snapClock.getDelta();
     }
+    // update() advances damping and dispatches 'change' (-> requestRender)
+    // whenever the camera actually moves; it is a no-op once settled.
     State.orbitControls.update();
+  }
+
+  // --- On-demand render gate -----------------------------------------
+  if (!(State.vrActive || State.needsRender || State.shouldRenderContinuously())) return;
+  State.clearNeedsRender();
+
+  // Readouts / chain / origin visuals — only refreshed on a drawn frame.
+  if (dev) updateReadout(dev);
+  for (const d of State.devices) {
+    if (d.chainVisible) updateChain(d);
+  }
+  if (State.originsOn) {
+    for (const d of State.devices) {
+      d.rootGroup.getWorldPosition(_originWP);
+      const x = +(_originWP.x * 1000).toFixed(1);
+      const y = +(_originWP.z * 1000).toFixed(1);
+      const z = +(_originWP.y * 1000).toFixed(1);
+      setText(d.originLabels[0].element, `${d.name} ${x}, ${y}, ${z}`);
+    }
   }
 
   State.renderer.render(State.scene, State.activeCamera);
 
+  // Collision check uses the world matrices refreshed by render(); its
+  // highlight functions request a render only when the hit set changes,
+  // so this does not spin the loop.
+  checkCollisions();
+
   if (!State.vrActive) {
     State.labelRenderer.render(State.scene, State.activeCamera);
     renderNavGizmo();
+  }
+}
+
+// Update the EE / target / error readout for the active device.
+// Runs only on rendered frames; the IK solve itself happens in the driver.
+function updateReadout(dev) {
+  if (dev.ikMode && dev.type === 'hexapod') {
+    syncHexapodFromTransform(dev);
+    syncHexapodSliders(dev);
+    setText(eePosEl, fmtV(dev.platformGroup.position));
+    setText(tgtPosEl, '-');
+    setText(ikErrEl, '-');
+  } else if (dev.ikMode) {
+    updateSliders(dev);
+    const eePos = getEEWorldPosition(dev);
+    const pts = dev.ikLine.geometry.attributes.position;
+    pts.setXYZ(0, eePos.x, eePos.y, eePos.z);
+    pts.setXYZ(1, dev.ikTarget.position.x, dev.ikTarget.position.y, dev.ikTarget.position.z);
+    pts.needsUpdate = true;
+    setText(eePosEl, fmtV(eePos));
+    setText(tgtPosEl, fmtV(dev.ikTarget.position));
+    setText(ikErrEl, (_ikLastErr * 1000).toFixed(2) + 'mm');
+    syncIKSliders(dev);
+  } else if (dev.type === 'hexapod') {
+    dev.platformGroup.updateWorldMatrix(true, false);
+    _originWP.setFromMatrixPosition(dev.platformGroup.matrixWorld);
+    setText(eePosEl, fmtV(_originWP));
+    setText(tgtPosEl, '-');
+    setText(ikErrEl, '-');
+  } else {
+    setText(eePosEl, fmtV(getEEWorldPosition(dev)));
+    setText(tgtPosEl, '-');
+    setText(ikErrEl, '-');
   }
 }
 
@@ -526,6 +559,52 @@ document.getElementById('stlFile').addEventListener('change', (e) => {
   e.target.value = '';
 });
 
+// Drag-and-drop file import onto the canvas
+State.renderer.domElement.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+});
+
+State.renderer.domElement.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  const files = [...e.dataTransfer.files];
+  const mtlFiles = new Map();
+  for (const f of files) {
+    if (f.name.toLowerCase().endsWith('.mtl'))
+      mtlFiles.set(f.name.toLowerCase(), f);
+  }
+  for (const file of files) {
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (ext === 'mtl') continue;
+    if (ext === 'json') {
+      try {
+        document.getElementById('loading').style.display = 'block';
+        document.getElementById('loading').textContent = 'Loading scene...';
+        const data = await importSceneState(file);
+        await restoreScene(data);
+        document.getElementById('loading').style.display = 'none';
+      } catch (err) {
+        console.error('Failed to load scene:', err);
+        document.getElementById('loading').innerHTML =
+          `<span style="color:#f88">Failed to load scene</span><br>` +
+          `<span style="color:#aaa; font-size:0.85em">${err?.message || err}</span>`;
+        setTimeout(() => { document.getElementById('loading').style.display = 'none'; }, 3000);
+      }
+    } else if (ext === 'stl') {
+      loadSTLFile(file);
+    } else if (ext === 'obj') {
+      const mtlRef = file.name.replace(/\.obj$/i, '.mtl').toLowerCase();
+      loadOBJFile(file, mtlFiles.get(mtlRef) || null);
+    } else if (ext === 'ply') {
+      loadPLYFile(file);
+    } else if (ext === 'glb' || ext === 'gltf') {
+      loadGLBFile(file);
+    } else if (ext === 'splat' || ext === 'ksplat' || ext === 'spz') {
+      loadSplatFile(file);
+    }
+  }
+});
+
 // Primitive buttons
 document.getElementById('addCubeBtn').addEventListener('click',     () => addPrimitive('cube'));
 document.getElementById('addSphereBtn').addEventListener('click',   () => addPrimitive('sphere'));
@@ -614,6 +693,15 @@ collisionBtn.addEventListener('click', () => {
   collisionBtn.classList.toggle('active', State.collisionEnabled);
   collisionInfoEl.style.display = State.collisionEnabled ? 'block' : 'none';
   if (!State.collisionEnabled) clearCollisionHighlights();
+});
+
+// Floor collision toggle
+const floorCollisionBtn = document.getElementById('floorCollisionBtn');
+floorCollisionBtn.classList.add('active');
+floorCollisionBtn.addEventListener('click', () => {
+  State.setFloorCollisionEnabled(!State.floorCollisionEnabled);
+  floorCollisionBtn.textContent = `Floor Collision: ${State.floorCollisionEnabled ? 'ON' : 'OFF'}`;
+  floorCollisionBtn.classList.toggle('active', State.floorCollisionEnabled);
 });
 
 // Mesh-select toggle
@@ -751,9 +839,12 @@ navCanvas.addEventListener('mousemove', (e) => {
   if (id !== navHovered) {
     setNavHovered(id);
     navCanvas.style.cursor = id ? 'pointer' : 'default';
+    State.requestRender();
   }
 });
-navCanvas.addEventListener('mouseleave', () => { setNavHovered(null); navCanvas.style.cursor = 'default'; });
+navCanvas.addEventListener('mouseleave', () => {
+  setNavHovered(null); navCanvas.style.cursor = 'default'; State.requestRender();
+});
 
 const _snapVec = new THREE.Vector3();
 
@@ -783,7 +874,25 @@ window.addEventListener('resize', () => {
   State.renderer.setPixelRatio(devicePixelRatio);
   State.renderer.setSize(innerWidth, innerHeight);
   State.labelRenderer.setSize(innerWidth, innerHeight);
+  State.requestRender();
 });
+
+// ============================================================
+// On-demand render triggers
+// ------------------------------------------------------------
+// Any user interaction may change the view or the scene (sliders,
+// buttons, list clicks, gizmo drags, hover highlights). Rather than
+// instrument every handler, a single set of input listeners requests a
+// render whenever the user does something. Camera moves, IK, snap
+// animation, async loads and websocket updates request renders at their
+// own sources. With nothing happening, the loop draws nothing.
+// ============================================================
+['pointerdown', 'pointerup', 'wheel'].forEach((ev) =>
+  window.addEventListener(ev, () => State.requestRender(), { passive: true }));
+window.addEventListener('pointermove', (e) => {
+  if (e.buttons) State.requestRender();   // only while dragging
+}, { passive: true });
+window.addEventListener('keydown', () => State.requestRender());
 
 // ============================================================
 // Initialization
@@ -794,6 +903,14 @@ const configParam = new URLSearchParams(window.location.search).get('config') ||
 const SCENE_STORAGE_KEY = 'robotvis_scene';
 let restoredFromStorage = false;
 
+// Signature of the buffer set already persisted under BUFFERS_KEY. Primed after
+// a split-format restore so the first auto-save doesn't needlessly re-clone the
+// buffers we just loaded; left null when nothing usable was loaded (incl. legacy
+// combined records) so the next auto-save migrates buffers into BUFFERS_KEY.
+let _lastSavedBufferSig = null;
+// True once a restore has merged buffers from the dedicated BUFFERS_KEY record.
+let _loadedSplitBuffers = false;
+
 const MAX_RESTORE_ATTEMPTS = 3;
 
 async function _tryLoadSavedScene() {
@@ -801,6 +918,23 @@ async function _tryLoadSavedScene() {
   try {
     const dbData = await dbLoad();
     if (dbData && dbData.version && Array.isArray(dbData.devices) && dbData.devices.length > 0) {
+      // New split format: stl records carry metadata only — merge the heavy
+      // buffers back in from their dedicated record, matched by stl id.
+      // Legacy combined records already have inline buffers and skip this.
+      if (Array.isArray(dbData.stls) && dbData.stls.some(s => !s.buffer)) {
+        try {
+          const bufRec = await dbLoad(BUFFERS_KEY);
+          if (bufRec && Array.isArray(bufRec.buffers)) {
+            const byId = new Map(bufRec.buffers.map(b => [b.id, b.buffer]));
+            for (const s of dbData.stls) {
+              if (!s.buffer && byId.has(s.id)) s.buffer = byId.get(s.id);
+            }
+            _loadedSplitBuffers = true;
+          }
+        } catch (e) {
+          console.warn('[Auto-restore] Buffer record read failed:', e);
+        }
+      }
       return dbData;
     }
   } catch (e) {
@@ -848,6 +982,10 @@ if (savedData) {
   }
   if (!restoredFromStorage) {
     console.warn('[Auto-restore] All attempts failed — starting fresh');
+  } else if (_loadedSplitBuffers) {
+    // Buffers came from BUFFERS_KEY unchanged — record their signature so the
+    // first auto-save skips the redundant re-write.
+    _lastSavedBufferSig = sceneBufferSignature();
   }
 }
 
@@ -891,6 +1029,7 @@ if (!restoredFromStorage) {
 }
 
 document.getElementById('loading').style.display = 'none';
+State.requestRender();
 
 window.debugHome = () => {
   const d = State.activeDevice;
@@ -910,10 +1049,26 @@ window.debugEE = () => {
 
 // Auto-save scene to IndexedDB periodically and on page unload.
 // IndexedDB handles large mesh buffers that would overflow localStorage's ~5 MB quota.
+//
+// The heavy mesh/point-cloud/splat buffers are stored separately and only
+// re-written when they actually change (tracked by a cheap signature). Routine
+// saves — fired every 30 s and while the camera/joints move — then write only
+// the small metadata record, avoiding the multi-MB IndexedDB structured clone
+// that previously hitched the frame (and stalled rotation) on every tick.
+// (_lastSavedBufferSig is declared up near the restore code so it can be primed
+//  after a restore that already loaded the buffers in the split format.)
+
 async function autoSaveScene() {
   if (State.devices.length === 0) return;
   try {
-    await dbSave(buildScenePayloadForDB());
+    const sig = sceneBufferSignature();
+    if (sig !== _lastSavedBufferSig) {
+      // Buffers changed (import/remove/restore) — persist them first so the
+      // metadata record never references buffers that aren't on disk yet.
+      await dbSave(buildSceneBuffersForDB(), BUFFERS_KEY);
+      _lastSavedBufferSig = sig;
+    }
+    await dbSave(buildSceneMetadataForDB());
   } catch (e) {
     console.warn('[Auto-save] IndexedDB save failed:', e);
   }

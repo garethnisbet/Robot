@@ -36,8 +36,9 @@ export let moveDeviceActive = false;
 export let floorSize = 2;
 
 // Collision
-export let collisionEnabled = false;
-export let lastCollisions   = [];
+export let collisionEnabled      = false;
+export let floorCollisionEnabled = true;
+export let lastCollisions        = [];
 
 // STL import
 export const importedSTLs = [];
@@ -86,8 +87,9 @@ export function setMoveDeviceActive(v)  { moveDeviceActive = v; }
 
 export function setFloorSize(v)         { floorSize = v; }
 
-export function setCollisionEnabled(v)  { collisionEnabled = v; }
-export function setLastCollisions(arr)  { lastCollisions = arr; }
+export function setCollisionEnabled(v)       { collisionEnabled = v; }
+export function setFloorCollisionEnabled(v)  { floorCollisionEnabled = v; }
+export function setLastCollisions(arr)       { lastCollisions = arr; }
 
 export function setStlColorIdx(v)       { stlColorIdx = v; }
 export function setSelectedSTL(e)       { selectedSTL = e; }
@@ -106,3 +108,24 @@ export let passthroughOn  = false;
 export function setVRActive(v)       { vrActive = v; }
 export function setVRRig(rig)        { vrRig = rig; }
 export function setPassthroughOn(v)  { passthroughOn = v; }
+
+// ============================================================
+// On-demand rendering
+// ------------------------------------------------------------
+// The animation loop only draws a frame when something has
+// changed. `requestRender()` flags that the next loop iteration
+// must render. For things that animate continuously (e.g. a
+// Gaussian-splat viewer that re-sorts every frame) register a
+// key with setContinuousRender(key, true) to keep drawing until
+// it is released. VR always renders (driven by WebXR).
+// ============================================================
+export let needsRender = true;
+export function requestRender() { needsRender = true; }
+export function clearNeedsRender() { needsRender = false; }
+
+const _continuousKeys = new Set();
+export function setContinuousRender(key, on) {
+  if (on) _continuousKeys.add(key); else _continuousKeys.delete(key);
+  if (on) needsRender = true;
+}
+export function shouldRenderContinuously() { return _continuousKeys.size > 0; }

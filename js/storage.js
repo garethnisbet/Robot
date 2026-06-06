@@ -9,6 +9,11 @@ const DB_NAME    = 'robotvis_db';
 const DB_VERSION = 1;
 const STORE      = 'scene';
 const KEY        = 'autosave';
+// Heavy mesh/point-cloud/splat ArrayBuffers are stored under their own key so
+// the lightweight metadata record (camera, transforms, joint angles) can be
+// re-written on every auto-save without re-cloning megabytes of geometry that
+// never changed. See autoSaveScene in main.js.
+export const BUFFERS_KEY = 'autosave_buffers';
 const VR_ANCHOR_KEY = 'vr_anchor';
 
 async function _openDB() {
@@ -20,22 +25,22 @@ async function _openDB() {
   });
 }
 
-export async function dbSave(data) {
+export async function dbSave(data, key = KEY) {
   const db = await _openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).put(data, KEY);
+    tx.objectStore(STORE).put(data, key);
     tx.oncomplete = resolve;
     tx.onerror    = e => reject(e.target.error);
     tx.onabort    = e => reject(e.target.error);
   });
 }
 
-export async function dbLoad() {
+export async function dbLoad(key = KEY) {
   const db = await _openDB();
   return new Promise((resolve, reject) => {
     const tx  = db.transaction(STORE, 'readonly');
-    const req = tx.objectStore(STORE).get(KEY);
+    const req = tx.objectStore(STORE).get(key);
     req.onsuccess = e => resolve(e.target.result ?? null);
     req.onerror   = e => reject(e.target.error);
   });
@@ -46,6 +51,7 @@ export async function dbClear() {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readwrite');
     tx.objectStore(STORE).delete(KEY);
+    tx.objectStore(STORE).delete(BUFFERS_KEY);
     tx.oncomplete = resolve;
     tx.onerror    = e => reject(e.target.error);
   });

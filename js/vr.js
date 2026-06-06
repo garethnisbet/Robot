@@ -224,6 +224,7 @@ function onSessionStart() {
 
 function onSessionEnd() {
   State.setVRActive(false);
+  State.requestRender();   // resume drawing the desktop view
 
   saveVRAnchorState();
   if (sceneAnchor && !persistentHandle) sceneAnchor.delete();

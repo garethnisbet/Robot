@@ -11,6 +11,19 @@ import { resolveParentLink } from './stl.js';
 const highlightedMeshes = new Set();
 const meshOriginalMaterial = new WeakMap();
 
+// On-demand rendering: request a redraw only when the set of colliding
+// pairs actually changes. Collision results are recomputed on every drawn
+// frame, so requesting unconditionally would spin the render loop forever
+// whenever a standing collision exists.
+let _lastCollisionSig = '';
+function requestRenderIfCollisionsChanged(list) {
+  const sig = list.map(c => `${c.linkName}↔${c.stlName}`).sort().join(';');
+  if (sig !== _lastCollisionSig) {
+    _lastCollisionSig = sig;
+    State.requestRender();
+  }
+}
+
 export function clearCollisionHighlights() {
   if (highlightedMeshes.size === 0) return;
   for (const mesh of highlightedMeshes) {
@@ -252,7 +265,9 @@ function checkCollisionsOffThread() {
   }
 
   // Collect floor collisions synchronously (cheap AABB check, no worker needed)
-  _pendingFloorCollisions = collectFloorCollisions(worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks);
+  _pendingFloorCollisions = State.floorCollisionEnabled
+    ? collectFloorCollisions(worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks)
+    : [];
 
   if (meshPairs.length === 0 && pcPairs.length === 0) {
     applyWorkerResults([], _pendingFloorCollisions);
@@ -310,6 +325,8 @@ function applyWorkerResults(collisions, floorCollisions = []) {
     collisionInfoEl.classList.remove('hit');
     collisionTextEl.textContent = 'none';
   }
+
+  requestRenderIfCollisionsChanged(collisionList);
 }
 
 // ============================================================
@@ -520,8 +537,10 @@ function checkCollisionsMainThread() {
   }
 
   // 5) Floor collisions (imported objects + robot links below y=0)
-  for (const fc of collectFloorCollisions(worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks)) {
-    addCollision('floor', fc.name, fc.mesh, fc.mesh);
+  if (State.floorCollisionEnabled) {
+    for (const fc of collectFloorCollisions(worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks)) {
+      addCollision('floor', fc.name, fc.mesh, fc.mesh);
+    }
   }
 
   // Update UI
@@ -546,6 +565,8 @@ function checkCollisionsMainThread() {
     collisionInfoEl.classList.remove('hit');
     collisionTextEl.textContent = 'none';
   }
+
+  requestRenderIfCollisionsChanged(collisions);
 }
 
 // ============================================================

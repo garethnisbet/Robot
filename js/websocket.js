@@ -1115,6 +1115,7 @@ export function wsConnect() {
     try {
       const data = JSON.parse(event.data);
       handleCommand(data);
+      State.requestRender();   // commands move robots / add devices off the input path
     } catch (e) {
       console.warn('WS bad message:', e);
     }

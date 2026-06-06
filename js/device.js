@@ -414,6 +414,7 @@ export async function loadDevice(configFile) {
     });
   });
 
+  State.requestRender();   // device meshes load asynchronously (off the input path)
   return dev;
 }
 
