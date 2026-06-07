@@ -630,6 +630,72 @@ const _splatFormatMap = {
   'ply':    SceneFormat.Ply,
 };
 
+// ── Foreground clip for splats (ortho cutaway) ──────────────
+// The gaussian-splats-3d vertex shader already computes the eye-space
+// splat centre (`viewCenter`). We inject a discard so any splat closer
+// to the camera than `foregroundClipDist` (world metres) is dropped,
+// letting the interior of a scan be seen in orthographic mode. Only the
+// splat material is patched, so meshes/robots are never clipped.
+function _patchSplatClipMaterial(material) {
+  if (!material || material.userData._fgClipPatched) return;
+  if (!material.vertexShader || !material.vertexShader.includes('uniform float orthoZoom;')) return;
+
+  material.vertexShader = material.vertexShader
+    .replace(
+      'uniform float orthoZoom;',
+      'uniform float orthoZoom;\nuniform float foregroundClipDist;'
+    )
+    .replace(
+      'vec4 viewCenter = transformModelViewMatrix * vec4(splatCenter, 1.0);',
+      'vec4 viewCenter = transformModelViewMatrix * vec4(splatCenter, 1.0);\n' +
+      '            if (foregroundClipDist > 0.0 && -viewCenter.z < foregroundClipDist) {\n' +
+      '                gl_Position = vec4(0.0, 0.0, 2.0, 1.0);\n' +
+      '                return;\n' +
+      '            }'
+    );
+
+  material.uniforms.foregroundClipDist = { value: 0.0 };
+  material.userData._fgClipPatched = true;
+  material.needsUpdate = true;
+}
+
+// Push the current clip distance into every loaded splat's material.
+// Called once per drawn frame from the animate loop. The clip is by
+// eye-space depth, so it works the same in perspective and orthographic
+// views. The distance is derived from the orbit radius so the slider
+// feels scale-independent: fraction 0.5 clips up to the orbit target
+// (the front half).
+export function updateSplatClip() {
+  const splats = State.importedSTLs.filter(s => s.isSplat);
+
+  // The clip slider is only relevant while a splat is loaded. Both adding
+  // and removing a splat request a render, so toggling visibility here
+  // (before the early-out) keeps it in sync for every code path.
+  const row = document.getElementById('splatClipRow');
+  if (row) row.style.display = splats.length > 0 ? 'flex' : 'none';
+
+  if (splats.length === 0) return;
+
+  let dist = 0;
+  if (State.splatClipFraction > 0) {
+    const radius = State.activeCamera.position.distanceTo(State.orbitControls.target);
+    dist = State.splatClipFraction * 2 * radius;
+  }
+
+  for (const s of splats) {
+    const mesh = s._splatViewer && s._splatViewer.splatMesh;
+    const mat = mesh && mesh.material;
+    // Before the splat scene finishes loading, SplatMesh carries a
+    // placeholder MeshBasicMaterial (no `.uniforms`), so guard both the
+    // material and its uniforms before touching them.
+    if (!mat || !mat.uniforms) continue;
+    _patchSplatClipMaterial(mat);
+    if (mat.uniforms.foregroundClipDist) {
+      mat.uniforms.foregroundClipDist.value = dist;
+    }
+  }
+}
+
 function _parseSplatPLYHeader(buffer) {
   if (!buffer || buffer.byteLength < 100) return null;
   const headerBytes = new Uint8Array(buffer, 0, Math.min(8192, buffer.byteLength));

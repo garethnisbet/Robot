@@ -16,6 +16,10 @@ export let orthoCamera  = null;
 export let activeCamera = null;
 export let orthoOn      = false;
 
+// Splat foreground clip (0 = off, 1 = clip everything up to ~2x orbit
+// distance). Applied in both perspective and orthographic views.
+export let splatClipFraction = 0;
+
 // Controls
 export let orbitControls           = null;
 export let transformControls       = null;
@@ -76,6 +80,7 @@ export function initControls(orbit, transform, stlTransform, deviceTransform) {
 
 export function setActiveCamera(cam)  { activeCamera = cam; }
 export function setOrthoOn(v)         { orthoOn = v; }
+export function setSplatClipFraction(v) { splatClipFraction = v; }
 
 export function setActiveDevice(dev)  { activeDevice = dev; }
 export function incrementDeviceId()   { return 'dev_' + (deviceIdCounter++); }

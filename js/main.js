@@ -44,6 +44,7 @@ import {
   buildSceneMetadataForDB, buildSceneBuffersForDB, sceneBufferSignature,
   exportSceneState, importSceneState, restoreSTLsFromState,
   loadSTLFile, loadOBJFile, loadPLYFile, loadGLBFile, loadSplatFile,
+  updateSplatClip,
   addPrimitive,
   selectSTL, deselectSTL, setSTLTransformMode, setSTLParent, syncSTLNumericInputs,
 } from './stl.js';
@@ -154,6 +155,10 @@ function animate(time, frame) {
       setText(d.originLabels[0].element, `${d.name} ${x}, ${y}, ${z}`);
     }
   }
+
+  // Foreground splat clip tracks camera distance, so refresh it on each
+  // drawn frame before rendering.
+  updateSplatClip();
 
   State.renderer.render(State.scene, State.activeCamera);
 
@@ -278,6 +283,13 @@ document.getElementById('chainBtn').addEventListener('click', () => {
 });
 
 document.getElementById('orthoBtn').addEventListener('click', () => setOrtho(!State.orthoOn));
+
+document.getElementById('splatClip').addEventListener('input', (e) => {
+  const pct = +e.target.value;
+  State.setSplatClipFraction(pct / 100);
+  document.getElementById('splatClipVal').textContent = `${pct}%`;
+  State.requestRender();
+});
 
 document.getElementById('originsBtn').addEventListener('click', () => {
   State.setOriginsOn(!State.originsOn);
