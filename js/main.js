@@ -284,6 +284,32 @@ document.getElementById('chainBtn').addEventListener('click', () => {
 
 document.getElementById('orthoBtn').addEventListener('click', () => setOrtho(!State.orthoOn));
 
+// --- Fly Around (auto-orbit) ---------------------------------------
+// Smoothly orbits the camera around the OrbitControls target using the
+// built-in autoRotate. A continuous-render key keeps the on-demand loop
+// drawing for the duration; releasing it lets the scene settle to idle.
+const flySpeedInput = document.getElementById('flySpeed');
+State.orbitControls.autoRotateSpeed = +flySpeedInput.value;
+function setFlyAround(on) {
+  State.orbitControls.autoRotate = on;
+  State.setContinuousRender('flyAround', on);
+  const btn = document.getElementById('flyBtn');
+  btn.textContent = `Fly Around: ${on ? 'ON' : 'OFF'}`;
+  btn.classList.toggle('active', on);
+  document.getElementById('flySpeedRow').style.display = on ? 'flex' : 'none';
+}
+document.getElementById('flyBtn').addEventListener('click', () => {
+  setFlyAround(!State.orbitControls.autoRotate);
+});
+flySpeedInput.addEventListener('input', (e) => {
+  State.orbitControls.autoRotateSpeed = +e.target.value;
+  document.getElementById('flySpeedVal').textContent = `${(+e.target.value).toFixed(1)}×`;
+});
+// Any manual orbit/zoom drag stops the fly-around so the user takes over.
+State.orbitControls.addEventListener('start', () => {
+  if (State.orbitControls.autoRotate) setFlyAround(false);
+});
+
 document.getElementById('splatClip').addEventListener('input', (e) => {
   const pct = +e.target.value;
   State.setSplatClipFraction(pct / 100);

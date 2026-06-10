@@ -83,6 +83,12 @@
   <button id="chainBtn">Chain: OFF</button>
   <button id="originsBtn">Origins: OFF</button>
   <button id="orthoBtn">Ortho: OFF</button>
+  <button id="flyBtn">Fly Around: OFF</button>
+  <div id="flySpeedRow" style="display:none; align-items:center; gap:6px; margin-top:4px;">
+    <label style="font-size:11px; color:#889; white-space:nowrap;">Fly speed:</label>
+    <input type="range" id="flySpeed" min="0.5" max="8" value="2" step="0.5" style="flex:1;">
+    <span id="flySpeedVal" style="font-size:11px; color:#8cf; min-width:32px;">2.0&times;</span>
+  </div>
   <div id="splatClipRow" style="display:none; align-items:center; gap:6px; margin-top:4px;">
     <label style="font-size:11px; color:#889; white-space:nowrap;">Splat clip:</label>
     <input type="range" id="splatClip" min="0" max="100" value="0" step="1" style="flex:1;">
