@@ -44,8 +44,13 @@
   }
   #ee-info span { color: #8cf; }
   .slider-row label span { cursor: text; }
+  .editable-val {
+    cursor: pointer; padding: 0 4px; border-radius: 2px;
+    border-bottom: 1px dashed #66f;
+  }
+  .editable-val:hover { background: rgba(102,136,255,0.18); color: #cdf; }
   .val-input {
-    width: 54px; background: rgba(0,0,40,0.6); border: 1px solid #66f;
+    width: 108px; background: rgba(0,0,40,0.6); border: 1px solid #66f;
     color: #8cf; font-weight: bold; font-size: 12px; font-family: monospace;
     text-align: right; outline: none; padding: 0 3px; border-radius: 2px;
   }

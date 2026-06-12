@@ -30,10 +30,10 @@ export const configFiles = ['i16_config.json', 'i19_config.json', 'gp225_config.
 // ============================================================
 // makeSpanEditable
 // ============================================================
-export function makeSpanEditable(spanId, onCommit) {
+export function makeSpanEditable(spanId, onCommit, trigger = 'dblclick') {
   const span = document.getElementById(spanId);
   if (!span) return;
-  span.addEventListener('dblclick', () => {
+  span.addEventListener(trigger, () => {
     const input = document.createElement('input');
     input.type = 'number';
     input.className = 'val-input';
@@ -426,13 +426,20 @@ export function buildControlPanel(dev) {
   rebuildParentDropdown();
   rebuildDeviceParentDropdown();
 
-  // IK double-click editing
+  // IK editing: the value text is the only visible control for the X/Y/Z
+  // position fields (their number inputs are hidden) — click a value to edit.
   ['ikx','iky','ikz','ika','ikb','ikc'].forEach(id => {
+    const span = document.getElementById(id.replace('ik', 'ikv'));
+    if (span) span.classList.add('editable-val');
     makeSpanEditable(id.replace('ik', 'ikv'), (val) => {
       const s = document.getElementById(id);
-      s.value = Math.max(s.min, Math.min(s.max, val));
+      // Clamp only to bounds that exist (the X/Y/Z position fields are
+      // unbounded number inputs; the orientation fields keep their ranges).
+      const lo = s.min === '' ? -Infinity : parseFloat(s.min);
+      const hi = s.max === '' ?  Infinity : parseFloat(s.max);
+      s.value = Math.max(lo, Math.min(hi, val));
       s.dispatchEvent(new Event('input'));
-    });
+    }, 'click');
   });
 }
 
