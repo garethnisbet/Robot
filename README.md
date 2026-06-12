@@ -488,6 +488,13 @@ meca500 [3]: robot.worldToLocal([600, 200, 300], [0, 0, 0], device='GP225')
 | `scan DevA:J1 0 50 5 DevB:J1 0 30 5` | `robot.scan(('DevA:J1',0,50,5), ('DevB:J1',0,30,5))` | Multi-device scan |
 | `scan v:chi 0 90 5` | `robot.scan(('v:chi', 0, 90, 5))` | Kappa virtual-axis scan (chi/theta/phi) |
 | `scan v:chi 0 45 5 v:phi 0 30 5` | `robot.scan(('v:chi',0,45,5), ('v:phi',0,30,5))` | Virtual-axis grid/coupled scan |
+| `scan ee:x 150 250 10` | `robot.scan(('ee:x', 150, 250, 10))` | Cartesian end-effector scan (Python IK) |
+| `scan ee:x 150 250 5 ee:y -50 50 5` | `robot.scan(('ee:x',150,250,5), ('ee:y',-50,50,5))` | Cartesian grid/coupled scan |
+| `scan ee:z 200 400 10 --space world` | `robot.scan(('ee:z',200,400,10), space='world')` | Cartesian scan in world frame |
+| `scan ee:x ee:y ee:z waypoints` | `robot.scan('ee:x','ee:y','ee:z', waypoints)` | Cartesian array scan (rows = poses) |
+| `scan GP180_120:ee:z 200 400 10` | `robot.scan(('GP180_120:ee:z', 200, 400, 10))` | Cartesian scan on a named device |
+| `scan GP180_120:ee:z 200 400 10 Meca500:ee:x 150 250 10` | `robot.scan(('GP180_120:ee:z',200,400,10), ('Meca500:ee:x',150,250,10))` | Multi-device Cartesian scan |
+| `scan GP180_120:ee:y 354 400 10 I16_diff:delta 0 120 10` | `robot.scan(('GP180_120:ee:y',354,400,10), ('I16_diff:delta',0,120,10))` | Mixed Cartesian + joint scan |
 | `scan GP180_120 scanpoints` | `robot.scan('GP180_120', scanpoints)` | Full-vector array scan (device name expands to all joints) |
 | `scan GP180_120 Meca500 combined_pts` | `robot.scan('GP180_120', 'Meca500', combined_pts)` | Multi-device vector scan (cols = joints of each device) |
 | `scan robot1 robot2 my_func()` | `robot.scan('robot1', 'robot2', my_func)` | Multi-device vector scan with callable |
@@ -499,6 +506,12 @@ meca500 [3]: robot.worldToLocal([600, 200, 300], [0, 0, 0], device='GP225')
 Object scan axes use `@ObjectName:component` syntax where component is `tx`, `ty`, `tz`, `rx`, `ry`, or `rz`. The `space` parameter (`'local'` or `'world'`) controls the coordinate frame for object transforms (default: `'local'`).
 
 Kappa virtual axes use a `v:` prefix (`v:chi`, `v:theta`, `v:phi`) to disambiguate from the physical `theta`/`phi` joints. Virtual scans target the active kappa device and cannot be mixed with physical-joint axes in the same scan. The same `v:<axis>` keys work as dict keys in `robot.set_pos` / `robot.inc_pos`.
+
+Cartesian end-effector axes use an `ee:` prefix — `x`, `y`, `z` (mm) and `a`, `b`, `g` (ZYX Euler degrees). Each target pose is solved to joint angles by the analytical Python IK (`GNKinematics`) and streamed as joint waypoints, so the on-screen pose matches the analytical solution. Start/end/step are absolute coordinates and unlisted axes hold their current value. `--space`/`space=` selects the frame: `local` (default, robot base frame) or `world` (converted per waypoint via `worldToLocal`, so the end-effector tracks world axes regardless of how the device is mounted). Supported on Meca500, GP180_120, GP225, GP280 and MotoMini; cannot be mixed with joint, virtual, or object axes in the same scan.
+
+By default an `ee:` scan targets the active device. Prefix the axis with a device name — `Device:ee:<axis>` (e.g. `GP180_120:ee:z`) — to target a specific device, or list several to scan multiple arms in one command. Each device is solved with its own IK and base pose, and the per-step joint solutions are streamed together (grid axes form a product across devices, coupled axes lock-step with the primary), mirroring multi-device joint scans. Device-prefixed axes are supported in the range form only; for an array scan, switch to the device first with `robot.device('Name')`.
+
+Cartesian `ee:` axes can be combined with ordinary joint axes on *other* devices in the same scan (e.g. `scan GP180_120:ee:y 354 400 10 I16_diff:delta 0 120 10`) — the Cartesian device is IK-solved while the joint axis is set directly, and all devices step together. A single device cannot mix `ee:` and joint axes, and `ee:` cannot be combined with object (`@`) or virtual (`v:`) axes.
 
 **Object commands:**
 
