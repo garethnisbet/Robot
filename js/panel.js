@@ -355,7 +355,8 @@ export function buildControlPanel(dev) {
   }
 
   // Build virtual axes section (fixed joints named virtual_axis_*)
-  const virtualAxes = dev.config.joints
+  // Hexapod configs have no `joints` array, so default to empty.
+  const virtualAxes = (dev.config.joints || [])
     .map((j, i) => ({ ...j, idx: i }))
     .filter(j => j.name.startsWith('virtual_axis'));
   if (virtualAxes.length > 0) {
