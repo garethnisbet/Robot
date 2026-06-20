@@ -102,6 +102,7 @@ function _buildSTLPayload(entry, bufferFn, includeSplatBuffers) {
   // bufferFn === null builds a metadata-only record (buffers saved separately).
   if (bufferFn && (!entry.isSplat || includeSplatBuffers)) rec.buffer = bufferFn(entry._buffer);
   if (entry.isSplat && entry._fileName) rec.splatFile = entry._fileName;
+  if (entry.isSplat) rec.splatTint = entry._splatTint ?? 0xffffff;
   return rec;
 }
 
@@ -341,6 +342,12 @@ export async function restoreSTLsFromState(records) {
     if (rec.opacity !== undefined && !entry.isSplat) {
       m.material.opacity = rec.opacity;
       entry.opacity = rec.opacity;
+    }
+    // Splats apply opacity/tint through shader uniforms (no material.opacity),
+    // so restore them onto the entry; updateSplatClip() pushes them each frame.
+    if (entry.isSplat) {
+      if (rec.opacity !== undefined) entry.opacity = rec.opacity;
+      if (rec.splatTint !== undefined) entry._splatTint = rec.splatTint;
     }
 
     // Apply parent link
@@ -659,6 +666,34 @@ function _patchSplatClipMaterial(material) {
   material.needsUpdate = true;
 }
 
+// ── Colour tint + opacity for splats ────────────────────────
+// The splat fragment shader outputs `gl_FragColor = vec4(color.rgb, opacity)`.
+// We multiply the colour by a tint (white = no change) and scale the alpha by
+// an opacity factor, so splats get the same colour/transparency controls as
+// meshes and point clouds. Both known render-mode shader variants are handled.
+function _patchSplatAppearanceMaterial(material) {
+  if (!material || material.userData._appearancePatched) return;
+  const fs = material.fragmentShader;
+  if (!fs) return;
+
+  const patched = fs
+    .replace('gl_FragColor = vec4(color.rgb, opacity);',
+             'gl_FragColor = vec4(color.rgb * splatTint, opacity * splatOpacity);')
+    .replace('gl_FragColor = vec4(vColor.rgb, w);',
+             'gl_FragColor = vec4(vColor.rgb * splatTint, w * splatOpacity);');
+  if (patched === fs) return; // output line not found — leave material untouched
+
+  const decl = 'uniform vec3 splatTint;\nuniform float splatOpacity;\n';
+  material.fragmentShader = patched.includes('void main')
+    ? patched.replace('void main', decl + 'void main')
+    : decl + patched;
+
+  material.uniforms.splatTint = material.uniforms.splatTint || { value: new THREE.Color(1, 1, 1) };
+  material.uniforms.splatOpacity = material.uniforms.splatOpacity || { value: 1.0 };
+  material.userData._appearancePatched = true;
+  material.needsUpdate = true;
+}
+
 // Push the current clip distance into every loaded splat's material.
 // Called once per drawn frame from the animate loop. The clip is by
 // eye-space depth, so it works the same in perspective and orthographic
@@ -690,8 +725,15 @@ export function updateSplatClip() {
     // material and its uniforms before touching them.
     if (!mat || !mat.uniforms) continue;
     _patchSplatClipMaterial(mat);
+    _patchSplatAppearanceMaterial(mat);
     if (mat.uniforms.foregroundClipDist) {
       mat.uniforms.foregroundClipDist.value = dist;
+    }
+    if (mat.uniforms.splatTint) {
+      mat.uniforms.splatTint.value.set(s._splatTint ?? 0xffffff);
+    }
+    if (mat.uniforms.splatOpacity) {
+      mat.uniforms.splatOpacity.value = s.opacity ?? 1;
     }
   }
 }
@@ -779,9 +821,17 @@ export function _addSplatToScene(buffer, ext, name, color, stlId, transforms, fi
   const wrapper = new THREE.Group();
   wrapper.name = 'splat_' + name;
 
+  // The per-frame depth sort dominates splat cost. sharedMemoryForWorkers lets
+  // the sort worker run zero-copy via SharedArrayBuffer — but that needs the
+  // page to be cross-origin isolated (COOP/COEP headers, set in server.py), so
+  // detect it at runtime and fall back gracefully on a plain HTTP load.
+  // gpuAcceleratedSort is left off: the library force-disables it in WebXR
+  // anyway, and on desktop its transform-feedback path renders nothing on some
+  // drivers — so it adds risk with no VR benefit.
+  const isolated = (typeof window !== 'undefined' && window.crossOriginIsolated) || false;
   const viewer = new DropInViewer({
     gpuAcceleratedSort: false,
-    sharedMemoryForWorkers: false,
+    sharedMemoryForWorkers: isolated,
   });
   wrapper.add(viewer);
 
@@ -811,6 +861,9 @@ export function _addSplatToScene(buffer, ext, name, color, stlId, transforms, fi
     importScale: wrapper.scale.clone(), _splatViewer: viewer, _blobUrl: blobUrl,
     _collisionPoints: collisionPoints,
     _fileName: fileName || null,
+    // Tint (multiplied into the per-splat colour) and opacity are applied via
+    // injected shader uniforms in updateSplatClip(). White = original colours.
+    _splatTint: 0xffffff,
   };
   State.importedSTLs.push(entry);
   State.setStlColorIdx(Math.max(State.stlColorIdx, stlColors.indexOf(color) + 1));
@@ -986,11 +1039,14 @@ export function addSTLListItem(entry) {
   const colorSwatch = document.createElement('input');
   colorSwatch.type = 'color';
   colorSwatch.className = 'stl-color';
-  colorSwatch.value = '#' + new THREE.Color(entry.color).getHexString();
-  colorSwatch.title = 'Change color';
+  colorSwatch.value = '#' + new THREE.Color(entry.isSplat ? (entry._splatTint ?? 0xffffff) : entry.color).getHexString();
+  colorSwatch.title = entry.isSplat ? 'Tint colour (white = original)' : 'Change color';
   if (entry.isSplat) {
-    colorSwatch.disabled = true;
-    colorSwatch.style.opacity = '0.3';
+    // Splats keep their own per-point colours; the swatch tints them (multiply).
+    colorSwatch.addEventListener('input', () => {
+      entry._splatTint = new THREE.Color(colorSwatch.value).getHex();
+      State.requestRender();
+    });
   } else {
     colorSwatch.addEventListener('input', () => {
       entry.mesh.material.color.set(colorSwatch.value);
@@ -1003,11 +1059,14 @@ export function addSTLListItem(entry) {
   alphaSlider.className = 'stl-alpha';
   alphaSlider.min = '0';
   alphaSlider.max = '100';
-  alphaSlider.value = entry.isSplat ? 100 : Math.round((entry.opacity ?? entry.mesh.material.opacity) * 100);
+  alphaSlider.value = Math.round((entry.opacity ?? (entry.isSplat ? 1 : entry.mesh.material.opacity)) * 100);
   alphaSlider.title = 'Opacity';
   if (entry.isSplat) {
-    alphaSlider.disabled = true;
-    alphaSlider.style.opacity = '0.3';
+    // Opacity scales the splat alpha via the injected shader uniform.
+    alphaSlider.addEventListener('input', () => {
+      entry.opacity = parseInt(alphaSlider.value, 10) / 100;
+      State.requestRender();
+    });
   } else {
     alphaSlider.addEventListener('input', () => {
       const val = parseInt(alphaSlider.value, 10) / 100;

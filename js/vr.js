@@ -102,6 +102,11 @@ export async function initVR() {
     };
     const session = await navigator.xr.requestSession(xrMode, sessionOpts);
     session.addEventListener('end', () => { currentSession = null; btn.textContent = 'ENTER VR'; });
+    // Splat rendering is heavily overdraw-bound on mobile GPUs (Quest). Render
+    // the eye buffers at reduced resolution and apply maximum foveation so the
+    // periphery shades fewer fragments. Both must be set before setSession().
+    renderer.xr.setFramebufferScaleFactor(0.8);
+    renderer.xr.setFoveation(1);
     await renderer.xr.setSession(session);
     currentSession = session;
     btn.textContent = 'EXIT VR';
