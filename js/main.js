@@ -44,9 +44,10 @@ import {
   buildSceneMetadataForDB, buildSceneBuffersForDB, sceneBufferSignature,
   exportSceneState, importSceneState, restoreSTLsFromState,
   loadSTLFile, loadOBJFile, loadPLYFile, loadGLBFile, loadSplatFile,
-  updateSplatClip,
+  updateSplatClip, updatePointCloudClip,
   addPrimitive,
   selectSTL, deselectSTL, setSTLTransformMode, setSTLParent, syncSTLNumericInputs,
+  applyPointCloudSettings,
 } from './stl.js';
 import { dbSave, dbLoad, BUFFERS_KEY } from './storage.js';
 import { checkCollisions, clearCollisionHighlights, initCollisionWorker } from './collision.js';
@@ -156,9 +157,10 @@ function animate(time, frame) {
     }
   }
 
-  // Foreground splat clip tracks camera distance, so refresh it on each
-  // drawn frame before rendering.
+  // Foreground splat/point-cloud clips track camera distance, so refresh
+  // them on each drawn frame before rendering.
   updateSplatClip();
+  updatePointCloudClip();
 
   State.renderer.render(State.scene, State.activeCamera);
 
@@ -314,6 +316,13 @@ document.getElementById('splatClip').addEventListener('input', (e) => {
   const pct = +e.target.value;
   State.setSplatClipFraction(pct / 100);
   document.getElementById('splatClipVal').textContent = `${pct}%`;
+  State.requestRender();
+});
+
+document.getElementById('pcClip').addEventListener('input', (e) => {
+  const pct = +e.target.value;
+  State.setPointCloudClipFraction(pct / 100);
+  document.getElementById('pcClipVal').textContent = `${pct}%`;
   State.requestRender();
 });
 
@@ -664,6 +673,23 @@ document.getElementById('stlDeselect').addEventListener('click', deselectSTL);
 
 document.getElementById('lockAspectCb').addEventListener('change', (e) => {
   State.setLockAspect(e.target.checked);
+});
+
+// Point cloud display controls (visible only when a point cloud is selected)
+document.getElementById('pointShapeSelect').addEventListener('change', (e) => {
+  const entry = State.selectedSTL;
+  if (!entry || !entry.isPointCloud) return;
+  entry.pointShape = e.target.value;
+  applyPointCloudSettings(entry);
+});
+
+document.getElementById('pointSizeSlider').addEventListener('input', (e) => {
+  const entry = State.selectedSTL;
+  if (!entry || !entry.isPointCloud) return;
+  const mm = parseFloat(e.target.value);
+  entry.pointSize = mm / 1000;
+  document.getElementById('pointSizeVal').textContent = mm.toFixed(1) + ' mm';
+  applyPointCloudSettings(entry);
 });
 
 document.getElementById('stlResetPos').addEventListener('click', () => {

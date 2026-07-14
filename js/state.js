@@ -20,6 +20,9 @@ export let orthoOn      = false;
 // distance). Applied in both perspective and orthographic views.
 export let splatClipFraction = 0;
 
+// Point cloud foreground clip, same semantics as splatClipFraction.
+export let pointCloudClipFraction = 0;
+
 // Controls
 export let orbitControls           = null;
 export let transformControls       = null;
@@ -81,6 +84,7 @@ export function initControls(orbit, transform, stlTransform, deviceTransform) {
 export function setActiveCamera(cam)  { activeCamera = cam; }
 export function setOrthoOn(v)         { orthoOn = v; }
 export function setSplatClipFraction(v) { splatClipFraction = v; }
+export function setPointCloudClipFraction(v) { pointCloudClipFraction = v; }
 
 export function setActiveDevice(dev)  { activeDevice = dev; }
 export function incrementDeviceId()   { return 'dev_' + (deviceIdCounter++); }

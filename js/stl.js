@@ -103,6 +103,10 @@ function _buildSTLPayload(entry, bufferFn, includeSplatBuffers) {
   if (bufferFn && (!entry.isSplat || includeSplatBuffers)) rec.buffer = bufferFn(entry._buffer);
   if (entry.isSplat && entry._fileName) rec.splatFile = entry._fileName;
   if (entry.isSplat) rec.splatTint = entry._splatTint ?? 0xffffff;
+  if (entry.isPointCloud) {
+    rec.pointSize = entry.pointSize ?? DEFAULT_POINT_SIZE;
+    rec.pointShape = entry.pointShape || 'square';
+  }
   return rec;
 }
 
@@ -349,6 +353,12 @@ export async function restoreSTLsFromState(records) {
       if (rec.opacity !== undefined) entry.opacity = rec.opacity;
       if (rec.splatTint !== undefined) entry._splatTint = rec.splatTint;
     }
+    if (entry.isPointCloud) {
+      if (rec.pointSize !== undefined) entry.pointSize = rec.pointSize;
+      // Older saves stored a boolean roundPoints instead of pointShape.
+      entry.pointShape = rec.pointShape ?? (rec.roundPoints ? 'round' : 'square');
+      applyPointCloudSettings(entry);
+    }
 
     // Apply parent link
     const resolvedParent = _parentLinkFromStable(rec.parentLink);
@@ -449,11 +459,61 @@ export function _isPLYGaussianSplat(buffer) {
   return header.includes('f_dc_0') || header.includes('rot_0') || header.includes('scale_0');
 }
 
+export const DEFAULT_POINT_SIZE = 0.003;
+
+const _pointTextures = {};
+function _getPointTexture(shape) {
+  if (shape !== 'round' && shape !== 'soft') return null;
+  if (!_pointTextures[shape]) {
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const ctx = c.getContext('2d');
+    if (shape === 'soft') {
+      const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 31);
+      g.addColorStop(0, 'rgba(255,255,255,1)');
+      g.addColorStop(0.5, 'rgba(255,255,255,0.55)');
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, 64, 64);
+    } else {
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(32, 32, 31, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    _pointTextures[shape] = new THREE.CanvasTexture(c);
+  }
+  return _pointTextures[shape];
+}
+
+export function applyPointCloudSettings(entry) {
+  if (!entry || !entry.isPointCloud) return;
+  const mat = entry.mesh.material;
+  const shape = entry.pointShape || 'square';
+  mat.size = entry.pointSize ?? DEFAULT_POINT_SIZE;
+  mat.map = _getPointTexture(shape);
+  if (shape === 'round') {
+    // alphaTest must stay below the material opacity or every fragment is discarded.
+    mat.alphaTest = Math.min(0.5, (entry.opacity ?? 1) * 0.5);
+    mat.depthWrite = true;
+  } else if (shape === 'soft') {
+    // No depth write: the transparent fringe of nearer points would otherwise
+    // punch square holes into points behind them.
+    mat.alphaTest = 0.01;
+    mat.depthWrite = false;
+  } else {
+    mat.alphaTest = 0;
+    mat.depthWrite = true;
+  }
+  mat.needsUpdate = true;
+  State.requestRender();
+}
+
 export function _addPointsToScene(geometry, buffer, name, color, stlId, transforms) {
   const hasVertexColors = geometry.hasAttribute('color');
   const matColor = hasVertexColors ? 0xffffff : color;
   const material = new THREE.PointsMaterial({
-    color: matColor, size: 0.003, sizeAttenuation: true,
+    color: matColor, size: DEFAULT_POINT_SIZE, sizeAttenuation: true,
     vertexColors: hasVertexColors,
     transparent: true, opacity: 0.9,
   });
@@ -478,7 +538,7 @@ export function _addPointsToScene(geometry, buffer, name, color, stlId, transfor
   label.position.copy(center);
   points.add(label);
 
-  const entry = { mesh: points, label, name, color: matColor, opacity: material.opacity, stlId, _buffer: buffer, fileType: 'ply', isPointCloud: true, parentLink: null, importScale: points.scale.clone() };
+  const entry = { mesh: points, label, name, color: matColor, opacity: material.opacity, stlId, _buffer: buffer, fileType: 'ply', isPointCloud: true, pointSize: DEFAULT_POINT_SIZE, pointShape: 'square', parentLink: null, importScale: points.scale.clone() };
   State.importedSTLs.push(entry);
   State.setStlColorIdx(Math.max(State.stlColorIdx, stlColors.indexOf(color) + 1));
   addSTLListItem(entry);
@@ -735,6 +795,61 @@ export function updateSplatClip() {
     if (mat.uniforms.splatOpacity) {
       mat.uniforms.splatOpacity.value = s.opacity ?? 1;
     }
+  }
+}
+
+// ── Foreground clip for point clouds ────────────────────────
+// Same idea as the splat clip: any point whose eye-space depth is closer
+// than `foregroundClipDist` gets its gl_Position pushed outside the clip
+// volume, so the interior of a scan can be inspected. PointsMaterial has
+// no shader source to edit directly, so the discard is injected with
+// onBeforeCompile after <project_vertex> (which defines mvPosition).
+function _patchPointCloudClipMaterial(material) {
+  if (!material || material.userData._fgClipUniform) return;
+
+  const clipUniform = { value: 0.0 };
+  material.userData._fgClipUniform = clipUniform;
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.foregroundClipDist = clipUniform;
+    shader.vertexShader = shader.vertexShader
+      .replace('void main', 'uniform float foregroundClipDist;\nvoid main')
+      .replace(
+        '#include <project_vertex>',
+        '#include <project_vertex>\n' +
+        '\tif (foregroundClipDist > 0.0 && -mvPosition.z < foregroundClipDist) {\n' +
+        '\t\tgl_Position = vec4(0.0, 0.0, 2.0, 1.0);\n' +
+        '\t}'
+      );
+  };
+  // All point clouds share this exact patch, so give them a common program
+  // cache key distinct from unpatched PointsMaterials.
+  material.customProgramCacheKey = () => 'pcForegroundClip';
+  material.needsUpdate = true;
+}
+
+// Push the current clip distance into every loaded point cloud's material.
+// Called once per drawn frame from the animate loop, alongside
+// updateSplatClip(), and uses the same orbit-radius scaling so the two
+// sliders feel identical.
+export function updatePointCloudClip() {
+  const clouds = State.importedSTLs.filter(s => s.isPointCloud);
+
+  const row = document.getElementById('pcClipRow');
+  if (row) row.style.display = clouds.length > 0 ? 'flex' : 'none';
+
+  if (clouds.length === 0) return;
+
+  let dist = 0;
+  if (State.pointCloudClipFraction > 0) {
+    const radius = State.activeCamera.position.distanceTo(State.orbitControls.target);
+    dist = State.pointCloudClipFraction * 2 * radius;
+  }
+
+  for (const c of clouds) {
+    const mat = c.mesh && c.mesh.material;
+    if (!mat) continue;
+    _patchPointCloudClipMaterial(mat);
+    mat.userData._fgClipUniform.value = dist;
   }
 }
 
@@ -1026,6 +1141,11 @@ export async function duplicateSTL(srcEntry) {
     newEntry.opacity = srcEntry.opacity;
     newEntry.mesh.material.opacity = srcEntry.opacity;
   }
+  if (newEntry && newEntry.isPointCloud) {
+    newEntry.pointSize = srcEntry.pointSize ?? DEFAULT_POINT_SIZE;
+    newEntry.pointShape = srcEntry.pointShape || 'square';
+    applyPointCloudSettings(newEntry);
+  }
 }
 
 // ============================================================
@@ -1072,6 +1192,7 @@ export function addSTLListItem(entry) {
       const val = parseInt(alphaSlider.value, 10) / 100;
       entry.mesh.material.opacity = val;
       entry.opacity = val;
+      if (entry.isPointCloud && entry.pointShape === 'round') applyPointCloudSettings(entry);
     });
   }
 
@@ -1256,6 +1377,17 @@ export function selectSTL(entry, listItem) {
   stlSelName.textContent = entry.name;
   document.getElementById('stlParentSelect').value = entry.parentLink || '';
   syncSTLNumericInputs(entry);
+
+  const pointsRow = document.getElementById('stl-points');
+  if (entry.isPointCloud) {
+    pointsRow.style.display = 'block';
+    document.getElementById('pointShapeSelect').value = entry.pointShape || 'square';
+    const mm = (entry.pointSize ?? DEFAULT_POINT_SIZE) * 1000;
+    document.getElementById('pointSizeSlider').value = mm;
+    document.getElementById('pointSizeVal').textContent = mm.toFixed(1) + ' mm';
+  } else {
+    pointsRow.style.display = 'none';
+  }
 
   if (listItem) listItem.classList.add('selected');
 }

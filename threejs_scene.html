@@ -94,6 +94,11 @@
     <input type="range" id="splatClip" min="0" max="100" value="0" step="1" style="flex:1;">
     <span id="splatClipVal" style="font-size:11px; color:#8cf; min-width:32px;">0%</span>
   </div>
+  <div id="pcClipRow" style="display:none; align-items:center; gap:6px; margin-top:4px;">
+    <label style="font-size:11px; color:#889; white-space:nowrap;">Point clip:</label>
+    <input type="range" id="pcClip" min="0" max="100" value="0" step="1" style="flex:1;">
+    <span id="pcClipVal" style="font-size:11px; color:#8cf; min-width:32px;">0%</span>
+  </div>
   <button id="screenshotBtn">Screenshot</button>
   <button id="collisionBtn">Collision: OFF</button>
   <button id="floorCollisionBtn">Floor Collision: ON</button>
@@ -150,6 +155,21 @@
     <div id="stl-lock-aspect" style="display:flex; align-items:center; gap:5px; margin-top:5px;">
       <input type="checkbox" id="lockAspectCb" style="width:auto; margin:0;">
       <label for="lockAspectCb" style="font-size:11px; color:#889; cursor:pointer; white-space:nowrap;">Lock aspect ratio</label>
+    </div>
+    <div id="stl-points" style="display:none; margin-top:5px;">
+      <div style="display:flex; align-items:center; gap:6px;">
+        <label for="pointShapeSelect" style="font-size:11px; color:#889; white-space:nowrap;">Point shape:</label>
+        <select id="pointShapeSelect">
+          <option value="square">Square</option>
+          <option value="round">Round</option>
+          <option value="soft">Soft</option>
+        </select>
+      </div>
+      <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+        <label style="font-size:11px; color:#889; white-space:nowrap;">Point size:</label>
+        <input type="range" id="pointSizeSlider" min="0.2" max="10" value="3" step="0.1" style="flex:1;">
+        <span id="pointSizeVal" style="font-size:11px; color:#8cf; min-width:44px;">3.0 mm</span>
+      </div>
     </div>
     <div id="stl-parent">
       <label>Parent:</label>

@@ -106,7 +106,7 @@
   }
   #stl-parent { margin-top: 5px; display: flex; align-items: center; gap: 5px; }
   #stl-parent label { font-size: 11px; color: #889; white-space: nowrap; }
-  #stlParentSelect {
+  #stlParentSelect, #pointShapeSelect {
     flex: 1; background: #223; color: #aac; border: 1px solid #446;
     border-radius: 3px; font-size: 11px; padding: 2px 4px; outline: none;
   }
