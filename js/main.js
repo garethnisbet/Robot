@@ -49,6 +49,7 @@ import {
   selectSTL, deselectSTL, setSTLTransformMode, setSTLParent, syncSTLNumericInputs,
   applyPointCloudSettings,
 } from './stl.js';
+import { initVisBoxUI, updateVisBoxUI, visBoxActive, setVisBoxMode } from './visbox.js';
 import { dbSave, dbLoad, BUFFERS_KEY } from './storage.js';
 import { checkCollisions, clearCollisionHighlights, initCollisionWorker } from './collision.js';
 import { initVR, updateVR } from './vr.js';
@@ -161,6 +162,7 @@ function animate(time, frame) {
   // them on each drawn frame before rendering.
   updateSplatClip();
   updatePointCloudClip();
+  updateVisBoxUI();
 
   State.renderer.render(State.scene, State.activeCamera);
 
@@ -325,6 +327,8 @@ document.getElementById('pcClip').addEventListener('input', (e) => {
   document.getElementById('pcClipVal').textContent = `${pct}%`;
   State.requestRender();
 });
+
+initVisBoxUI();
 
 document.getElementById('originsBtn').addEventListener('click', () => {
   State.setOriginsOn(!State.originsOn);
@@ -799,6 +803,7 @@ let _ptrDownX = 0, _ptrDownY = 0, _ptrDownValid = false;
 State.renderer.domElement.addEventListener('pointerdown', (e) => {
   _ptrDownValid = false;
   if (State.stlTransformControls.dragging || State.transformControls.dragging || State.deviceTransformControls.dragging) return;
+  if (State.visBoxControls && State.visBoxControls.dragging) return;
   if (e.button !== 0) return;
   _ptrDownX = e.clientX; _ptrDownY = e.clientY; _ptrDownValid = true;
 });
@@ -885,6 +890,14 @@ window.addEventListener('keydown', (e) => {
       setSTLTransformMode('scale');
     } else if (e.key === 'Escape') {
       deselectSTL();
+    }
+  } else if (visBoxActive()) {
+    if (e.key === 't' || e.key === 'T') {
+      setVisBoxMode('translate');
+    } else if (e.key === 'r' || e.key === 'R') {
+      setVisBoxMode('rotate');
+    } else if (e.key === 's' || e.key === 'S') {
+      setVisBoxMode('scale');
     }
   } else if (State.activeDevice && State.activeDevice.ikMode) {
     const tc = State.transformControls;

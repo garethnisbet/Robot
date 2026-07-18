@@ -160,6 +160,7 @@ export function setOrtho(on) {
   State.transformControls.camera = State.activeCamera;
   State.stlTransformControls.camera = State.activeCamera;
   State.deviceTransformControls.camera = State.activeCamera;
+  if (State.visBoxControls) State.visBoxControls.camera = State.activeCamera;
   State.orbitControls.update();
 }
 

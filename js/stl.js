@@ -726,6 +726,64 @@ function _patchSplatClipMaterial(material) {
   material.needsUpdate = true;
 }
 
+// ── Visibility clip box (non-destructive) ───────────────────
+// An *oriented* box (so it can be translated, rotated and scaled) that
+// hides point-cloud / splat geometry either inside or outside it, letting
+// the internal structure of a scan be inspected without deleting anything.
+// The box is a unit cube ([-0.5,0.5]³) placed by a world matrix; the
+// inverse of that matrix maps any world point into box-local space, where
+// the test is just |xyz| ≤ 0.5. Point-cloud materials share these uniforms
+// so every cloud updates live; splats are pushed per-frame from
+// updateSplatClip() (their raw shader has no modelMatrix, so the matrix is
+// composed per splat). Robot/device meshes are never clipped.
+const _boxClipUniforms = {
+  uBoxClipEnabled: { value: false },
+  uBoxClipInv:     { value: new THREE.Matrix4() },  // world → box-local
+  uBoxClipMode:    { value: 1.0 },                  // 1 = show inside, 0 = show outside
+};
+let _boxClipEnabled = false, _boxClipMode = 1.0;
+const _boxClipInv = new THREE.Matrix4();
+const _boxClipSplatMat = new THREE.Matrix4();
+
+// Update the active clip box. opts: { enabled, mode:'inside'|'outside',
+// matrix:number[16] } — matrix is the unit-cube box's world matrix (column
+// major, e.g. box.matrixWorld.elements). Call with { enabled:false } to clear.
+export function setVisibilityClip(opts = {}) {
+  if ('enabled' in opts) _boxClipEnabled = !!opts.enabled;
+  if (opts.mode) _boxClipMode = opts.mode === 'outside' ? 0.0 : 1.0;
+  if (opts.matrix) _boxClipInv.fromArray(opts.matrix).invert();
+  _boxClipUniforms.uBoxClipEnabled.value = _boxClipEnabled;
+  _boxClipUniforms.uBoxClipMode.value = _boxClipMode;
+  _boxClipUniforms.uBoxClipInv.value.copy(_boxClipInv);
+  State.requestRender();
+}
+
+// Box clip for splats. splatCenter is in the splat mesh's model space, so the
+// uniform matrix supplied per-frame is (worldToBox · splatModelMatrix), taking
+// splatCenter straight into box-local space.
+function _patchSplatBoxClip(material) {
+  if (!material || material.userData._boxClipPatched) return;
+  if (!material.vertexShader || !material.vertexShader.includes('uniform float orthoZoom;')) return;
+  if (!material.vertexShader.includes('vec4 viewCenter = transformModelViewMatrix * vec4(splatCenter, 1.0);')) return;
+
+  material.vertexShader = material.vertexShader
+    .replace('uniform float orthoZoom;',
+      'uniform float orthoZoom;\nuniform bool uBoxClipEnabled;\nuniform mat4 uBoxClipInv;\nuniform float uBoxClipMode;')
+    .replace('vec4 viewCenter = transformModelViewMatrix * vec4(splatCenter, 1.0);',
+      'if (uBoxClipEnabled) {\n'
+      + '    vec3 _l = (uBoxClipInv * vec4(splatCenter, 1.0)).xyz;\n'
+      + '    bool _in = all(lessThanEqual(abs(_l), vec3(0.5)));\n'
+      + '    if ((uBoxClipMode > 0.5) ? !_in : _in) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }\n'
+      + '}\n'
+      + '            vec4 viewCenter = transformModelViewMatrix * vec4(splatCenter, 1.0);');
+
+  material.uniforms.uBoxClipEnabled = { value: false };
+  material.uniforms.uBoxClipInv = { value: new THREE.Matrix4() };
+  material.uniforms.uBoxClipMode = { value: 1.0 };
+  material.userData._boxClipPatched = true;
+  material.needsUpdate = true;
+}
+
 // ── Colour tint + opacity for splats ────────────────────────
 // The splat fragment shader outputs `gl_FragColor = vec4(color.rgb, opacity)`.
 // We multiply the colour by a tint (white = no change) and scale the alpha by
@@ -786,6 +844,19 @@ export function updateSplatClip() {
     if (!mat || !mat.uniforms) continue;
     _patchSplatClipMaterial(mat);
     _patchSplatAppearanceMaterial(mat);
+    _patchSplatBoxClip(mat);
+    if (mat.uniforms.uBoxClipEnabled) {
+      if (_boxClipEnabled) {
+        // splatCenter (splat-local) → world → box-local in one matrix.
+        mesh.updateWorldMatrix(true, false);
+        _boxClipSplatMat.multiplyMatrices(_boxClipInv, mesh.matrixWorld);
+        mat.uniforms.uBoxClipInv.value.copy(_boxClipSplatMat);
+        mat.uniforms.uBoxClipMode.value = _boxClipMode;
+        mat.uniforms.uBoxClipEnabled.value = true;
+      } else {
+        mat.uniforms.uBoxClipEnabled.value = false;
+      }
+    }
     if (mat.uniforms.foregroundClipDist) {
       mat.uniforms.foregroundClipDist.value = dist;
     }
@@ -811,11 +882,22 @@ function _patchPointCloudClipMaterial(material) {
   material.userData._fgClipUniform = clipUniform;
   material.onBeforeCompile = (shader) => {
     shader.uniforms.foregroundClipDist = clipUniform;
+    shader.uniforms.uBoxClipEnabled = _boxClipUniforms.uBoxClipEnabled;
+    shader.uniforms.uBoxClipInv     = _boxClipUniforms.uBoxClipInv;
+    shader.uniforms.uBoxClipMode    = _boxClipUniforms.uBoxClipMode;
     shader.vertexShader = shader.vertexShader
-      .replace('void main', 'uniform float foregroundClipDist;\nvoid main')
+      .replace('void main',
+        'uniform float foregroundClipDist;\n' +
+        'uniform bool uBoxClipEnabled;\nuniform mat4 uBoxClipInv;\nuniform float uBoxClipMode;\n' +
+        'void main')
       .replace(
         '#include <project_vertex>',
         '#include <project_vertex>\n' +
+        '\tif (uBoxClipEnabled) {\n' +
+        '\t\tvec3 _l = (uBoxClipInv * modelMatrix * vec4(transformed, 1.0)).xyz;\n' +
+        '\t\tbool _in = all(lessThanEqual(abs(_l), vec3(0.5)));\n' +
+        '\t\tif ((uBoxClipMode > 0.5) ? !_in : _in) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);\n' +
+        '\t}\n' +
         '\tif (foregroundClipDist > 0.0 && -mvPosition.z < foregroundClipDist) {\n' +
         '\t\tgl_Position = vec4(0.0, 0.0, 2.0, 1.0);\n' +
         '\t}'
@@ -823,7 +905,7 @@ function _patchPointCloudClipMaterial(material) {
   };
   // All point clouds share this exact patch, so give them a common program
   // cache key distinct from unpatched PointsMaterials.
-  material.customProgramCacheKey = () => 'pcForegroundClip';
+  material.customProgramCacheKey = () => 'pcForegroundBoxClip';
   material.needsUpdate = true;
 }
 

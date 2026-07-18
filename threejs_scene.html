@@ -99,6 +99,19 @@
     <input type="range" id="pcClip" min="0" max="100" value="0" step="1" style="flex:1;">
     <span id="pcClipVal" style="font-size:11px; color:#8cf; min-width:32px;">0%</span>
   </div>
+  <div id="visBoxSection" style="display:none; margin-top:4px;">
+    <button id="visBoxPlaceBtn">Place Visibility Box</button>
+    <div style="display:flex; gap:4px; margin-top:4px;">
+      <button id="visBoxMove" class="active" style="flex:1; margin:0;">Move</button>
+      <button id="visBoxRotate" style="flex:1; margin:0;">Rotate</button>
+      <button id="visBoxScale" style="flex:1; margin:0;">Scale</button>
+    </div>
+    <div style="display:flex; gap:4px; margin-top:4px;">
+      <button id="visBoxModeBtn" style="flex:1; margin:0;">Showing: inside</button>
+      <button id="visBoxClearBtn" style="flex:1; margin:0;">Clear</button>
+    </div>
+    <div style="font-size:10px; color:#556; margin-top:2px; text-align:center;">Hides points/splats inside or outside the box &middot; T / R / S</div>
+  </div>
   <button id="screenshotBtn">Screenshot</button>
   <button id="collisionBtn">Collision: OFF</button>
   <button id="floorCollisionBtn">Floor Collision: ON</button>

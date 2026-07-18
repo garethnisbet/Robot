@@ -28,6 +28,9 @@ export let orbitControls           = null;
 export let transformControls       = null;
 export let stlTransformControls    = null;
 export let deviceTransformControls = null;
+// Visibility-box gizmo — created lazily by visbox.js the first time a
+// box is placed, registered here so setOrtho can retarget its camera.
+export let visBoxControls          = null;
 
 // Multi-device registry
 export const devices = [];
@@ -82,6 +85,7 @@ export function initControls(orbit, transform, stlTransform, deviceTransform) {
 }
 
 export function setActiveCamera(cam)  { activeCamera = cam; }
+export function setVisBoxControls(g)  { visBoxControls = g; }
 export function setOrthoOn(v)         { orthoOn = v; }
 export function setSplatClipFraction(v) { splatClipFraction = v; }
 export function setPointCloudClipFraction(v) { pointCloudClipFraction = v; }
