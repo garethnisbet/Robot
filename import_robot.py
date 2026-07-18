@@ -27,23 +27,43 @@ import mathutils
 try:
     project_dir = PROJECT_DIR
 except NameError:
+    project_dir = None
     try:
-        project_dir = os.path.dirname(os.path.abspath(__file__))
+        # Blender's Run Script sets __file__ to '<blend file>/<text name>',
+        # which is not a real filesystem path — only trust __file__ if it
+        # actually exists on disk.
+        if os.path.isfile(__file__):
+            project_dir = os.path.dirname(os.path.abspath(__file__))
     except NameError:
-        # exec() doesn't set __file__; find this script via the Text Editor
+        pass  # exec() doesn't set __file__
+    if project_dir is None:
+        # Find this script via the Text Editor (filepath may be '//'-relative)
         _match = next(
-            (t.filepath for t in bpy.data.texts
+            (bpy.path.abspath(t.filepath) for t in bpy.data.texts
              if t.filepath and os.path.basename(t.filepath) == 'import_robot.py'),
             None
         )
-        if _match:
+        if _match and os.path.isfile(_match):
             project_dir = os.path.dirname(os.path.abspath(_match))
-        else:
-            raise RuntimeError(
-                "Cannot determine project directory. "
-                "Open import_robot.py in Blender's Text Editor before running, "
-                "or set PROJECT_DIR = '/path/to/RobotVisualisation' before exec()."
-            )
+    if project_dir is None:
+        # The documented usage is exec(open('/path/import_robot.py').read())
+        # from a text block — recover the path from that exec line.
+        _rx = re.compile(r"""open\(\s*['"]([^'"]+import_robot\.py)['"]""")
+        for _t in bpy.data.texts:
+            for _line in _t.lines:
+                _m = _rx.search(_line.body)
+                if _m and os.path.isfile(bpy.path.abspath(_m.group(1))):
+                    project_dir = os.path.dirname(
+                        os.path.abspath(bpy.path.abspath(_m.group(1))))
+                    break
+            if project_dir:
+                break
+    if project_dir is None:
+        raise RuntimeError(
+            "Cannot determine project directory. "
+            "Open import_robot.py in Blender's Text Editor before running, "
+            "or set PROJECT_DIR = '/path/to/RobotVisualisation' before exec()."
+        )
 
 try:
     armature_name = ARMATURE_NAME
@@ -308,6 +328,13 @@ for obj in bpy.data.objects:
 # Hide ALL armature objects.  Armature bones are exported as GLTF nodes, and if
 # any bone shares a name with a mesh object the bone node overwrites the mesh
 # node in Three.js's allNodes map, leaving the mesh unattached in the viewer.
+#
+# The GLTF exporter calls bpy.ops.object.mode_set at startup; that operator
+# polls the active object and fails if it is hidden.  Clear the active object
+# first so there is nothing hidden for the exporter to trip over.
+active_object_backup = bpy.context.view_layer.objects.active
+bpy.context.view_layer.objects.active = None
+
 armature_visibility_backup = []
 for obj in bpy.data.objects:
     if obj.type == 'ARMATURE' and not obj.hide_viewport:
@@ -356,6 +383,7 @@ finally:
         obj.hide_viewport = False
     for obj in armature_visibility_backup:
         obj.hide_viewport = False
+    bpy.context.view_layer.objects.active = active_object_backup
 
 print(f"  Exported to {glb_path}")
 print(f"  Unparented/restored {len(parenting_backup)} meshes")

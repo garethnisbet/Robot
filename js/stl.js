@@ -14,6 +14,7 @@ import { MeshBVH } from 'three-mesh-bvh';
 import { DropInViewer, SceneFormat } from 'gaussian-splats-3d';
 
 import * as State from './state.js';
+import { dbSaveFileHandle, dbLoadFileHandle } from './storage.js';
 
 // ============================================================
 // Loaders & colour palette
@@ -83,7 +84,7 @@ function _buildCameraPayload() {
   };
 }
 
-function _buildSTLPayload(entry, bufferFn, includeSplatBuffers) {
+function _buildSTLPayload(entry, bufferFn, includeHeavyBuffers) {
   const m = entry.mesh;
   const rec = {
     id: entry.stlId,
@@ -100,8 +101,13 @@ function _buildSTLPayload(entry, bufferFn, includeSplatBuffers) {
     parentLink: _parentLinkToStable(entry.parentLink),
   };
   // bufferFn === null builds a metadata-only record (buffers saved separately).
-  if (bufferFn && (!entry.isSplat || includeSplatBuffers)) rec.buffer = bufferFn(entry._buffer);
-  if (entry.isSplat && entry._fileName) rec.splatFile = entry._fileName;
+  // Splat and point-cloud buffers are huge, so file exports store only the
+  // source file name and reload the data from disk — unless the source file is
+  // unknown, in which case the buffer is embedded so the object isn't lost.
+  const heavy = entry.isSplat || entry.isPointCloud;
+  const skipBuffer = heavy && !includeHeavyBuffers && entry._fileName;
+  if (bufferFn && !skipBuffer) rec.buffer = bufferFn(entry._buffer);
+  if (heavy && entry._fileName) rec.sourceFile = entry._fileName;
   if (entry.isSplat) rec.splatTint = entry._splatTint ?? 0xffffff;
   if (entry.isPointCloud) {
     rec.pointSize = entry.pointSize ?? DEFAULT_POINT_SIZE;
@@ -210,6 +216,71 @@ function _parentLinkFromStable(parentLink) {
   return null;
 }
 
+// Remember where a splat/point-cloud file came from so a later scene load can
+// offer to reload it from the same location. Called from the import paths in
+// main.js. (Scene JSON stores only transforms for these heavy formats.)
+export function rememberSourceFileHandle(name, handle) {
+  const ext = name.split('.').pop().toLowerCase();
+  if (!['ply', 'splat', 'ksplat', 'spz'].includes(ext)) return;
+  dbSaveFileHandle(name, handle).catch(() => {});
+}
+
+// Modal asking whether to reload the scene's splat/point-cloud file(s) from
+// their last known location. Resolves to 'last', 'browse', or 'skip'. A real
+// button click is required anyway: requestPermission()/showOpenFilePicker()
+// need a user gesture.
+function _promptSplatRestoreChoice(names) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText =
+      'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10000;' +
+      'display:flex;align-items:center;justify-content:center;';
+    const box = document.createElement('div');
+    box.style.cssText =
+      'background:#1e1e28;color:#eee;padding:20px 24px;border-radius:8px;' +
+      'max-width:440px;font:13px/1.5 sans-serif;box-shadow:0 4px 24px rgba(0,0,0,0.5);';
+
+    const title = document.createElement('div');
+    title.style.cssText = 'font-weight:bold;margin-bottom:8px;';
+    title.textContent = 'Scene references external file' + (names.length > 1 ? 's' : '');
+    box.appendChild(title);
+
+    const msg = document.createElement('div');
+    msg.style.cssText = 'margin-bottom:8px;color:#bbb;';
+    msg.textContent = 'Only the position and orientation were saved in the scene file. Reload from the last known location?';
+    box.appendChild(msg);
+
+    for (const n of names) {
+      const row = document.createElement('div');
+      row.style.cssText = 'color:#8cf;margin:2px 0;word-break:break-all;';
+      row.textContent = n;
+      box.appendChild(row);
+    }
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:8px;margin-top:14px;justify-content:flex-end;';
+    const mkBtn = (label, value, primary) => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.style.cssText =
+        'padding:6px 14px;border-radius:5px;border:1px solid #555;cursor:pointer;' +
+        (primary ? 'background:#3a6ea5;color:#fff;border-color:#3a6ea5;' : 'background:#333;color:#ddd;');
+      b.addEventListener('click', () => {
+        overlay.remove();
+        resolve(value);
+      });
+      return b;
+    };
+    btnRow.appendChild(mkBtn('Load last location', 'last', true));
+    btnRow.appendChild(mkBtn('Browse…', 'browse', false));
+    btnRow.appendChild(mkBtn('Skip', 'skip', false));
+    box.appendChild(btnRow);
+
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+  });
+}
+
 async function _promptForSplatFiles(expectedNames) {
   const extensions = [...new Set(expectedNames.map(n => '.' + n.split('.').pop().toLowerCase()))];
   const map = new Map();
@@ -219,7 +290,7 @@ async function _promptForSplatFiles(expectedNames) {
       const handles = await window.showOpenFilePicker({
         multiple: true,
         types: [{
-          description: 'Gaussian Splat files',
+          description: 'Point cloud / splat files',
           accept: { 'application/octet-stream': extensions },
         }],
       });
@@ -227,6 +298,7 @@ async function _promptForSplatFiles(expectedNames) {
         const file = await handle.getFile();
         map.set(file.name, file);
         map.set(file.name.toLowerCase(), file);
+        dbSaveFileHandle(file.name, handle).catch(() => {});
       }
     } catch { /* user cancelled */ }
   } else {
@@ -267,32 +339,76 @@ async function _promptForSplatFiles(expectedNames) {
 export async function restoreSTLsFromState(records) {
   console.log('[Load Scene v3] Restoring', records.length, 'objects — two-phase restore');
 
-  // ── Pre-phase: resolve missing splat files by prompting the user ──
-  const missingSplats = records.filter(r => r.isSplat && !r.buffer && r.splatFile);
-  if (missingSplats.length > 0) {
-    const names = missingSplats.map(r => r.splatFile);
-    console.log('[Load Scene] Need splat files:', names.join(', '));
+  // ── Pre-phase: resolve missing splat/point-cloud files (scene JSON stores
+  // only the transform and source file name, not the heavy buffer). Prefer
+  // reloading from the last known location via a persisted
+  // FileSystemFileHandle; fall back to a browse dialog.
+  // Older saves used `splatFile`; newer ones use `sourceFile` for both types.
+  const _srcNameOf = r => r.sourceFile || r.splatFile;
+  const missingFiles = records.filter(r => (r.isSplat || r.isPointCloud) && !r.buffer && _srcNameOf(r));
+  if (missingFiles.length > 0) {
+    const names = missingFiles.map(_srcNameOf);
+    console.log('[Load Scene] Need source files:', names.join(', '));
     const loadingEl = document.getElementById('loading');
-    if (loadingEl) {
-      loadingEl.style.display = 'block';
-      loadingEl.textContent = 'Select splat file' + (names.length > 1 ? 's' : '') + ': ' + names.join(', ');
+
+    const withHandles = [];
+    for (const rec of missingFiles) {
+      const handle = await dbLoadFileHandle(_srcNameOf(rec)).catch(() => null);
+      if (handle) withHandles.push({ rec, handle });
     }
-    const fileMap = await _promptForSplatFiles(names);
-    for (const rec of missingSplats) {
-      const file = fileMap.get(rec.splatFile) || fileMap.get(rec.splatFile.toLowerCase());
-      if (file) {
-        rec.buffer = await file.arrayBuffer();
-        console.log('[Load Scene] Resolved splat file:', rec.splatFile);
+
+    let browse = withHandles.length === 0;
+    if (withHandles.length > 0) {
+      const choice = await _promptSplatRestoreChoice(withHandles.map(w => _srcNameOf(w.rec)));
+      if (choice === 'last') {
+        for (const { rec, handle } of withHandles) {
+          try {
+            let perm = await handle.queryPermission({ mode: 'read' });
+            if (perm !== 'granted') perm = await handle.requestPermission({ mode: 'read' });
+            if (perm !== 'granted') continue;
+            const file = await handle.getFile();
+            rec.buffer = await file.arrayBuffer();
+            console.log('[Load Scene] Reloaded from last known location:', _srcNameOf(rec));
+          } catch (err) {
+            console.warn('[Load Scene] Could not reload from last location:', _srcNameOf(rec), err);
+          }
+        }
+        // Any that failed (file moved/renamed, permission denied) → browse
+        browse = missingFiles.some(r => !r.buffer);
+      } else if (choice === 'browse') {
+        browse = true;
+      }
+      // 'skip' → leave buffers missing; those objects are skipped in Phase 1
+    }
+
+    const stillMissing = missingFiles.filter(r => !r.buffer);
+    if (browse && stillMissing.length > 0) {
+      const missingNames = stillMissing.map(_srcNameOf);
+      if (loadingEl) {
+        loadingEl.style.display = 'block';
+        loadingEl.textContent = 'Select file' + (missingNames.length > 1 ? 's' : '') + ': ' + missingNames.join(', ');
+      }
+      const fileMap = await _promptForSplatFiles(missingNames);
+      for (const rec of stillMissing) {
+        const srcName = _srcNameOf(rec);
+        const file = fileMap.get(srcName) || fileMap.get(srcName.toLowerCase());
+        if (file) {
+          rec.buffer = await file.arrayBuffer();
+          console.log('[Load Scene] Resolved source file:', srcName);
+        }
       }
     }
-    if (loadingEl) loadingEl.textContent = 'Loading scene...';
+    if (loadingEl) {
+      loadingEl.style.display = 'block';
+      loadingEl.textContent = 'Loading scene...';
+    }
   }
 
   // ── Phase 1: create meshes WITHOUT transforms (default positions) ──
   const created = [];
   for (const rec of records) {
-    if (rec.isSplat && !rec.buffer) {
-      console.log('[Load Scene] Skipping splat (no buffer):', rec.name, '— re-import the file to restore');
+    if ((rec.isSplat || rec.isPointCloud) && !rec.buffer) {
+      console.log('[Load Scene] Skipping object (no buffer):', rec.name, '— re-import the file to restore');
       created.push({ rec, entry: null });
       continue;
     }
@@ -300,14 +416,15 @@ export async function restoreSTLsFromState(records) {
     const buffer = rec.buffer instanceof ArrayBuffer ? rec.buffer : _base64ToArrayBuffer(rec.buffer);
     let entry = null;
     const fileType = rec.fileType || 'stl';
+    const srcName = rec.sourceFile || rec.splatFile || null;
     if (fileType === 'stl') {
       entry = createSTLFromBuffer(buffer, rec.name, rec.color, rec.id, null);
     } else if (fileType === 'ply' && (rec.isSplat || _isPLYGaussianSplat(buffer))) {
-      entry = _addSplatToScene(buffer, 'ply', rec.name, rec.color, rec.id, null, rec.splatFile);
+      entry = _addSplatToScene(buffer, 'ply', rec.name, rec.color, rec.id, null, srcName);
     } else if (fileType === 'ply') {
       const geometry = plyLoader.parse(buffer);
       if (rec.isPointCloud || _isPLYPointCloud(buffer)) {
-        entry = _addPointsToScene(geometry, buffer, rec.name, rec.color, rec.id, null);
+        entry = _addPointsToScene(geometry, buffer, rec.name, rec.color, rec.id, null, srcName);
       } else {
         geometry.computeVertexNormals();
         entry = _addMeshToScene(geometry, buffer, 'ply', rec.name, rec.color, rec.id, null);
@@ -327,7 +444,7 @@ export async function restoreSTLsFromState(records) {
         console.warn('Failed to restore GLB mesh:', rec.name, e);
       }
     } else if (rec.isSplat || (_splatFormatMap[fileType] && fileType !== 'ply')) {
-      entry = _addSplatToScene(buffer, fileType, rec.name, rec.color, rec.id, null, rec.splatFile);
+      entry = _addSplatToScene(buffer, fileType, rec.name, rec.color, rec.id, null, srcName);
     }
     created.push({ rec, entry });
   }
@@ -515,7 +632,7 @@ export function applyPointCloudSettings(entry) {
 // paths pass explicit transforms, which already include this rotation.
 const ZUP_TO_YUP_X = -Math.PI / 2;
 
-export function _addPointsToScene(geometry, buffer, name, color, stlId, transforms, zUp = false) {
+export function _addPointsToScene(geometry, buffer, name, color, stlId, transforms, fileName = null, zUp = false) {
   const hasVertexColors = geometry.hasAttribute('color');
   const matColor = hasVertexColors ? 0xffffff : color;
   const material = new THREE.PointsMaterial({
@@ -546,7 +663,7 @@ export function _addPointsToScene(geometry, buffer, name, color, stlId, transfor
   label.position.copy(center);
   points.add(label);
 
-  const entry = { mesh: points, label, name, color: matColor, opacity: material.opacity, stlId, _buffer: buffer, fileType: 'ply', isPointCloud: true, pointSize: DEFAULT_POINT_SIZE, pointShape: 'square', parentLink: null, importScale: points.scale.clone() };
+  const entry = { mesh: points, label, name, color: matColor, opacity: material.opacity, stlId, _buffer: buffer, fileType: 'ply', isPointCloud: true, pointSize: DEFAULT_POINT_SIZE, pointShape: 'square', parentLink: null, importScale: points.scale.clone(), _fileName: fileName || null };
   State.importedSTLs.push(entry);
   State.setStlColorIdx(Math.max(State.stlColorIdx, stlColors.indexOf(color) + 1));
   addSTLListItem(entry);
@@ -670,7 +787,7 @@ export function loadPLYFile(file) {
       _addSplatToScene(buffer, 'ply', baseName, color, stlId, null, file.name, true);
     } else if (_isPLYPointCloud(buffer)) {
       const geometry = plyLoader.parse(buffer);
-      _addPointsToScene(geometry, buffer, baseName, color, stlId, null, true);
+      _addPointsToScene(geometry, buffer, baseName, color, stlId, null, file.name, true);
     } else {
       const geometry = plyLoader.parse(buffer);
       geometry.computeVertexNormals();
@@ -1212,12 +1329,12 @@ export async function duplicateSTL(srcEntry) {
   let newEntry;
   const ft = srcEntry.fileType || 'stl';
   if (srcEntry.isSplat) {
-    newEntry = _addSplatToScene(srcEntry._buffer, ft, name, color, stlId, transforms);
+    newEntry = _addSplatToScene(srcEntry._buffer, ft, name, color, stlId, transforms, srcEntry._fileName);
   } else if (ft === 'stl') {
     newEntry = createSTLFromBuffer(srcEntry._buffer, name, color, stlId, transforms);
   } else if (ft === 'ply' && srcEntry.isPointCloud) {
     const geometry = plyLoader.parse(srcEntry._buffer);
-    newEntry = _addPointsToScene(geometry, srcEntry._buffer, name, color, stlId, transforms);
+    newEntry = _addPointsToScene(geometry, srcEntry._buffer, name, color, stlId, transforms, srcEntry._fileName);
   } else if (ft === 'ply') {
     const geometry = plyLoader.parse(srcEntry._buffer);
     geometry.computeVertexNormals();
@@ -1238,7 +1355,7 @@ export async function duplicateSTL(srcEntry) {
       return;
     }
   } else if (_splatFormatMap[ft] && ft !== 'ply') {
-    newEntry = _addSplatToScene(srcEntry._buffer, ft, name, color, stlId, transforms);
+    newEntry = _addSplatToScene(srcEntry._buffer, ft, name, color, stlId, transforms, srcEntry._fileName);
   }
   // Copy opacity from source
   if (newEntry && !newEntry.isSplat) {

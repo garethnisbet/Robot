@@ -47,7 +47,7 @@ import {
   updateSplatClip, updatePointCloudClip,
   addPrimitive,
   selectSTL, deselectSTL, setSTLTransformMode, setSTLParent, syncSTLNumericInputs,
-  applyPointCloudSettings,
+  applyPointCloudSettings, rememberSourceFileHandle,
 } from './stl.js';
 import { initVisBoxUI, updateVisBoxUI, visBoxActive, setVisBoxMode } from './visbox.js';
 import { dbSave, dbLoad, BUFFERS_KEY } from './storage.js';
@@ -679,13 +679,8 @@ document.getElementById('addDeviceBtn').addEventListener('click', async () => {
   btn.textContent = '+';
 });
 
-// STL import button
-document.getElementById('stlBtn').addEventListener('click', () => {
-  document.getElementById('stlFile').click();
-});
-
-document.getElementById('stlFile').addEventListener('change', (e) => {
-  const files = [...e.target.files];
+// Shared dispatch for the import button, file picker, and drag-and-drop
+function importModelFiles(files) {
   const mtlFiles = new Map();
   for (const f of files) {
     if (f.name.toLowerCase().endsWith('.mtl'))
@@ -703,6 +698,40 @@ document.getElementById('stlFile').addEventListener('change', (e) => {
     else if (ext === 'glb' || ext === 'gltf') loadGLBFile(file);
     else if (ext === 'splat' || ext === 'ksplat' || ext === 'spz') loadSplatFile(file);
   }
+}
+
+// STL import button. Prefer showOpenFilePicker so splat file handles can be
+// remembered (scene save stores only transforms; the handle lets a later scene
+// load reopen the splat from its last known location).
+document.getElementById('stlBtn').addEventListener('click', async () => {
+  if (window.showOpenFilePicker) {
+    let handles;
+    try {
+      handles = await window.showOpenFilePicker({
+        multiple: true,
+        types: [{
+          description: '3D models',
+          accept: { 'application/octet-stream': ['.stl', '.obj', '.mtl', '.ply', '.glb', '.gltf', '.splat', '.ksplat', '.spz'] },
+        }],
+      });
+    } catch { return; } // user cancelled
+    const files = [];
+    for (const h of handles) {
+      try {
+        files.push(await h.getFile());
+        rememberSourceFileHandle(h.name, h);
+      } catch (err) {
+        console.warn('Could not read file:', h.name, err);
+      }
+    }
+    importModelFiles(files);
+    return;
+  }
+  document.getElementById('stlFile').click();
+});
+
+document.getElementById('stlFile').addEventListener('change', (e) => {
+  importModelFiles([...e.target.files]);
   e.target.value = '';
 });
 
@@ -715,41 +744,37 @@ State.renderer.domElement.addEventListener('dragover', (e) => {
 State.renderer.domElement.addEventListener('drop', async (e) => {
   e.preventDefault();
   const files = [...e.dataTransfer.files];
-  const mtlFiles = new Map();
-  for (const f of files) {
-    if (f.name.toLowerCase().endsWith('.mtl'))
-      mtlFiles.set(f.name.toLowerCase(), f);
-  }
-  for (const file of files) {
-    const ext = file.name.split('.').pop().toLowerCase();
-    if (ext === 'mtl') continue;
-    if (ext === 'json') {
-      try {
-        document.getElementById('loading').style.display = 'block';
-        document.getElementById('loading').textContent = 'Loading scene...';
-        const data = await importSceneState(file);
-        await restoreScene(data);
-        document.getElementById('loading').style.display = 'none';
-      } catch (err) {
-        console.error('Failed to load scene:', err);
-        document.getElementById('loading').innerHTML =
-          `<span style="color:#f88">Failed to load scene</span><br>` +
-          `<span style="color:#aaa; font-size:0.85em">${err?.message || err}</span>`;
-        setTimeout(() => { document.getElementById('loading').style.display = 'none'; }, 3000);
-      }
-    } else if (ext === 'stl') {
-      loadSTLFile(file);
-    } else if (ext === 'obj') {
-      const mtlRef = file.name.replace(/\.obj$/i, '.mtl').toLowerCase();
-      loadOBJFile(file, mtlFiles.get(mtlRef) || null);
-    } else if (ext === 'ply') {
-      loadPLYFile(file);
-    } else if (ext === 'glb' || ext === 'gltf') {
-      loadGLBFile(file);
-    } else if (ext === 'splat' || ext === 'ksplat' || ext === 'spz') {
-      loadSplatFile(file);
+  // Request file handles synchronously — dataTransfer.items is cleared after
+  // the first await. Handles let dropped splats be reopened from their last
+  // known location on a later scene load.
+  const handlePromises = [...(e.dataTransfer.items || [])]
+    .filter(item => item.getAsFileSystemHandle)
+    .map(item => item.getAsFileSystemHandle().catch(() => null));
+  Promise.all(handlePromises).then(handles => {
+    for (const h of handles) {
+      if (h && h.kind === 'file') rememberSourceFileHandle(h.name, h);
+    }
+  });
+
+  const jsonFiles  = files.filter(f => f.name.split('.').pop().toLowerCase() === 'json');
+  const modelFiles = files.filter(f => f.name.split('.').pop().toLowerCase() !== 'json');
+
+  for (const file of jsonFiles) {
+    try {
+      document.getElementById('loading').style.display = 'block';
+      document.getElementById('loading').textContent = 'Loading scene...';
+      const data = await importSceneState(file);
+      await restoreScene(data);
+      document.getElementById('loading').style.display = 'none';
+    } catch (err) {
+      console.error('Failed to load scene:', err);
+      document.getElementById('loading').innerHTML =
+        `<span style="color:#f88">Failed to load scene</span><br>` +
+        `<span style="color:#aaa; font-size:0.85em">${err?.message || err}</span>`;
+      setTimeout(() => { document.getElementById('loading').style.display = 'none'; }, 3000);
     }
   }
+  importModelFiles(modelFiles);
 });
 
 // Primitive buttons

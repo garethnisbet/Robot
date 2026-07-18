@@ -35,23 +35,43 @@ import mathutils
 try:
     project_dir = PROJECT_DIR
 except NameError:
+    project_dir = None
     try:
-        project_dir = os.path.dirname(os.path.abspath(__file__))
+        # Blender's Run Script sets __file__ to '<blend file>/<text name>',
+        # which is not a real filesystem path — only trust __file__ if it
+        # actually exists on disk.
+        if os.path.isfile(__file__):
+            project_dir = os.path.dirname(os.path.abspath(__file__))
     except NameError:
-        # exec() doesn't set __file__; find this script via the Text Editor
+        pass  # exec() doesn't set __file__
+    if project_dir is None:
+        # Find this script via the Text Editor (filepath may be '//'-relative)
         _match = next(
-            (t.filepath for t in bpy.data.texts
+            (bpy.path.abspath(t.filepath) for t in bpy.data.texts
              if t.filepath and os.path.basename(t.filepath) == 'import_kappa.py'),
             None
         )
-        if _match:
+        if _match and os.path.isfile(_match):
             project_dir = os.path.dirname(os.path.abspath(_match))
-        else:
-            raise RuntimeError(
-                "Cannot determine project directory. "
-                "Open import_kappa.py in Blender's Text Editor before running, "
-                "or set PROJECT_DIR = '/path/to/RobotVisualisation' before exec()."
-            )
+    if project_dir is None:
+        # The documented usage is exec(open('/path/import_kappa.py').read())
+        # from a text block — recover the path from that exec line.
+        _rx = re.compile(r"""open\(\s*['"]([^'"]+import_kappa\.py)['"]""")
+        for _t in bpy.data.texts:
+            for _line in _t.lines:
+                _m = _rx.search(_line.body)
+                if _m and os.path.isfile(bpy.path.abspath(_m.group(1))):
+                    project_dir = os.path.dirname(
+                        os.path.abspath(bpy.path.abspath(_m.group(1))))
+                    break
+            if project_dir:
+                break
+    if project_dir is None:
+        raise RuntimeError(
+            "Cannot determine project directory. "
+            "Open import_kappa.py in Blender's Text Editor before running, "
+            "or set PROJECT_DIR = '/path/to/RobotVisualisation' before exec()."
+        )
 
 try:
     armature_name = ARMATURE_NAME

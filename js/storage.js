@@ -57,6 +57,20 @@ export async function dbClear() {
   });
 }
 
+// Splat files are not embedded in saved scene JSON — only their transform and
+// file name are. Persisting the FileSystemFileHandle (structured-cloneable in
+// Chromium) lets the viewer offer to reload the splat from its last known
+// location instead of making the user browse for it every time.
+const FILE_HANDLE_PREFIX = 'file_handle:';
+
+export async function dbSaveFileHandle(name, handle) {
+  return dbSave(handle, FILE_HANDLE_PREFIX + name);
+}
+
+export async function dbLoadFileHandle(name) {
+  return dbLoad(FILE_HANDLE_PREFIX + name);
+}
+
 export async function dbSaveVRAnchor(data) {
   const db = await _openDB();
   return new Promise((resolve, reject) => {
