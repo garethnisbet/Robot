@@ -133,6 +133,7 @@ function animate(time, frame) {
       }
     } else {
       snapClock.getDelta();
+      updateFlyKeys();
     }
     // update() advances damping and dispatches 'change' (-> requestRender)
     // whenever the camera actually moves; it is a no-op once settled.
@@ -313,6 +314,101 @@ flySpeedInput.addEventListener('input', (e) => {
 State.orbitControls.addEventListener('start', () => {
   if (State.orbitControls.autoRotate) setFlyAround(false);
 });
+
+// --- Arrow-key fly mode --------------------------------------------
+// Hold arrow keys to fly through the scene: ↑/↓ move along the view
+// direction, ←/→ yaw (turn in place about world up), PageUp/PageDown
+// move vertically (world Y). With Shift held: ←/→ strafe sideways, ↑/↓
+// pitch about the camera's right axis, PageUp/PageDown boost 4×.
+// Camera and orbit target translate together so orbit/zoom keep
+// working from wherever the flight ends. Speed scales with distance to
+// the orbit target, like OrbitControls zoom. A continuous-render key
+// keeps the on-demand loop drawing while any fly key is held.
+const FLY_KEY_CODES = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown']);
+const FLY_TURN_SPEED = Math.PI / 4;   // rad/s of yaw/pitch with Shift+arrows
+const _flyKeys = new Set();
+let _flyBoost = false;
+const _flyClock = new THREE.Clock();
+const _flyFwd = new THREE.Vector3();
+const _flyRight = new THREE.Vector3();
+const _flyMove = new THREE.Vector3();
+const _flyOffset = new THREE.Vector3();
+const _flyUp = new THREE.Vector3(0, 1, 0);
+
+window.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+  if (!FLY_KEY_CODES.has(e.code)) return;
+  e.preventDefault();                       // keep arrows from scrolling the page
+  _flyBoost = e.shiftKey;
+  if (_flyKeys.size === 0) _flyClock.getDelta();   // fresh dt for the first frame
+  _flyKeys.add(e.code);
+  State.setContinuousRender('flyKeys', true);
+});
+window.addEventListener('keyup', (e) => {
+  _flyBoost = e.shiftKey;
+  _flyKeys.delete(e.code);
+  if (_flyKeys.size === 0) State.setContinuousRender('flyKeys', false);
+});
+// Keyup never arrives if focus leaves the page mid-flight.
+window.addEventListener('blur', () => {
+  _flyKeys.clear();
+  State.setContinuousRender('flyKeys', false);
+});
+
+function updateFlyKeys() {
+  if (_flyKeys.size === 0) return;
+  const dt = Math.min(_flyClock.getDelta(), 0.1);
+  const cam = State.activeCamera;
+  const ctrl = State.orbitControls;
+
+  cam.getWorldDirection(_flyFwd);
+  _flyRight.crossVectors(_flyFwd, cam.up).normalize();
+  _flyMove.set(0, 0, 0);
+  let yaw = 0, pitch = 0;
+  if (_flyBoost) {
+    if (_flyKeys.has('ArrowRight')) _flyMove.add(_flyRight);
+    if (_flyKeys.has('ArrowLeft'))  _flyMove.sub(_flyRight);
+    if (_flyKeys.has('ArrowUp'))    pitch += 1; // look up
+    if (_flyKeys.has('ArrowDown'))  pitch -= 1;
+  } else {
+    if (_flyKeys.has('ArrowUp'))    _flyMove.add(_flyFwd);
+    if (_flyKeys.has('ArrowDown'))  _flyMove.sub(_flyFwd);
+    if (_flyKeys.has('ArrowRight')) yaw -= 1;   // look right = clockwise from above
+    if (_flyKeys.has('ArrowLeft'))  yaw += 1;
+  }
+  if (_flyKeys.has('PageUp'))     _flyMove.y += 1;
+  if (_flyKeys.has('PageDown'))   _flyMove.y -= 1;
+  const moving = _flyMove.lengthSq() > 0;
+  if (!moving && yaw === 0 && pitch === 0) return;
+
+  if (moving) {
+    let speed = THREE.MathUtils.clamp(cam.position.distanceTo(ctrl.target), 0.2, 10) * 0.5;
+    if (_flyBoost) speed *= 4;
+    _flyMove.normalize().multiplyScalar(speed * dt);
+    cam.position.add(_flyMove);
+    ctrl.target.add(_flyMove);
+  }
+  if (yaw !== 0 || pitch !== 0) {
+    // Swing the orbit target around the camera so the view turns in
+    // place; OrbitControls.update() re-aims the camera at the target.
+    _flyOffset.copy(ctrl.target).sub(cam.position);
+    if (yaw !== 0) _flyOffset.applyAxisAngle(_flyUp, yaw * FLY_TURN_SPEED * dt);
+    if (pitch !== 0) {
+      // Pitching up reduces the polar angle (offset → world up); clamp
+      // so the view never crosses the poles, where OrbitControls flips.
+      const polar = _flyOffset.angleTo(_flyUp);
+      const theta = THREE.MathUtils.clamp(
+        pitch * FLY_TURN_SPEED * dt,
+        polar - Math.PI + 0.02,
+        polar - 0.02,
+      );
+      _flyOffset.applyAxisAngle(_flyRight, theta);
+    }
+    ctrl.target.copy(cam.position).add(_flyOffset);
+  }
+  if (State.orthoOn) updateOrthoFrustum();
+  State.requestRender();
+}
 
 document.getElementById('splatClip').addEventListener('input', (e) => {
   const pct = +e.target.value;

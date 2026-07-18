@@ -15,6 +15,9 @@ import * as State from './state.js';
 import { setVisibilityClip } from './stl.js';
 
 let visGizmo = null, visBox = null, visModeOutside = false;
+// Pose snapshotted when the box is cleared, so re-placing it brings it
+// back at the same position/rotation/size instead of re-fitting.
+let lastPose = null;
 
 // The box has its own gizmo so it never disturbs the STL selection or
 // the device-origin controls.
@@ -51,6 +54,11 @@ export function setVisBoxMode(mode) {
 export function removeVisBox() {
   if (visGizmo && visGizmo.object) visGizmo.detach();
   if (visBox) {
+    lastPose = {
+      position: visBox.position.clone(),
+      quaternion: visBox.quaternion.clone(),
+      scale: visBox.scale.clone(),
+    };
     State.scene.remove(visBox);
     visBox.traverse(o => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
     visBox = null;
@@ -78,18 +86,32 @@ function _startBounds() {
 }
 
 export function placeVisBox() {
-  const b = _startBounds();
-  if (!b) return;
-  removeVisBox();
-  const c = b.getCenter(new THREE.Vector3()), s = b.getSize(new THREE.Vector3());
+  // Re-placing while a box is active re-fits it to the object bounds;
+  // placing after a Clear restores the cleared box's pose instead.
+  const refit = !!visBox;
+  removeVisBox();                       // snapshots lastPose from the live box
+  const restore = !refit && lastPose;
+  let c = null, s = null;
+  if (!restore) {
+    const b = _startBounds();
+    if (!b) return;
+    c = b.getCenter(new THREE.Vector3());
+    s = b.getSize(new THREE.Vector3());
+  }
   const geo = new THREE.BoxGeometry(1, 1, 1);
   visBox = new THREE.Mesh(geo, new THREE.MeshBasicMaterial(
     { color: 0x33aaff, transparent: true, opacity: 0.10, depthWrite: false }));
   visBox.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo),
     new THREE.LineBasicMaterial({ color: 0x33aaff })));
-  visBox.position.copy(c);
-  // Start at half the object's size so there's something to reveal.
-  visBox.scale.set(Math.max(s.x * 0.5, 0.05), Math.max(s.y * 0.5, 0.05), Math.max(s.z * 0.5, 0.05));
+  if (restore) {
+    visBox.position.copy(lastPose.position);
+    visBox.quaternion.copy(lastPose.quaternion);
+    visBox.scale.copy(lastPose.scale);
+  } else {
+    visBox.position.copy(c);
+    // Start at half the object's size so there's something to reveal.
+    visBox.scale.set(Math.max(s.x * 0.5, 0.05), Math.max(s.y * 0.5, 0.05), Math.max(s.z * 0.5, 0.05));
+  }
   State.scene.add(visBox);
   ensureVisGizmo().attach(visBox);
   setVisBoxMode('translate');

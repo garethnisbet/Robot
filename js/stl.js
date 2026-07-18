@@ -509,7 +509,13 @@ export function applyPointCloudSettings(entry) {
   State.requestRender();
 }
 
-export function _addPointsToScene(geometry, buffer, name, color, stlId, transforms) {
+// Z-up import convention: STL/OBJ/PLY/splat files are treated as Z-up
+// (CAD/LIDAR convention) and rotated -90° about X into the Y-up scene on
+// fresh import. GLB is excluded (glTF mandates Y-up). Restore/duplicate
+// paths pass explicit transforms, which already include this rotation.
+const ZUP_TO_YUP_X = -Math.PI / 2;
+
+export function _addPointsToScene(geometry, buffer, name, color, stlId, transforms, zUp = false) {
   const hasVertexColors = geometry.hasAttribute('color');
   const matColor = hasVertexColors ? 0xffffff : color;
   const material = new THREE.PointsMaterial({
@@ -524,6 +530,8 @@ export function _addPointsToScene(geometry, buffer, name, color, stlId, transfor
     points.rotation.set(...transforms.rotation);
     points.scale.set(...transforms.scale);
     points.visible = transforms.visible;
+  } else if (zUp) {
+    points.rotation.x = ZUP_TO_YUP_X;
   }
 
   State.scene.add(points);
@@ -550,7 +558,7 @@ export function _addPointsToScene(geometry, buffer, name, color, stlId, transfor
   return entry;
 }
 
-export function _addMeshToScene(geometry, buffer, fileType, name, color, stlId, transforms) {
+export function _addMeshToScene(geometry, buffer, fileType, name, color, stlId, transforms, zUp = false) {
   geometry.boundsTree = new MeshBVH(geometry);
 
   const hasVertexColors = geometry.hasAttribute('color');
@@ -570,6 +578,7 @@ export function _addMeshToScene(geometry, buffer, fileType, name, color, stlId, 
     mesh.scale.set(...transforms.scale);
     mesh.visible = transforms.visible;
   } else {
+    if (zUp && fileType !== 'glb') mesh.rotation.x = ZUP_TO_YUP_X;
     const box = new THREE.Box3().setFromObject(mesh);
     const size = box.getSize(new THREE.Vector3());
     if (size.length() > 1) mesh.scale.setScalar(0.001);
@@ -599,10 +608,10 @@ export function _addMeshToScene(geometry, buffer, fileType, name, color, stlId, 
   return entry;
 }
 
-export function createSTLFromBuffer(buffer, name, color, stlId, transforms) {
+export function createSTLFromBuffer(buffer, name, color, stlId, transforms, zUp = false) {
   const geometry = stlLoader.parse(buffer);
   geometry.computeVertexNormals();
-  return _addMeshToScene(geometry, buffer, 'stl', name, color, stlId, transforms);
+  return _addMeshToScene(geometry, buffer, 'stl', name, color, stlId, transforms, zUp);
 }
 
 // ============================================================
@@ -615,7 +624,7 @@ export function loadSTLFile(file) {
     const baseName = file.name.replace(/\.stl$/i, '');
     const color = nextColor();
     const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    createSTLFromBuffer(buffer, baseName, color, stlId, null);
+    createSTLFromBuffer(buffer, baseName, color, stlId, null, true);
   };
   reader.readAsArrayBuffer(file);
 }
@@ -645,7 +654,7 @@ export function loadOBJFile(file, mtlFile) {
     const baseName = file.name.replace(/\.obj$/i, '');
     const color = nextColor();
     const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    _addMeshToScene(geometry, buffer, 'obj', baseName, color, stlId, null);
+    _addMeshToScene(geometry, buffer, 'obj', baseName, color, stlId, null, true);
   };
   doLoad();
 }
@@ -658,14 +667,14 @@ export function loadPLYFile(file) {
     const color = nextColor();
     const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
     if (_isPLYGaussianSplat(buffer)) {
-      _addSplatToScene(buffer, 'ply', baseName, color, stlId, null, file.name);
+      _addSplatToScene(buffer, 'ply', baseName, color, stlId, null, file.name, true);
     } else if (_isPLYPointCloud(buffer)) {
       const geometry = plyLoader.parse(buffer);
-      _addPointsToScene(geometry, buffer, baseName, color, stlId, null);
+      _addPointsToScene(geometry, buffer, baseName, color, stlId, null, true);
     } else {
       const geometry = plyLoader.parse(buffer);
       geometry.computeVertexNormals();
-      _addMeshToScene(geometry, buffer, 'ply', baseName, color, stlId, null);
+      _addMeshToScene(geometry, buffer, 'ply', baseName, color, stlId, null, true);
     }
   };
   reader.readAsArrayBuffer(file);
@@ -1008,7 +1017,7 @@ function _extractSplatPointCloud(buffer) {
   return points;
 }
 
-export function _addSplatToScene(buffer, ext, name, color, stlId, transforms, fileName) {
+export function _addSplatToScene(buffer, ext, name, color, stlId, transforms, fileName, zUp = false) {
   const format = _splatFormatMap[ext] ?? SceneFormat.Splat;
   const blob = new Blob([buffer]);
   const blobUrl = URL.createObjectURL(blob);
@@ -1037,6 +1046,8 @@ export function _addSplatToScene(buffer, ext, name, color, stlId, transforms, fi
     wrapper.rotation.set(...transforms.rotation);
     wrapper.scale.set(...transforms.scale);
     wrapper.visible = transforms.visible;
+  } else if (zUp) {
+    wrapper.rotation.x = ZUP_TO_YUP_X;
   }
 
   State.scene.add(wrapper);
@@ -1081,11 +1092,22 @@ export function _addSplatToScene(buffer, ext, name, color, stlId, transforms, fi
         wrapper.scale.setScalar(0.001);
         entry.importScale.copy(wrapper.scale);
       }
-      label.position.set(
-        bounds.center[0] * wrapper.scale.x,
-        bounds.center[2] * wrapper.scale.y,
-        bounds.center[1] * wrapper.scale.z
-      );
+      // Label position is in wrapper-local space: with the zUp rotation the
+      // data axes pass through unchanged; unrotated wrappers keep the old
+      // Y/Z display swap.
+      if (zUp) {
+        label.position.set(
+          bounds.center[0] * wrapper.scale.x,
+          bounds.center[1] * wrapper.scale.y,
+          bounds.center[2] * wrapper.scale.z
+        );
+      } else {
+        label.position.set(
+          bounds.center[0] * wrapper.scale.x,
+          bounds.center[2] * wrapper.scale.y,
+          bounds.center[1] * wrapper.scale.z
+        );
+      }
     }
     State.requestRender();
   }).catch((err) => {
@@ -1107,7 +1129,7 @@ export function loadSplatFile(file) {
     const baseName = file.name.replace(/\.(splat|ksplat|spz)$/i, '');
     const color = nextColor();
     const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    _addSplatToScene(buffer, ext, baseName, color, stlId, null, file.name);
+    _addSplatToScene(buffer, ext, baseName, color, stlId, null, file.name, true);
   };
   reader.readAsArrayBuffer(file);
 }
