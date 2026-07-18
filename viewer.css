@@ -203,11 +203,12 @@
   .device-item .dev-name {
     flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .device-item .dev-rm {
+  .device-item .dev-rm, .device-item .dev-vis {
     background: none; border: none; color: #667; cursor: pointer;
     font-size: 11px; padding: 0 3px; width: auto; margin: 0;
   }
   .device-item .dev-rm:hover { color: #f66; }
+  .device-item .dev-vis:hover { color: #fff; }
   #add-device-row {
     display: flex; gap: 4px;
   }

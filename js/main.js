@@ -1441,6 +1441,7 @@ async function restoreScene(data) {
       if (devState.rotation) {
         dev.rootGroup.rotation.set(...devState.rotation);
       }
+      if (devState.visible !== undefined) dev.rootGroup.visible = devState.visible;
       if (dev.type === 'hexapod') updateHexapodPose(dev);
       else updateFK(dev);
       console.log('[Load Scene] Device:', dev.name, 'id:', dev.id,

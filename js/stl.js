@@ -68,6 +68,7 @@ function _buildDevicesPayload() {
       jointAngles: [...dev.jointAngles],
       position: [dev.rootGroup.position.x, dev.rootGroup.position.y, dev.rootGroup.position.z],
       rotation: [dev.rootGroup.rotation.x, dev.rootGroup.rotation.y, dev.rootGroup.rotation.z],
+      visible: dev.rootGroup.visible,
       parentLink: _parentLinkToStable(dev.parentLink),
     };
     if (dev.type === 'hexapod') entry.platformPose = [...dev.platformPose];

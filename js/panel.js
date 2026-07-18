@@ -552,6 +552,19 @@ export function rebuildDeviceList() {
 
     item.appendChild(nameSpan);
 
+    const visBtn = document.createElement('button');
+    visBtn.className = 'dev-vis';
+    visBtn.textContent = '👁';
+    visBtn.title = 'Toggle visibility';
+    visBtn.style.opacity = dev.rootGroup.visible ? 1 : 0.3;
+    visBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      dev.rootGroup.visible = !dev.rootGroup.visible;
+      visBtn.style.opacity = dev.rootGroup.visible ? 1 : 0.3;
+      State.requestRender();
+    });
+    item.appendChild(visBtn);
+
     // Only show remove for non-primary devices (keep at least one)
     if (State.devices.length > 1) {
       const rmBtn = document.createElement('button');
