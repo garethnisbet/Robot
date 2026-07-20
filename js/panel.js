@@ -356,27 +356,6 @@ export function buildControlPanel(dev) {
     });
   }
 
-  // Build virtual axes section (fixed joints named virtual_axis_*)
-  // Hexapod configs have no `joints` array, so default to empty.
-  const virtualAxes = (dev.config.joints || [])
-    .map((j, i) => ({ ...j, idx: i }))
-    .filter(j => j.name.startsWith('virtual_axis'));
-  if (virtualAxes.length > 0) {
-    const parentName = (idx) => idx < 0 ? 'root' : (dev.config.joints[idx].name || `joint ${idx}`);
-    const rows = virtualAxes.map(j =>
-      `<div class="slider-row" style="font-size:0.85em;color:#9ab;">` +
-      `<label>${j.name}</label>` +
-      `<span style="text-align:right;flex:1;padding-right:4px;color:#556;">` +
-      `follows: ${parentName(j.parent)}</span>` +
-      `</div>`
-    ).join('');
-    virtContainer.insertAdjacentHTML('beforeend',
-      '<div style="margin-top:8px;padding-top:8px;border-top:1px solid #334;">' +
-      '<h2 style="color:#aaa;">Virtual Axes</h2>' +
-      rows +
-      '</div>');
-  }
-
   // Show/hide IK / Drag Platform button
   const ikBtn = document.getElementById('ikBtn');
   if (dev.isBranching && !isHexapod) {
