@@ -76,6 +76,39 @@
   <h2 id="panel-title">Joint Angles (deg)</h2>
   <div id="joint-sliders"></div>
   <div id="virtual-angles-container"></div>
+  <div id="ik-panel" style="display:none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #334;">
+    <h2 style="color:#5b5;">IK Target (mm)</h2>
+    <div class="slider-row">
+      <label>X <span id="ikvx">190</span></label>
+      <input type="number" id="ikx" value="190" step="1" style="display:none">
+    </div>
+    <div class="slider-row">
+      <label>Y <span id="ikvy">0</span></label>
+      <input type="number" id="iky" value="0" step="1" style="display:none">
+    </div>
+    <div class="slider-row">
+      <label>Z <span id="ikvz">308</span></label>
+      <input type="number" id="ikz" value="308" step="1" style="display:none">
+    </div>
+    <h2 style="margin-top:8px; color:#5b5;">Orientation (deg)</h2>
+    <div class="slider-row">
+      <label>&alpha; (Rx) <span id="ikva">0</span></label>
+      <input type="range" id="ika" min="-180" max="180" value="0" step="1">
+    </div>
+    <div class="slider-row">
+      <label>&beta; (Ry) <span id="ikvb">0</span></label>
+      <input type="range" id="ikb" min="-180" max="180" value="0" step="1">
+    </div>
+    <div class="slider-row">
+      <label>&gamma; (Rz) <span id="ikvc">0</span></label>
+      <input type="range" id="ikc" min="-180" max="180" value="0" step="1">
+    </div>
+    <div id="ee-info">
+      EE: <span id="eePos">-</span><br>
+      Target: <span id="tgtPos">-</span><br>
+      Error: <span id="ikErr">-</span>
+    </div>
+  </div>
   <div class="button-grid">
     <button id="resetBtn">Reset to Home</button>
     <button id="demoBtn" style="display:none;">Demo Pose</button>
@@ -201,39 +234,6 @@
     <button id="loadSceneBtn" style="flex:1; margin:0;">Load Scene</button>
     <button id="clearSceneBtn" style="flex:1; margin:0;">Clear Scene</button>
     <input type="file" id="loadSceneFile" accept=".json" style="display:none">
-  </div>
-  <div id="ik-panel" style="display:none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #334;">
-    <h2 style="color:#5b5;">IK Target (mm)</h2>
-    <div class="slider-row">
-      <label>X <span id="ikvx">190</span></label>
-      <input type="number" id="ikx" value="190" step="1" style="display:none">
-    </div>
-    <div class="slider-row">
-      <label>Y <span id="ikvy">0</span></label>
-      <input type="number" id="iky" value="0" step="1" style="display:none">
-    </div>
-    <div class="slider-row">
-      <label>Z <span id="ikvz">308</span></label>
-      <input type="number" id="ikz" value="308" step="1" style="display:none">
-    </div>
-    <h2 style="margin-top:8px; color:#5b5;">Orientation (deg)</h2>
-    <div class="slider-row">
-      <label>&alpha; (Rx) <span id="ikva">0</span></label>
-      <input type="range" id="ika" min="-180" max="180" value="0" step="1">
-    </div>
-    <div class="slider-row">
-      <label>&beta; (Ry) <span id="ikvb">0</span></label>
-      <input type="range" id="ikb" min="-180" max="180" value="0" step="1">
-    </div>
-    <div class="slider-row">
-      <label>&gamma; (Rz) <span id="ikvc">0</span></label>
-      <input type="range" id="ikc" min="-180" max="180" value="0" step="1">
-    </div>
-    <div id="ee-info">
-      EE: <span id="eePos">-</span><br>
-      Target: <span id="tgtPos">-</span><br>
-      Error: <span id="ikErr">-</span>
-    </div>
   </div>
 </div>
 <script src="/node_modules/html2canvas/dist/html2canvas.min.js" onerror="console.warn('html2canvas not available')"></script>
