@@ -1,0 +1,115 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { overflow: hidden; background: #0e0e14; font-family: 'Segoe UI', sans-serif; }
+canvas { display: block; }
+
+/* ── Control panel ─────────────────────────────────────────── */
+#panel {
+  position: absolute; top: 10px; right: 10px; width: 272px;
+  max-height: calc(100vh - 20px); overflow-y: auto;
+  background: rgba(20,20,28,0.86); color: #ccc; padding: 14px;
+  border-radius: 8px; backdrop-filter: blur(8px);
+  border: 1px solid rgba(100,100,200,0.2);
+  font-size: 12px;
+}
+#panel h1 {
+  font-size: 13px; color: #cdf; margin-bottom: 10px; font-weight: 600;
+  letter-spacing: 0.3px;
+}
+#panel h2 {
+  font-size: 11px; margin: 12px 0 6px; color: #99a;
+  text-transform: uppercase; letter-spacing: 0.6px;
+  border-top: 1px solid rgba(100,100,200,0.15); padding-top: 10px;
+}
+#panel h2:first-of-type { border-top: none; padding-top: 0; }
+
+label { font-size: 11px; color: #99a; }
+
+/* Mode toggle */
+.mode-toggle { display: flex; gap: 6px; margin-bottom: 4px; }
+.mode-toggle button { margin: 0; }
+
+/* Rows: label + value input */
+.field-row {
+  display: grid; grid-template-columns: auto 1fr; align-items: center;
+  gap: 4px 8px; margin-bottom: 5px;
+}
+.field-row label { white-space: nowrap; }
+
+.lattice-grid {
+  display: grid; grid-template-columns: 14px 1fr 14px 1fr; align-items: center;
+  gap: 4px 6px; margin-bottom: 4px;
+}
+.lattice-grid .axis { color: #8cf; font-weight: bold; font-size: 11px; text-align: center; }
+
+input[type="number"], input[type="text"], select {
+  width: 100%; min-width: 0; background: rgba(0,0,40,0.55);
+  border: 1px solid #446; color: #bcd; font-size: 12px;
+  padding: 3px 5px; border-radius: 3px; outline: none;
+  font-family: monospace;
+}
+input[type="number"]:focus, input[type="text"]:focus, select:focus { border-color: #66f; }
+input[type="text"]::placeholder { color: #667; }
+select { cursor: pointer; }
+
+input[type="range"] {
+  width: 100%; height: 4px; -webkit-appearance: none; appearance: none;
+  background: #2a2a4a; border-radius: 2px; outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 12px; height: 12px;
+  background: #6688ff; border-radius: 50%; cursor: pointer;
+}
+.slider-row { margin-bottom: 6px; }
+.slider-row .slabel {
+  display: flex; justify-content: space-between; font-size: 11px;
+  margin-bottom: 2px; color: #99a;
+}
+.slider-row .slabel span { color: #8cf; font-weight: bold; font-family: monospace; }
+
+button {
+  width: 100%; padding: 6px; margin-top: 6px; background: #2b2b3c;
+  color: #aac; border: 1px solid #446; border-radius: 4px; cursor: pointer;
+  font-size: 12px;
+}
+button:hover { background: #3a3a4e; }
+button.active { background: #3a4a8a; border-color: #66f; color: #fff; }
+
+.button-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px; }
+.button-grid.three { grid-template-columns: 1fr 1fr 1fr; }
+.button-grid.four { grid-template-columns: 1fr 1fr 1fr 1fr; }
+.button-grid button { width: auto; margin-top: 0; padding: 6px 3px; font-size: 11px; }
+
+.checkbox-row {
+  display: flex; align-items: center; gap: 6px; margin: 6px 0; font-size: 11px; color: #99a;
+}
+.checkbox-row input { width: auto; accent-color: #6af; }
+
+/* ── HUD / overlays ────────────────────────────────────────── */
+#loading {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  color: #aac; font-size: 16px; font-family: monospace;
+}
+#info {
+  position: absolute; bottom: 10px; left: 12px; color: #778;
+  font-size: 11px; font-family: monospace; line-height: 1.5;
+  pointer-events: none;
+}
+#info b { color: #8cf; }
+#nav-gizmo {
+  position: absolute; top: 12px; left: 12px;
+  width: 110px; height: 110px; cursor: default; border-radius: 50%;
+}
+.axis-label {
+  color: #fff; font-size: 11px; font-family: monospace; font-weight: bold;
+  background: rgba(0,0,0,0.5); padding: 0 4px; border-radius: 3px;
+  pointer-events: none; white-space: nowrap;
+}
+#peak-tip {
+  position: absolute; pointer-events: none; z-index: 50;
+  background: rgba(8,8,20,0.92); border: 1px solid rgba(120,150,255,0.5);
+  color: #dde; font-family: monospace; font-size: 11px;
+  padding: 4px 7px; border-radius: 4px; display: none; white-space: nowrap;
+}
+#peak-tip .qval { color: #8cf; }
+
+.count-note { font-size: 10px; color: #778; margin-top: 4px; font-family: monospace; }

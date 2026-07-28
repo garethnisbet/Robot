@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reciprocal Space Map — Crystal & Quasicrystal</title>
+<link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+<div id="loading">Building reciprocal space…</div>
+<canvas id="nav-gizmo"></canvas>
+<div id="panel"></div>
+<div id="peak-tip"></div>
+<div id="info">
+  <b>drag</b> orbit · <b>scroll</b> zoom · <b>shift-drag</b> / <b>right-drag</b> pan · <b>hover</b> a peak for its indices ·
+  show the <b>detector</b> to drag it and map a blob / DMS lines to Q
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "/node_modules/three/build/three.module.js",
+    "three/addons/": "/node_modules/three/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

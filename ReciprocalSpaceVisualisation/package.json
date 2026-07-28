@@ -1,0 +1,21 @@
+{
+  "name": "reciprocal-space-visualisation",
+  "version": "0.1.0",
+  "description": "Interactive 3D reciprocal-space map viewer for conventional crystals and icosahedral quasicrystals. Config-driven Three.js front end served by a lean aiohttp server.",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "crystallography",
+    "reciprocal-space",
+    "quasicrystal",
+    "diffraction",
+    "three.js"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "three": "^0.168.0"
+  }
+}
