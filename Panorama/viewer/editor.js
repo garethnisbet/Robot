@@ -1587,4 +1587,11 @@ async function init() {
     loadingOverlay.classList.add('hidden');
 }
 
-init();
+// Anything that throws past here — a layer that 404s, a decode failure — would
+// otherwise leave the overlay sitting on whatever step it reached, looking like a
+// hang. Surface it instead: the message names the step that actually failed.
+init().catch((err) => {
+    console.error('Editor failed to initialise:', err);
+    showLoadFailure('The editor could not finish loading.',
+        (err && err.message) || String(err));
+});

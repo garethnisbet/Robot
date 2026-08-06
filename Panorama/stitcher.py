@@ -1380,7 +1380,10 @@ def stitch_dji(image_paths, output_path, out_width=8192, out_height=4096, refere
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(output_path), output, [cv2.IMWRITE_JPEG_QUALITY, 95])
-    print(f"  Saved to {output_path}")
+    # Without this the file is just a wide JPEG as far as every viewer is
+    # concerned; GPano is what marks it as a full equirectangular sphere.
+    _inject_xmp_pano(output_path, out_width, out_height)
+    print(f"  Saved to {output_path} ({out_width}x{out_height}, 360 metadata)")
     return str(output_path)
 
 

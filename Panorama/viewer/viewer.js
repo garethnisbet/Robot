@@ -425,6 +425,7 @@ window.addEventListener("keydown", (e) => {
         case "]": if (stereoMode > 0) setStretch(stretchValue + 0.1); break;
         case "c": toggleColorPanel(); break;
         case "e": exportFullRes(); break;
+        case "d": downloadPanorama(); break;
         case " ": autoRotate = !autoRotate; updateAutoRotateUI(); e.preventDefault(); break;
     }
 });
@@ -445,10 +446,14 @@ document.getElementById("btn-fullscreen").addEventListener("click", toggleFullsc
 document.getElementById("btn-tinyplanet").addEventListener("click", () => setStereoMode(stereoMode === 1 ? 0 : 1));
 document.getElementById("btn-tunnel").addEventListener("click", () => setStereoMode(stereoMode === 2 ? 0 : 2));
 document.getElementById("btn-export").addEventListener("click", exportFullRes);
+document.getElementById("btn-download").addEventListener("click", downloadPanorama);
 const editorBtn = document.getElementById("btn-editor");
 editorBtn.addEventListener("click", () => {
     if (editorBtn.disabled) return;
-    window.location.href = '/editor.html';
+    // Versioned so a browser holding a pre-no-store copy of editor.html cannot
+    // serve it from cache: that copy references an old editor.js and fails in
+    // confusing ways. See the note in editor.html.
+    window.location.href = '/editor.html?v=2';
 });
 
 // The editor needs the original photos, which this session may not have. Reflect
@@ -502,6 +507,41 @@ function updateAutoRotateUI() {
     document.getElementById("autorotate-indicator").classList.toggle("visible", autoRotate);
 }
 
+// Hands over the stitched equirectangular file itself, at whatever resolution it
+// was rendered. Distinct from exportFullRes, which captures the current view:
+// this is the whole 360x180 sphere, and the only way to get the panorama out at
+// full size without the GPU's texture limit or the viewport framing in the way.
+function downloadPanorama() {
+    const statusEl = document.getElementById("upload-status");
+    const msgEl = document.getElementById("upload-message");
+    const flash = (text, ms) => {
+        msgEl.textContent = text;
+        statusEl.classList.add("visible");
+        setTimeout(() => statusEl.classList.remove("visible"), ms);
+    };
+
+    fetch("/panorama-info")
+        .then((r) => r.json())
+        .then((info) => {
+            if (!info.path) {
+                flash("No panorama loaded", 2000);
+                return;
+            }
+            const name = info.path.split(/[\\/]/).pop() || "panorama.jpg";
+            const a = document.createElement("a");
+            a.href = "/panorama-image";
+            a.download = name;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            flash(`Downloading ${name}`, 1500);
+        })
+        .catch((err) => {
+            console.error("Download failed:", err);
+            flash("Download failed", 2000);
+        });
+}
+
 function exportFullRes() {
     if (!panoTexture) return;
 
@@ -510,14 +550,17 @@ function exportFullRes() {
     const gl = renderer.getContext();
     const maxSize = gl.getParameter(gl.MAX_RENDERBUFFER_SIZE);
 
-    let exportW, exportH;
-    if (stereoMode > 0) {
-        const size = Math.min(Math.max(srcW, srcH), maxSize);
-        exportW = exportH = size;
-    } else {
-        const aspect = innerWidth / innerHeight;
-        exportH = Math.min(srcH, maxSize);
-        exportW = Math.min(Math.round(exportH * aspect), maxSize);
+    // Export at the viewport's aspect ratio in every mode. The tiny-planet and
+    // tunnel shaders scale their horizontal extent by resolution.x/resolution.y,
+    // so rendering them square — as this used to — re-frames the projection
+    // tighter than what is on screen and crops off whatever sat outside the
+    // middle square of a wide window.
+    const aspect = innerWidth / innerHeight;
+    let exportH = Math.min(Math.max(srcH, innerHeight), maxSize);
+    let exportW = Math.round(exportH * aspect);
+    if (exportW > maxSize) {
+        exportW = maxSize;
+        exportH = Math.round(exportW / aspect);
     }
 
     const statusEl = document.getElementById("upload-status");
