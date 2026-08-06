@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Panorama Sphere Editor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            overflow: hidden;
+            background: #1a1a1a;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            color: #fff;
+            user-select: none;
+        }
+
+        #three-container {
+            position: absolute;
+            top: 48px;
+            left: 0;
+            right: 0;
+            bottom: 96px;
+        }
+
+        #toolbar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 48px;
+            background: rgba(30, 30, 30, 0.95);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            display: flex;
+            align-items: center;
+            padding: 0 16px;
+            gap: 12px;
+            z-index: 10;
+        }
+        .tool-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .tool-group label {
+            font-size: 12px;
+            opacity: 0.6;
+            white-space: nowrap;
+        }
+        .tool-group input[type="range"] {
+            width: 80px;
+            height: 4px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: rgba(255,255,255,0.2);
+            border-radius: 2px;
+            outline: none;
+        }
+        .tool-group input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 14px; height: 14px;
+            border-radius: 50%;
+            background: #fff;
+            cursor: pointer;
+        }
+        .tool-group input[type="range"]::-moz-range-thumb {
+            width: 14px; height: 14px;
+            border-radius: 50%;
+            background: #fff;
+            border: none;
+        }
+        .tool-group span {
+            font-size: 12px;
+            min-width: 30px;
+        }
+
+        .toolbar-btn {
+            padding: 6px 12px;
+            border-radius: 6px;
+            border: 1px solid rgba(255,255,255,0.15);
+            background: rgba(255,255,255,0.08);
+            color: #fff;
+            font-size: 13px;
+            cursor: pointer;
+            transition: background 0.15s;
+            white-space: nowrap;
+        }
+        .toolbar-btn:hover { background: rgba(255,255,255,0.18); }
+        .toolbar-btn.active { background: rgba(80, 140, 255, 0.4); border-color: rgba(80,140,255,0.6); }
+        .toolbar-btn.primary { background: rgba(50, 140, 80, 0.5); border-color: rgba(50,180,80,0.6); }
+        .toolbar-btn.primary:hover { background: rgba(50, 140, 80, 0.7); }
+        .toolbar-btn.apply { background: rgba(255, 160, 40, 0.5); border-color: rgba(255, 160, 40, 0.6); }
+        .toolbar-btn.apply:hover { background: rgba(255, 160, 40, 0.7); }
+        .toolbar-spacer { flex: 1; }
+
+        #image-strip {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 96px;
+            background: rgba(30, 30, 30, 0.95);
+            border-top: 1px solid rgba(255,255,255,0.1);
+            display: flex;
+            align-items: center;
+            padding: 0 12px;
+            gap: 6px;
+            overflow-x: auto;
+            z-index: 10;
+        }
+        .thumb-wrapper {
+            flex-shrink: 0;
+            cursor: pointer;
+            border-radius: 6px;
+            padding: 3px;
+            border: 2px solid transparent;
+            transition: border-color 0.15s, transform 0.1s;
+            position: relative;
+        }
+        .thumb-wrapper:hover { transform: scale(1.05); }
+        .thumb-wrapper.selected { border-color: #fff; transform: scale(1.08); }
+        .thumb-wrapper img {
+            height: 64px;
+            border-radius: 4px;
+            display: block;
+        }
+        .thumb-label {
+            position: absolute;
+            bottom: 6px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 10px;
+            background: rgba(0,0,0,0.7);
+            padding: 1px 5px;
+            border-radius: 3px;
+            pointer-events: none;
+        }
+        .thumb-check {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            width: 14px;
+            height: 14px;
+            margin: 0;
+            cursor: pointer;
+            z-index: 2;
+            accent-color: #ffcc00;
+        }
+        .thumb-color {
+            position: absolute;
+            top: 5px;
+            left: 5px;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            border: 1px solid rgba(255,255,255,0.5);
+        }
+
+        #loading-overlay {
+            position: fixed;
+            inset: 0;
+            background: #1a1a1a;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            z-index: 100;
+            transition: opacity 0.4s;
+        }
+        #loading-overlay.hidden { opacity: 0; pointer-events: none; }
+        .spinner {
+            width: 40px; height: 40px;
+            border: 3px solid rgba(255,255,255,0.2);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        #status-bar {
+            position: fixed;
+            top: 56px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.8);
+            padding: 6px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            z-index: 20;
+            display: none;
+            backdrop-filter: blur(8px);
+        }
+        #status-bar.visible { display: block; }
+
+        #mode-indicator {
+            font-size: 12px;
+            padding: 4px 10px;
+            border-radius: 4px;
+            background: rgba(255,255,255,0.1);
+        }
+    </style>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div id="loading-overlay">
+        <div class="spinner"></div>
+        <div id="loading-text">Loading editor data...</div>
+    </div>
+
+    <div id="toolbar">
+        <div class="tool-group">
+            <label>Mode:</label>
+            <button class="toolbar-btn active" id="btn-mode-move">Move</button>
+            <button class="toolbar-btn" id="btn-mode-paint">Paint</button>
+        </div>
+        <div class="tool-group" id="brush-group" style="display:none">
+            <label>Brush</label>
+            <input type="range" id="brush-size" min="1" max="50" value="10">
+            <span id="brush-size-val">10</span>
+        </div>
+        <div class="tool-group" id="opacity-group">
+            <label>Opacity</label>
+            <input type="range" id="drag-opacity" min="0" max="100" value="70">
+            <span id="drag-opacity-val">70%</span>
+        </div>
+        <button class="toolbar-btn" id="btn-overlay">Overlay</button>
+        <button class="toolbar-btn" id="btn-reset">Reset</button>
+        <button class="toolbar-btn apply" id="btn-apply" style="display:none">Apply Positions</button>
+        <div class="toolbar-spacer"></div>
+        <span id="mode-indicator">Orbit: Right-drag</span>
+        <button class="toolbar-btn" id="btn-save">Save</button>
+        <button class="toolbar-btn" id="btn-project-save">Save Project</button>
+        <button class="toolbar-btn" id="btn-project-load">Load Project</button>
+        <button class="toolbar-btn" id="btn-preview">Preview</button>
+        <button class="toolbar-btn primary" id="btn-render">Render Full Res</button>
+        <button class="toolbar-btn" id="btn-view" title="Open in viewer with tiny planet, tunnel, etc.">View</button>
+    </div>
+
+    <div id="three-container"></div>
+
+    <div id="status-bar"></div>
+
+    <div id="image-strip"></div>
+
+    <!-- The ?v= is a cache breaker. Browsers that cached this script before the
+         server started sending Cache-Control: no-store will keep serving that
+         copy for days without revalidating; no-store stops new responses being
+         stored but cannot evict an old one. Bump it if that ever happens again. -->
+    <script type="module" src="editor.js?v=2"></script>
+</body>
+</html>

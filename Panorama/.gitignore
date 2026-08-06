@@ -1,0 +1,9 @@
+# Generated panoramas, editor layer caches, uploads and saved projects. All of it
+# is rebuilt from the source photos, and a single render is ~8 MB.
+output/
+
+__pycache__/
+*.pyc
+
+# Personal permission allowlist, not project configuration.
+.claude/settings.local.json

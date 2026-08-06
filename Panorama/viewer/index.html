@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Panorama Viewer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            overflow: hidden;
+            background: #000;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            color: #fff;
+        }
+        canvas { display: block; }
+
+        #controls {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 8px;
+            z-index: 10;
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(12px);
+            padding: 8px 14px;
+            border-radius: 28px;
+        }
+        #controls button {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            border: none;
+            background: rgba(255, 255, 255, 0.15);
+            color: #fff;
+            font-size: 18px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+        }
+        #controls button:hover { background: rgba(255, 255, 255, 0.3); }
+        #controls button.active { background: rgba(80, 160, 255, 0.5); }
+
+        #info {
+            position: fixed;
+            top: 16px;
+            left: 16px;
+            z-index: 10;
+            font-size: 13px;
+            opacity: 0.6;
+            pointer-events: none;
+            transition: opacity 0.5s;
+        }
+
+        #loading {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            gap: 16px;
+            background: #111;
+            z-index: 100;
+            transition: opacity 0.5s;
+        }
+        #loading.hidden { opacity: 0; pointer-events: none; }
+
+        #welcome {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            background: #111;
+            z-index: 100;
+            transition: opacity 0.5s;
+        }
+        #welcome.hidden { opacity: 0; pointer-events: none; }
+        .welcome-icon { font-size: 64px; }
+        .welcome-title { font-size: 24px; font-weight: 600; }
+        .welcome-sub { font-size: 14px; opacity: 0.5; max-width: 360px; text-align: center; }
+        #welcome-import {
+            margin-top: 12px;
+            padding: 10px 28px;
+            border-radius: 24px;
+            border: none;
+            background: rgba(80, 160, 255, 0.7);
+            color: #fff;
+            font-size: 15px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        #welcome-import:hover { background: rgba(80, 160, 255, 1); }
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(255,255,255,0.2);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        #autorotate-indicator {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            z-index: 10;
+            font-size: 12px;
+            padding: 6px 12px;
+            background: rgba(255,255,255,0.15);
+            backdrop-filter: blur(8px);
+            border-radius: 14px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        #autorotate-indicator.visible { opacity: 0.7; }
+
+        #upload-status {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 100;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(12px);
+            padding: 24px 36px;
+            border-radius: 16px;
+            font-size: 15px;
+            text-align: center;
+            display: none;
+        }
+        #upload-status.visible { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+        #upload-status .spinner { width: 32px; height: 32px; }
+
+        .drop-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(30, 120, 255, 0.15);
+            border: 3px dashed rgba(100, 180, 255, 0.6);
+            z-index: 90;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+            pointer-events: none;
+        }
+        .drop-overlay.visible { display: flex; }
+
+        #stereo-panel {
+            position: fixed;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(12px);
+            padding: 10px 18px;
+            border-radius: 16px;
+            display: none;
+            flex-direction: column;
+            gap: 6px;
+            font-size: 12px;
+            opacity: 0.85;
+        }
+        #stereo-panel.visible { display: flex; }
+        .slider-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .slider-row label { white-space: nowrap; min-width: 56px; }
+        .slider-row input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 160px;
+            height: 4px;
+            border-radius: 2px;
+            background: rgba(255, 255, 255, 0.25);
+            outline: none;
+            cursor: pointer;
+        }
+        .slider-row input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: #fff;
+            cursor: pointer;
+        }
+        .slider-row input[type="range"]::-moz-range-thumb {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: #fff;
+            border: none;
+            cursor: pointer;
+        }
+        .slider-row span { min-width: 32px; text-align: center; }
+
+        #color-panel {
+            position: fixed;
+            top: 56px;
+            right: 16px;
+            z-index: 10;
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(12px);
+            padding: 12px 16px;
+            border-radius: 16px;
+            display: none;
+            flex-direction: column;
+            gap: 6px;
+            font-size: 12px;
+            opacity: 0.9;
+        }
+        #color-panel.visible { display: flex; }
+        #color-panel .slider-row label { min-width: 72px; }
+        #color-panel .slider-row span { min-width: 44px; text-align: right; }
+        #color-reset {
+            align-self: flex-end;
+            margin-top: 4px;
+            padding: 4px 12px;
+            border-radius: 12px;
+            border: none;
+            background: rgba(255, 255, 255, 0.15);
+            color: #fff;
+            font-size: 11px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        #color-reset:hover { background: rgba(255, 255, 255, 0.3); }
+    </style>
+</head>
+<body>
+    <div id="loading">
+        <div class="spinner"></div>
+        <div>Loading panorama...</div>
+    </div>
+
+    <div id="welcome">
+        <div class="welcome-icon">&#x1F30D;</div>
+        <div class="welcome-title">Panorama Viewer</div>
+        <div class="welcome-sub">Drop an equirectangular panorama here or click to import</div>
+        <button id="welcome-import">Open Image</button>
+    </div>
+
+    <div id="info">Drag to look around &middot; Scroll to zoom</div>
+    <div id="autorotate-indicator">Auto-rotate</div>
+    <div class="drop-overlay" id="drop-overlay">Drop images here</div>
+    <div id="upload-status">
+        <div class="spinner"></div>
+        <div id="upload-message">Uploading...</div>
+    </div>
+
+    <input type="file" id="file-input" accept="image/*" multiple hidden>
+
+    <div id="stereo-panel">
+        <div class="slider-row">
+            <label for="stretch-slider">Stretch</label>
+            <input type="range" id="stretch-slider" min="0.3" max="3.0" step="0.05" value="1.0">
+            <span id="stretch-value">1.0</span>
+        </div>
+        <div class="slider-row">
+            <label for="polefill-slider">Pole Fill</label>
+            <input type="range" id="polefill-slider" min="0" max="0.25" step="0.005" value="0">
+            <span id="polefill-value">0%</span>
+        </div>
+    </div>
+
+    <div id="color-panel">
+        <div class="slider-row">
+            <label for="brightness-slider">Brightness</label>
+            <input type="range" id="brightness-slider" min="0.2" max="2.0" step="0.01" value="1.0">
+            <span id="brightness-value">100%</span>
+        </div>
+        <div class="slider-row">
+            <label for="contrast-slider">Contrast</label>
+            <input type="range" id="contrast-slider" min="0.2" max="2.0" step="0.01" value="1.0">
+            <span id="contrast-value">100%</span>
+        </div>
+        <div class="slider-row">
+            <label for="saturation-slider">Saturation</label>
+            <input type="range" id="saturation-slider" min="0" max="2.0" step="0.01" value="1.0">
+            <span id="saturation-value">100%</span>
+        </div>
+        <div class="slider-row">
+            <label for="warmth-slider">Warmth</label>
+            <input type="range" id="warmth-slider" min="-1" max="1" step="0.01" value="0">
+            <span id="warmth-value">0</span>
+        </div>
+        <button id="color-reset">Reset</button>
+    </div>
+
+    <div id="controls">
+        <button id="btn-import" title="Import images">&#x1F4C2;</button>
+        <button id="btn-zoom-in" title="Zoom in">+</button>
+        <button id="btn-zoom-out" title="Zoom out">&minus;</button>
+        <button id="btn-reset" title="Reset view">&#8634;</button>
+        <button id="btn-tinyplanet" title="Tiny planet (T)">&#x25CE;</button>
+        <button id="btn-tunnel" title="Tunnel view (Y)">&#x25C9;</button>
+        <button id="btn-color" title="Colour &amp; contrast (C)">&#x1F3A8;</button>
+        <button id="btn-autorotate" title="Auto-rotate">&#10227;</button>
+        <button id="btn-export" title="Export view (E)">&#x2B07;</button>
+        <button id="btn-fullscreen" title="Fullscreen">&#x26F6;</button>
+        <button id="btn-editor" title="Open editor">&#x270E;</button>
+    </div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"
+        }
+    }
+    </script>
+    <!-- See the note in editor.html: ?v= breaks caches poisoned before the
+         no-store header existed. -->
+    <script type="module" src="viewer.js?v=2"></script>
+</body>
+</html>
