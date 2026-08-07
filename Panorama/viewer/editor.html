@@ -219,11 +219,17 @@
             <label>Mode:</label>
             <button class="toolbar-btn active" id="btn-mode-move">Move</button>
             <button class="toolbar-btn" id="btn-mode-paint">Paint</button>
+            <button class="toolbar-btn" id="btn-mode-clone">Clone</button>
         </div>
         <div class="tool-group" id="brush-group" style="display:none">
             <label>Brush</label>
             <input type="range" id="brush-size" min="1" max="50" value="10">
             <span id="brush-size-val">10</span>
+        </div>
+        <div class="tool-group" id="clone-group" style="display:none">
+            <label id="clone-source-label">Source: none</label>
+            <label><input type="checkbox" id="clone-aligned" checked> Aligned</label>
+            <button class="toolbar-btn" id="btn-clone-clear">Clear Clone</button>
         </div>
         <div class="tool-group" id="opacity-group">
             <label>Opacity</label>
@@ -253,6 +259,6 @@
          server started sending Cache-Control: no-store will keep serving that
          copy for days without revalidating; no-store stops new responses being
          stored but cannot evict an old one. Bump it if that ever happens again. -->
-    <script type="module" src="editor.js?v=2"></script>
+    <script type="module" src="editor.js?v=3"></script>
 </body>
 </html>

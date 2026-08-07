@@ -17,6 +17,13 @@ let seamLabels = null;
 let originalSeamLabels = null;
 let compositeCanvas, compositeCtx, compositeTexture;
 let overlayCanvas, overlayCtx, overlayTexture;
+// Clone-stamp paint lives in its own RGBA layer over the seam composite: it is
+// pixel data, not a label, so it cannot be expressed as a seam assignment. The
+// stroke list is the master copy — the raster is rebuilt from it on undo, and the
+// full-res render replays it (see apply_clone_strokes in stitcher.py).
+let cloneCanvas, cloneCtx;
+let cloneStrokes = [];
+let cloneGroupStarts = [];
 let eqWidth = 0, eqHeight = 0;
 let texW = 0, texH = 0;
 let uncropW = 0, uncropH = 0;
@@ -36,6 +43,11 @@ let dragBaseCanvas = null;
 let dragLayerCanvas = null;
 let dragStartEq = null;
 let painting = false;
+let cloning = false;
+let cloneSource = null;
+let cloneOffset = null;
+let cloneAligned = true;
+let cloneStrokeLast = null;
 let layerCanvases = [];
 let imageOffsets = [];
 let pendingChanges = false;
@@ -49,6 +61,8 @@ let sphereMesh, overlayMesh, raycastSphere;
 let handleGroup;
 let outlineGroup;
 let brushCursor;
+let cloneCursor;
+let cloneSourceMarker;
 let raycaster, mouse;
 
 const container = document.getElementById('three-container');
@@ -184,8 +198,40 @@ function initThree() {
     brushCursor.style.cssText = 'position:fixed;border:2px solid yellow;border-radius:50%;pointer-events:none;display:none;box-sizing:border-box;';
     document.body.appendChild(brushCursor);
 
+    // Where the clone brush is reading from, tracking the dest brush by the
+    // sample offset — the same feedback a clone stamp gives in an image editor.
+    cloneCursor = document.createElement('div');
+    cloneCursor.style.cssText = 'position:fixed;border:2px dashed #40e0ff;border-radius:50%;pointer-events:none;display:none;box-sizing:border-box;';
+    document.body.appendChild(cloneCursor);
+
+    cloneSourceMarker = makeCrosshairSprite();
+    cloneSourceMarker.visible = false;
+    scene.add(cloneSourceMarker);
+
     window.addEventListener('resize', onResize);
     animate();
+}
+
+function makeCrosshairSprite() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    ctx.strokeStyle = '#40e0ff';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(32, 32, 18, 0, Math.PI * 2);
+    ctx.moveTo(32, 4); ctx.lineTo(32, 60);
+    ctx.moveTo(4, 32); ctx.lineTo(60, 32);
+    ctx.stroke();
+    const mat = new THREE.SpriteMaterial({
+        map: new THREE.CanvasTexture(canvas),
+        depthTest: false,
+        transparent: true,
+    });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.set(0.05, 0.05, 1);
+    return sprite;
 }
 
 function onResize() {
@@ -218,6 +264,13 @@ function createSphere() {
     overlayCanvas.width = texW;
     overlayCanvas.height = texH;
     overlayCtx = overlayCanvas.getContext('2d');
+
+    if (!cloneCanvas || cloneCanvas.width !== texW || cloneCanvas.height !== texH) {
+        cloneCanvas = document.createElement('canvas');
+        cloneCanvas.width = texW;
+        cloneCanvas.height = texH;
+        cloneCtx = cloneCanvas.getContext('2d');
+    }
 
     compositeFromLabels();
     renderOverlay();
@@ -280,6 +333,7 @@ function compositeFromLabels() {
     }
 
     compositeCtx.putImageData(out, cropPxX, cropPxY);
+    if (cloneCanvas) compositeCtx.drawImage(cloneCanvas, 0, 0);
 }
 
 function renderOverlay() {
@@ -568,8 +622,9 @@ function bringImageToForeground(layerIdx) {
 }
 
 function updateBrushCursor(event, point) {
-    if (!point || mode !== 'paint') {
+    if (!point || (mode !== 'paint' && mode !== 'clone')) {
         brushCursor.style.display = 'none';
+        cloneCursor.style.display = 'none';
         return;
     }
     const angularRadius = (brushSize / eqWidth) * 2 * Math.PI;
@@ -592,6 +647,7 @@ function updateBrushCursor(event, point) {
     brushCursor.style.height = size + 'px';
     brushCursor.style.left = (event.clientX - size / 2) + 'px';
     brushCursor.style.top = (event.clientY - size / 2) + 'px';
+    updateCloneCursor(event, point);
 }
 
 function paintAtSpherePoint(point, erase) {
@@ -647,11 +703,229 @@ function paintAtSpherePoint(point, erase) {
     }
 }
 
+function eqFromPoint(point) {
+    const { yaw, pitch } = sphereToYawPitch(point);
+    const { x, y } = yawPitchToEquirect(yaw, pitch);
+    return { x: Math.round(x), y: Math.round(y) };
+}
+
+function wrapEqX(x) {
+    return ((x % eqWidth) + eqWidth) % eqWidth;
+}
+
+let cloneTmpCanvas = null;
+
+// Copies a square of the composite into a scratch canvas, in two pieces when the
+// square straddles the 360 deg seam. Rows off the top or bottom of the sphere are
+// clipped by drawImage, which keeps the remaining rows aligned.
+function blitFromComposite(ctx, exSrc, eySrc, size) {
+    const x = wrapEqX(exSrc);
+    const first = Math.min(size, eqWidth - x);
+    ctx.drawImage(compositeCanvas,
+        cropPxX + x, cropPxY + eySrc, first, size, 0, 0, first, size);
+    if (first < size) {
+        ctx.drawImage(compositeCanvas,
+            cropPxX, cropPxY + eySrc, size - first, size, first, 0, size - first, size);
+    }
+}
+
+function stampWrapped(ctx, src, exDest, eyDest, size) {
+    const x = wrapEqX(exDest);
+    const first = Math.min(size, eqWidth - x);
+    ctx.drawImage(src, 0, 0, first, size,
+        cropPxX + x, cropPxY + eyDest, first, size);
+    if (first < size) {
+        ctx.drawImage(src, first, 0, size - first, size,
+            cropPxX, cropPxY + eyDest, size - first, size);
+    }
+}
+
+// Alpha profile of the brush: solid to 0.65 of the radius, then falling to zero
+// at the rim. apply_clone_strokes in stitcher.py uses the same profile so the
+// full-res render matches what was painted here.
+function brushGradient(ctx, size) {
+    const r = size / 2;
+    const g = ctx.createRadialGradient(r, r, 0, r, r, r);
+    g.addColorStop(0, 'rgba(0,0,0,1)');
+    g.addColorStop(0.65, 'rgba(0,0,0,1)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    return g;
+}
+
+function cloneStampAt(exDest, eyDest, r, ox, oy, erase) {
+    const size = r * 2 + 1;
+    if (!cloneTmpCanvas) cloneTmpCanvas = document.createElement('canvas');
+    if (cloneTmpCanvas.width !== size) {
+        cloneTmpCanvas.width = size;
+        cloneTmpCanvas.height = size;
+    }
+    const tmpCtx = cloneTmpCanvas.getContext('2d');
+    tmpCtx.clearRect(0, 0, size, size);
+
+    const dx0 = exDest - r;
+    const dy0 = eyDest - r;
+
+    if (erase) {
+        tmpCtx.fillStyle = brushGradient(tmpCtx, size);
+        tmpCtx.fillRect(0, 0, size, size);
+        cloneCtx.save();
+        cloneCtx.globalCompositeOperation = 'destination-out';
+        stampWrapped(cloneCtx, cloneTmpCanvas, dx0, dy0, size);
+        cloneCtx.restore();
+    } else {
+        blitFromComposite(tmpCtx, dx0 + ox, dy0 + oy, size);
+        tmpCtx.save();
+        tmpCtx.globalCompositeOperation = 'destination-in';
+        tmpCtx.fillStyle = brushGradient(tmpCtx, size);
+        tmpCtx.fillRect(0, 0, size, size);
+        tmpCtx.restore();
+        stampWrapped(cloneCtx, cloneTmpCanvas, dx0, dy0, size);
+    }
+
+    updateCompositeRegion(exDest, eyDest, r);
+    compositeTexture.needsUpdate = true;
+}
+
+// Spacing keeps the stroke list to a size worth saving and replaying: a drag
+// across the sphere records a stamp every quarter-radius rather than every mouse
+// event, which is dense enough that the stamps still overlap into a smooth line.
+function cloneDragTo(point, erase) {
+    const dest = eqFromPoint(point);
+    if (cloneStrokeLast) {
+        let ddx = dest.x - cloneStrokeLast.x;
+        if (ddx > eqWidth / 2) ddx -= eqWidth;
+        else if (ddx < -eqWidth / 2) ddx += eqWidth;
+        const ddy = dest.y - cloneStrokeLast.y;
+        const spacing = Math.max(1, brushSize * 0.25);
+        if (ddx * ddx + ddy * ddy < spacing * spacing) return;
+    }
+
+    // Erasing with nothing painted would record strokes that do nothing but cost
+    // time on every replay.
+    if (erase && !cloneStrokes.some(s => !s.erase)) return;
+
+    if (!erase) {
+        if (!cloneOffset) {
+            if (!cloneSource) return;
+            cloneOffset = {
+                ox: cloneSource.x - dest.x,
+                oy: cloneSource.y - dest.y,
+            };
+        }
+        const sy = dest.y + cloneOffset.oy;
+        if (sy < 0 || sy >= eqHeight) return;
+    }
+
+    const ox = erase ? 0 : cloneOffset.ox;
+    const oy = erase ? 0 : cloneOffset.oy;
+    cloneStampAt(dest.x, dest.y, brushSize, ox, oy, erase);
+    cloneStrokes.push({ x: dest.x, y: dest.y, r: brushSize, ox, oy, erase });
+    cloneStrokeLast = dest;
+    updateCloneSourceMarker();
+}
+
+function replayCloneStrokes() {
+    for (const s of cloneStrokes) {
+        cloneStampAt(s.x, s.y, s.r, s.ox, s.oy, s.erase);
+    }
+}
+
+function rebuildClone() {
+    cloneCtx.clearRect(0, 0, cloneCanvas.width, cloneCanvas.height);
+    compositeFromLabels();
+    replayCloneStrokes();
+    compositeTexture.needsUpdate = true;
+}
+
+function undoCloneGroup() {
+    if (cloneGroupStarts.length === 0) {
+        showStatus('Nothing to undo');
+        setTimeout(hideStatus, 1200);
+        return;
+    }
+    const start = cloneGroupStarts.pop();
+    cloneStrokes.length = start;
+    rebuildClone();
+    showStatus(cloneStrokes.length ? 'Undid last clone stroke' : 'Clone paint cleared');
+    setTimeout(hideStatus, 1500);
+}
+
+function clearClone() {
+    if (cloneStrokes.length === 0) return;
+    cloneStrokes = [];
+    cloneGroupStarts = [];
+    rebuildClone();
+    showStatus('Clone paint cleared');
+    setTimeout(hideStatus, 1500);
+}
+
+function updateCloneSourceLabel() {
+    const el = document.getElementById('clone-source-label');
+    if (!el) return;
+    el.textContent = cloneSource
+        ? `Source: ${cloneSource.x},${cloneSource.y}` : 'Source: none';
+}
+
+function updateCloneSourceMarker() {
+    if (!cloneSourceMarker) return;
+    const anchor = cloneOffset && cloneStrokeLast
+        ? { x: cloneStrokeLast.x + cloneOffset.ox, y: cloneStrokeLast.y + cloneOffset.oy }
+        : cloneSource;
+    if (mode !== 'clone' || !anchor) {
+        cloneSourceMarker.visible = false;
+        return;
+    }
+    const { yaw, pitch } = equirectToYawPitch(wrapEqX(anchor.x), anchor.y);
+    cloneSourceMarker.position.copy(yawPitchToSphere(yaw, pitch).multiplyScalar(1.01));
+    cloneSourceMarker.visible = true;
+}
+
+// Second brush ring showing where the next stamp will read from. Drawn at the
+// dest ring's radius and offset by the sample offset, projected through the camera.
+function updateCloneCursor(event, point) {
+    if (mode !== 'clone' || !point || !cloneSource) {
+        cloneCursor.style.display = 'none';
+        return;
+    }
+    const dest = eqFromPoint(point);
+    const off = cloneOffset || { ox: cloneSource.x - dest.x, oy: cloneSource.y - dest.y };
+    const { yaw, pitch } = equirectToYawPitch(
+        wrapEqX(dest.x + off.ox), dest.y + off.oy);
+    const srcPoint = yawPitchToSphere(yaw, pitch);
+    const proj = srcPoint.clone().project(camera);
+    if (proj.z > 1) { cloneCursor.style.display = 'none'; return; }
+    const rect = renderer.domElement.getBoundingClientRect();
+    const sx = (proj.x * 0.5 + 0.5) * rect.width + rect.left;
+    const sy = (-proj.y * 0.5 + 0.5) * rect.height + rect.top;
+    const size = parseFloat(brushCursor.style.width) || 12;
+    cloneCursor.style.display = 'block';
+    cloneCursor.style.width = size + 'px';
+    cloneCursor.style.height = size + 'px';
+    cloneCursor.style.left = (sx - size / 2) + 'px';
+    cloneCursor.style.top = (sy - size / 2) + 'px';
+}
+
+// A brush centred near x=0 or x=eqWidth covers two runs of columns at opposite
+// ends of the equirect. Splitting here keeps the redraw in step with the paint,
+// which wraps its writes.
+function forEachWrappedSpan(cx, r, fn) {
+    const span = 2 * r + 3;
+    if (span >= eqWidth) { fn(0, eqWidth - 1); return; }
+    let x0 = cx - r - 1;
+    x0 = ((x0 % eqWidth) + eqWidth) % eqWidth;
+    const first = Math.min(span, eqWidth - x0);
+    fn(x0, x0 + first - 1);
+    if (first < span) fn(0, span - first - 1);
+}
+
 function updateCompositeRegion(cx, cy, r) {
-    const x0 = Math.max(0, cx - r - 1);
+    forEachWrappedSpan(cx, r, (x0, x1) => updateCompositeSpan(x0, x1, cy, r));
+}
+
+function updateCompositeSpan(x0, x1, cy, r) {
     const y0 = Math.max(0, cy - r - 1);
-    const x1 = Math.min(eqWidth - 1, cx + r + 1);
     const y1 = Math.min(eqHeight - 1, cy + r + 1);
+    if (y1 < y0) return;
     const w = x1 - x0 + 1;
     const h = y1 - y0 + 1;
 
@@ -687,13 +961,21 @@ function updateCompositeRegion(cx, cy, r) {
     }
 
     compositeCtx.putImageData(imgData, cropPxX + x0, cropPxY + y0);
+    if (cloneCanvas) {
+        compositeCtx.drawImage(cloneCanvas,
+            cropPxX + x0, cropPxY + y0, w, h,
+            cropPxX + x0, cropPxY + y0, w, h);
+    }
 }
 
 function updateOverlayRegion(cx, cy, r) {
-    const x0 = Math.max(0, cx - r - 1);
+    forEachWrappedSpan(cx, r, (x0, x1) => updateOverlaySpan(x0, x1, cy, r));
+}
+
+function updateOverlaySpan(x0, x1, cy, r) {
     const y0 = Math.max(0, cy - r - 1);
-    const x1 = Math.min(eqWidth - 1, cx + r + 1);
     const y1 = Math.min(eqHeight - 1, cy + r + 1);
+    if (y1 < y0) return;
     const w = x1 - x0 + 1;
     const h = y1 - y0 + 1;
 
@@ -996,9 +1278,44 @@ function seamLabelsToCanvas() {
     return c;
 }
 
+// The stroke list is what the server replays, so it has to be up to date before
+// any preview, render or save — those all read clone_strokes.json from the
+// editor directory rather than taking the strokes on the wire.
+async function saveCloneStrokes() {
+    const resp = await fetch('/editor/save-clone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            eq_width: eqWidth,
+            eq_height: eqHeight,
+            strokes: cloneStrokes,
+            groups: cloneGroupStarts,
+        }),
+    });
+    if (!resp.ok) throw new Error('Could not save clone strokes');
+}
+
+async function loadCloneStrokes() {
+    const resp = await fetch('/editor/clone-strokes?t=' + Date.now());
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!Array.isArray(data.strokes) || data.strokes.length === 0) return;
+    // Strokes are in editor equirect pixels; a differently sized editor grid
+    // would put them in the wrong place, so drop them rather than guess.
+    if (data.eq_width !== eqWidth || data.eq_height !== eqHeight) {
+        console.warn('Ignoring clone strokes saved at a different resolution');
+        return;
+    }
+    cloneStrokes = data.strokes;
+    cloneGroupStarts = Array.isArray(data.groups) ? data.groups : [0];
+    replayCloneStrokes();
+    compositeTexture.needsUpdate = true;
+}
+
 async function doPreview() {
     showStatus('Generating preview...');
     try {
+        await saveCloneStrokes();
         const seamsCanvas = seamLabelsToCanvas();
         const blob = await new Promise(r => seamsCanvas.toBlob(r, 'image/png'));
         const resp = await fetch('/editor/preview', {
@@ -1042,6 +1359,7 @@ async function doRender() {
     btn.classList.add('apply');
     showStatus('Rendering at full resolution... this may take a minute.');
     try {
+        await saveCloneStrokes();
         const seamsCanvas = seamLabelsToCanvas();
         const blob = await new Promise(r => seamsCanvas.toBlob(r, 'image/png'));
         const resp = await fetch('/editor/render', {
@@ -1078,6 +1396,7 @@ async function doSave() {
             body: blob,
         });
         if (!resp.ok) throw new Error('Save failed');
+        await saveCloneStrokes();
 
         localStorage.setItem('pano-editor', JSON.stringify({
             selectedImage,
@@ -1085,6 +1404,7 @@ async function doSave() {
             brushSize,
             dragOpacity,
             showOverlay,
+            cloneAligned,
         }));
 
         showStatus('Saved');
@@ -1120,7 +1440,11 @@ function restoreUIState() {
             renderOverlay();
             overlayTexture.needsUpdate = true;
         }
-        if (s.mode === 'paint') setMode('paint');
+        if (typeof s.cloneAligned === 'boolean') {
+            cloneAligned = s.cloneAligned;
+            document.getElementById('clone-aligned').checked = cloneAligned;
+        }
+        if (s.mode === 'paint' || s.mode === 'clone') setMode(s.mode);
     } catch {}
 }
 
@@ -1136,6 +1460,7 @@ async function saveProject() {
             headers: { 'Content-Type': 'image/png' },
             body: blob,
         });
+        await saveCloneStrokes();
         const resp = await fetch('/projects/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1233,27 +1558,45 @@ async function resetPositions() {
     setTimeout(hideStatus, 1500);
 }
 
+const MODE_HINTS = {
+    move: 'Click: cycle layers | Drag: move selected | Right: orbit',
+    paint: 'Left: paint | Shift: unpaint | Alt+click: pick layer | Right: orbit',
+    clone: 'Alt+click: set source | Left: clone | Shift: erase | Ctrl+Z: undo | Right: orbit',
+};
+
 function setMode(newMode) {
-    if (newMode === 'paint' && pendingChanges) {
+    if (newMode !== 'move' && pendingChanges) {
         showStatus('Apply position changes before painting');
         setTimeout(hideStatus, 2000);
         return;
     }
     mode = newMode;
+    const brushed = mode === 'paint' || mode === 'clone';
     document.getElementById('btn-mode-move').classList.toggle('active', mode === 'move');
     document.getElementById('btn-mode-paint').classList.toggle('active', mode === 'paint');
-    document.getElementById('brush-group').style.display = mode === 'paint' ? 'flex' : 'none';
-    document.getElementById('mode-indicator').textContent =
-        mode === 'move' ? 'Click: cycle layers | Drag: move selected | Right: orbit' : 'Left: paint | Shift: unpaint | Alt+click: pick layer | Right: orbit';
+    document.getElementById('btn-mode-clone').classList.toggle('active', mode === 'clone');
+    document.getElementById('brush-group').style.display = brushed ? 'flex' : 'none';
+    document.getElementById('clone-group').style.display = mode === 'clone' ? 'flex' : 'none';
+    document.getElementById('mode-indicator').textContent = MODE_HINTS[mode];
 
     handleGroup.visible = mode === 'move';
     brushCursor.style.display = 'none';
-    renderer.domElement.style.cursor = mode === 'paint' ? 'none' : 'default';
+    cloneCursor.style.display = 'none';
+    updateCloneSourceMarker();
+    renderer.domElement.style.cursor = brushed ? 'none' : 'default';
 }
 
 function setupEvents() {
     document.getElementById('btn-mode-move').addEventListener('click', () => setMode('move'));
     document.getElementById('btn-mode-paint').addEventListener('click', () => setMode('paint'));
+    document.getElementById('btn-mode-clone').addEventListener('click', () => setMode('clone'));
+    document.getElementById('btn-clone-clear').addEventListener('click', clearClone);
+
+    const alignedBox = document.getElementById('clone-aligned');
+    alignedBox.addEventListener('change', () => {
+        cloneAligned = alignedBox.checked;
+        if (!cloneAligned) cloneOffset = null;
+    });
 
     const brushSlider = document.getElementById('brush-size');
     const brushVal = document.getElementById('brush-size-val');
@@ -1336,6 +1679,38 @@ function setupEvents() {
             const point = hitTestSphere(e);
             if (point) paintAtSpherePoint(point, e.shiftKey);
             e.preventDefault();
+            return;
+        }
+
+        if (mode === 'clone') {
+            const point = hitTestSphere(e);
+            if (!point) return;
+            if (e.altKey) {
+                cloneSource = eqFromPoint(point);
+                cloneOffset = null;
+                cloneStrokeLast = null;
+                updateCloneSourceLabel();
+                updateCloneSourceMarker();
+                showStatus('Clone source set');
+                setTimeout(hideStatus, 1200);
+                e.preventDefault();
+                return;
+            }
+            if (!cloneSource && !e.shiftKey) {
+                showStatus('Alt+click to set the clone source first');
+                setTimeout(hideStatus, 2000);
+                return;
+            }
+            // Non-aligned resets the sample point to the anchor for every stroke,
+            // stamping the same patch again; aligned keeps the offset from the
+            // first stroke so a drag copies a moving region.
+            if (!cloneAligned) cloneOffset = null;
+            cloneGroupStarts.push(cloneStrokes.length);
+            cloning = true;
+            controls.enabled = false;
+            cloneStrokeLast = null;
+            cloneDragTo(point, e.shiftKey);
+            e.preventDefault();
         }
     });
 
@@ -1386,7 +1761,16 @@ function setupEvents() {
             return;
         }
 
-        if (mode === 'paint') {
+        if (cloning) {
+            const point = hitTestSphere(e);
+            if (point) {
+                cloneDragTo(point, e.shiftKey);
+                updateBrushCursor(e, point);
+            }
+            return;
+        }
+
+        if (mode === 'paint' || mode === 'clone') {
             const point = hitTestSphere(e);
             updateBrushCursor(e, point);
             return;
@@ -1400,6 +1784,7 @@ function setupEvents() {
 
     el.addEventListener('mouseleave', () => {
         brushCursor.style.display = 'none';
+        cloneCursor.style.display = 'none';
     });
 
     window.addEventListener('mouseup', () => {
@@ -1454,6 +1839,13 @@ function setupEvents() {
             painting = false;
             controls.enabled = true;
         }
+        if (cloning) {
+            cloning = false;
+            controls.enabled = true;
+            // An empty drag (nothing sampled) leaves no strokes to undo.
+            const start = cloneGroupStarts[cloneGroupStarts.length - 1];
+            if (start === cloneStrokes.length) cloneGroupStarts.pop();
+        }
     });
 
     window.addEventListener('keydown', (e) => {
@@ -1462,12 +1854,20 @@ function setupEvents() {
             doSave();
             return;
         }
+        if ((e.key === 'z' || e.key === 'Z') && (e.ctrlKey || e.metaKey)) {
+            if (mode === 'clone') {
+                e.preventDefault();
+                undoCloneGroup();
+            }
+            return;
+        }
         if (e.key === 'Escape') {
             selectImage(-1);
             return;
         }
         if (e.key === 'm' || e.key === 'M') setMode('move');
         if (e.key === 'p' || e.key === 'P') setMode('paint');
+        if (e.key === 'c' || e.key === 'C') setMode('clone');
         if (e.key === 'o' || e.key === 'O') {
             showOverlay = !showOverlay;
             overlayMesh.visible = showOverlay;
@@ -1583,6 +1983,9 @@ async function init() {
     buildImageStrip();
     setupEvents();
     restoreUIState();
+
+    loadingText.textContent = 'Loading clone paint...';
+    await loadCloneStrokes();
 
     loadingOverlay.classList.add('hidden');
 }

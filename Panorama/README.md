@@ -1,6 +1,6 @@
 # Panorama Stitcher & Editor
 
-A panoramic image stitcher with an interactive 3D spherical editor for DJI drone imagery. Supports automatic stitching using DJI gimbal metadata, people-aware seam detection, and manual seam painting on a 3D sphere.
+A panoramic image stitcher with an interactive 3D spherical editor for DJI drone imagery. Supports automatic stitching using DJI gimbal metadata, people-aware seam detection, and manual seam and clone painting on a 3D sphere.
 
 ## Installation
 
@@ -69,7 +69,7 @@ The editor provides full control over how source images are composited. It runs 
 
 ### Modes
 
-The editor has two modes, toggled via toolbar buttons:
+The editor has three modes, toggled via toolbar buttons:
 
 #### Move Mode
 - **Click**: Cycle through layers at that point (selects the next image underneath)
@@ -83,6 +83,20 @@ The editor has two modes, toggled via toolbar buttons:
 - **Right-drag**: Orbit the camera
 
 A yellow circle cursor shows the brush size in paint mode, scaled to the projected size on the sphere.
+
+#### Clone Mode
+
+Paint mode can only choose between the source images that cover a point. Clone mode copies pixels from somewhere else on the sphere, for things no seam can fix — a person who moved between frames, a tripod leg, a gap no image covers.
+
+- **Alt+click**: Set the clone source (a cyan crosshair marks it)
+- **Left-drag**: Stamp pixels from the source into the destination, with a soft-edged brush
+- **Shift+drag**: Erase clone paint, putting the original pixels back
+- **Ctrl+Z**: Undo the last clone stroke
+- **Right-drag**: Orbit the camera
+
+A dashed cyan ring shows where the brush is reading from. With **Aligned** ticked (the default) the source keeps its offset from the destination, so a drag copies a moving region; unticked, every stroke starts again from the source anchor, stamping the same patch repeatedly.
+
+Clone paint lives above the seam labels, so painting seams underneath it still works. It is stored as a list of strokes rather than a painted image: the full-res render replays them at its own resolution, copying full-res pixels instead of upscaling what you painted in the editor. "Clear Clone" removes all of it.
 
 ### Thumbnail Strip
 
@@ -98,13 +112,15 @@ The bottom strip shows all source images:
 
 | Button | Action |
 |--------|--------|
-| Move / Paint | Switch between modes |
-| Brush Size | Slider to adjust paint brush radius |
+| Move / Paint / Clone | Switch between modes |
+| Brush Size | Slider to adjust paint and clone brush radius |
+| Aligned | Clone source follows the brush (on) or restarts from the anchor each stroke (off) |
+| Clear Clone | Discard all clone paint |
 | Opacity | Drag preview opacity when moving images |
 | Overlay | Toggle coloured seam label overlay |
 | Reset | Reset all image positions to their original values |
 | Apply Positions | Reproject layers after moving images (required before painting) |
-| Save | Save current seam state (auto-loads on page refresh) |
+| Save | Save current seam state and clone strokes (auto-loads on page refresh) |
 | Save Project | Save entire state as a named project |
 | Load Project | Load a previously saved project |
 | Preview | Generate a preview composite from current seams |
@@ -131,11 +147,16 @@ The bottom strip shows all source images:
    - Use Shift+paint to undo painting (restore original seams)
    - Use checkboxes for batch operations (check multiple images, paint to reveal all)
 
-5. **Save your work**:
-   - "Save" preserves seam state (auto-restores on reload)
+5. **Retouch what seams cannot fix** (Clone mode):
+   - Alt+click a clean patch of the sphere to set the source
+   - Drag over the problem area to stamp those pixels in
+   - Shift+drag to take clone paint back off, Ctrl+Z to undo a whole stroke
+
+6. **Save your work**:
+   - "Save" preserves seam state and clone strokes (auto-restores on reload)
    - "Save Project" creates a named snapshot you can return to later
 
-6. **Render**:
+7. **Render**:
    - "Preview" generates a quick composite at editor resolution (Gaussian-blended)
    - "Render Full Res" produces the final 8192x4096 panorama with hard seams (no ghosting)
    - Rendering can be cancelled mid-progress via the "Cancel Render" button
@@ -145,11 +166,14 @@ The bottom strip shows all source images:
 | Key | Action |
 |-----|--------|
 | Ctrl+S | Save seams |
+| Ctrl+Z | Undo the last clone stroke (Clone mode) |
+| M / P / C | Move / Paint / Clone mode |
+| O | Toggle the seam label overlay |
 | Escape | Deselect current image |
 
 ### Projects
 
-Projects save the complete editor state (layers, masks, seams, metadata, cache) under `output/projects/<name>/`. Use "Load Project" to switch between different editing sessions. Loading a project replaces the current editor state and reloads the page.
+Projects save the complete editor state (layers, masks, seams, clone strokes, metadata, cache) under `output/projects/<name>/`. Use "Load Project" to switch between different editing sessions. Loading a project replaces the current editor state and reloads the page.
 
 ## Render Output
 
@@ -184,6 +208,7 @@ output/
     metadata.json   # Image positions and parameters
     cache.pkl       # Cached rotations and camera intrinsics
     seams.png       # Current seam label map
+    clone_strokes.json  # Clone-stamp strokes, replayed at render time
     composite.jpg   # Preview composite
     layer_XX.png    # Reprojected image layers
     mask_XX.png     # Coverage masks per layer
@@ -208,7 +233,7 @@ output/
 
 ### Editor Rendering
 
-The editor uses THREE.js to display the panorama on a sphere. Source images are projected as equirectangular layers with per-pixel seam labels determining which image is visible at each point. Painting modifies the seam labels in real-time and updates the composite texture.
+The editor uses THREE.js to display the panorama on a sphere. Source images are projected as equirectangular layers with per-pixel seam labels determining which image is visible at each point. Painting modifies the seam labels in real-time and updates the composite texture. Clone strokes are stamped into a separate RGBA layer drawn over that composite, and replayed onto the render at full resolution.
 
 ### CUDA Detection
 

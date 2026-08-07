@@ -149,6 +149,17 @@ class PanoramaHandler(http.server.SimpleHTTPRequestHandler):
             self._serve_file(Path(_editor_state["dir"]) / "seams.png", "image/png")
             return
 
+        if path == "/editor/clone-strokes":
+            if not _editor_state["dir"]:
+                self._json_response(404, _editor_status())
+                return
+            strokes = Path(_editor_state["dir"]) / "clone_strokes.json"
+            if not strokes.exists():
+                self._json_response(200, {"strokes": []})
+                return
+            self._serve_file(strokes, "application/json")
+            return
+
         if path == "/editor/composite":
             if not _editor_state["dir"]:
                 self._json_response(404, _editor_status())
@@ -214,6 +225,9 @@ class PanoramaHandler(http.server.SimpleHTTPRequestHandler):
             return
         if self.path == "/editor/save-seams":
             self._handle_save_seams()
+            return
+        if self.path == "/editor/save-clone":
+            self._handle_save_clone()
             return
         if self.path == "/projects/save":
             self._handle_project_save()
@@ -337,6 +351,32 @@ class PanoramaHandler(http.server.SimpleHTTPRequestHandler):
             traceback.print_exc()
             self._json_response(500, {"error": "Save failed"})
 
+    def _handle_save_clone(self):
+        """Store the editor's clone-stamp strokes.
+
+        Kept as strokes rather than a painted raster so the full-res render can
+        replay them at its own resolution instead of upscaling editor pixels."""
+        try:
+            if not _editor_state["dir"]:
+                self._json_response(404, {"error": "Editor not initialized"})
+                return
+            body = self._read_body()
+            try:
+                data = json.loads(body)
+            except (json.JSONDecodeError, TypeError) as e:
+                self._json_response(400, {"error": f"Invalid JSON: {e}"})
+                return
+            if not isinstance(data.get("strokes"), list):
+                self._json_response(400, {"error": "No strokes list"})
+                return
+            dest = Path(_editor_state["dir"]) / "clone_strokes.json"
+            dest.write_text(json.dumps(data))
+            print(f"  Clone strokes saved ({len(data['strokes'])} strokes)")
+            self._json_response(200, {"status": "ok"})
+        except Exception:
+            traceback.print_exc()
+            self._json_response(500, {"error": "Save failed"})
+
     def _handle_project_save(self):
         try:
             if not _editor_state["dir"]:
@@ -389,6 +429,10 @@ class PanoramaHandler(http.server.SimpleHTTPRequestHandler):
             for f in src.iterdir():
                 if f.is_file():
                     shutil.copy2(f, editor_dir / f.name)
+            # Copying leaves anything the project does not have in place, which
+            # would carry the previous session's clone paint into it.
+            if not (src / "clone_strokes.json").exists():
+                (editor_dir / "clone_strokes.json").unlink(missing_ok=True)
             print(f"  Project loaded: {name}")
             self._json_response(200, {"status": "ok", "name": name})
         except Exception:

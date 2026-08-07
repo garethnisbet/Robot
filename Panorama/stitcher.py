@@ -1665,6 +1665,74 @@ def reproject_all(editor_dir, rotation_updates, out_width=8192, out_height=4096)
     return meta
 
 
+def load_clone_strokes(editor_dir):
+    """Read the editor's clone-stamp strokes, or None if there are none."""
+    path = Path(editor_dir) / "clone_strokes.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"  Warning: could not read clone strokes ({e})")
+        return None
+    return data if data.get("strokes") else None
+
+
+def apply_clone_strokes(img, data):
+    """Replay clone-stamp strokes onto a rendered panorama, in place.
+
+    Strokes are recorded in the editor's equirect pixel grid and scaled to
+    whatever size `img` is, so the same edit lands in the preview and in the
+    full-res render — and at full res it copies full-res pixels rather than
+    upscaling what the editor painted.
+
+    Each stroke reads the image as it stands, so overlapping stamps stack the way
+    they did under the brush. Erase strokes read `base`, the image before any
+    stroke, which puts the original pixels back."""
+    strokes = data.get("strokes") or []
+    if not strokes:
+        return img
+
+    h, w = img.shape[:2]
+    eq_w = float(data.get("eq_width") or w)
+    scale = w / eq_w
+    base = img.copy()
+
+    for s in strokes:
+        r = max(1, int(round(s["r"] * scale)))
+        cx = int(round(s["x"] * scale))
+        cy = int(round(s["y"] * scale))
+        erase = bool(s.get("erase"))
+        ox = 0 if erase else int(round(s["ox"] * scale))
+        oy = 0 if erase else int(round(s["oy"] * scale))
+
+        dy = np.arange(cy - r, cy + r + 1)
+        sy = dy + oy
+        rows = (dy >= 0) & (dy < h) & (sy >= 0) & (sy < h)
+        if not rows.any():
+            continue
+        dy, sy = dy[rows], sy[rows]
+
+        dx = np.arange(cx - r, cx + r + 1)
+        # The panorama wraps at 360 deg, so a brush over the seam reads and
+        # writes columns at both ends.
+        dxw = dx % w
+        sxw = (dx + ox) % w
+
+        dist = np.hypot((dy - cy)[:, None], (dx - cx)[None, :]) / r
+        # Same profile as brushGradient() in editor.js: solid to 0.65 of the
+        # radius, falling linearly to zero at the rim.
+        alpha = np.clip((1.0 - dist) / 0.35, 0.0, 1.0)[:, :, None]
+
+        src = (base if erase else img)[np.ix_(sy, sxw)].astype(np.float32)
+        dst = img[np.ix_(dy, dxw)].astype(np.float32)
+        img[np.ix_(dy, dxw)] = np.clip(
+            dst * (1.0 - alpha) + src * alpha, 0, 255).astype(np.uint8)
+
+    print(f"  Applied {len(strokes)} clone strokes")
+    return img
+
+
 def composite_from_seams(editor_dir, seam_labels_img):
     editor_dir = Path(editor_dir)
     with open(editor_dir / "metadata.json") as f:
@@ -1704,6 +1772,11 @@ def composite_from_seams(editor_dir, seam_labels_img):
         output[:, :, c] = np.where(weight_total > 1e-10, output[:, :, c] / safe_wt, 0)
 
     output = np.clip(output, 0, 255).astype(np.uint8)
+
+    clone = load_clone_strokes(editor_dir)
+    if clone:
+        apply_clone_strokes(output, clone)
+
     _, jpeg_data = cv2.imencode(".jpg", output, [cv2.IMWRITE_JPEG_QUALITY, 90])
     return jpeg_data.tobytes()
 
@@ -1813,6 +1886,12 @@ def render_with_seams(editor_dir, seam_labels_img, output_path,
 
     print("  Tone mapping...")
     output = _tonemap(output, covered, stats_mask=photographed)
+
+    # After tone mapping, so a cloned patch carries the same tones as the pixels
+    # it was copied from — the editor sampled them in display space too.
+    clone = load_clone_strokes(editor_dir)
+    if clone:
+        apply_clone_strokes(output, clone)
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(output_path), output, [cv2.IMWRITE_JPEG_QUALITY, 95])
