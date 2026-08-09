@@ -173,6 +173,7 @@ The viewer displays the panorama on a sphere with damped, momentum-based motion.
 | `[` / `]` | Stretch down / up (tiny planet and tunnel only) |
 | `C` | Colour & contrast panel |
 | `E` | Export the current view as a JPEG |
+| `X` | Export a 360 equirectangular JPEG with the edits baked in |
 | `D` | Download the full stitched panorama |
 | `Space` | Toggle auto-rotate |
 
@@ -190,6 +191,7 @@ Arrow keys are ignored while a slider has focus, so a focused slider can still b
 | 🎨 | Colour & contrast panel |
 | ⟳ | Auto-rotate |
 | ⬇ | Export current view |
+| 🌍 | Export 360 equirectangular |
 | 💾 | Download full panorama |
 | ⛶ | Fullscreen |
 | ✎ | Open the editor |
@@ -209,8 +211,13 @@ The 🎨 panel adjusts **brightness** and **contrast** (0.2–2.0), **saturation
 
 ### Export vs download
 
-- **Export** (`E`) renders what is on screen — current mode, framing and colour — at the viewport's aspect ratio and the largest size the GPU allows, saved as `panorama_<mode>_<width>x<height>.jpg`.
-- **Download** (`D`) saves the full equirectangular panorama file the server is serving, untouched.
+Three ways to get an image out, and they produce different things:
+
+- **Export view** (`E`) renders what is on screen — current mode, framing and colour — at the viewport's aspect ratio and the largest size the GPU allows, saved as `panorama_<mode>_<width>x<height>.jpg`. This is a flat screenshot: it has no metadata and is **not** a 360 image, so nothing downstream will treat it as one.
+- **Export 360** (`X`) re-renders the whole sphere as a 2:1 equirectangular JPEG with the colour grade and pole fill baked into the pixels, tagged with GPano XMP. Saved as `panorama_equirect_<width>x<height>.jpg`. Projection mode is ignored — tiny planet and tunnel are not spherical projections — but the direction you are facing is written as `GPano:InitialViewHeadingDegrees`, so a 360 viewer opens on that view. Resolution matches the source, capped at the GPU's maximum renderbuffer size.
+- **Download** (`D`) saves the full equirectangular panorama file the server is serving, untouched, including the GPano metadata the stitcher wrote. Use this when you want the original pixels with no viewer edits applied.
+
+Note that Chrome itself has no 360 viewer: opening any of these in a browser tab shows a flat image. GPano metadata is read by Google Photos, Facebook, VR players and similar, not by the browser's image decoder.
 
 ---
 

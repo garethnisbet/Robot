@@ -1969,8 +1969,12 @@ animate();
 
 def _inject_xmp_pano(jpeg_path, width, height):
     """Inject GPano XMP metadata so viewers recognize this as a 360 panorama."""
+    # The packet header's begin value must be the byte-order mark encoded in the
+    # packet's own encoding: U+FEFF encodes to EF BB BF, whereas the three
+    # separate characters '\xef\xbb\xbf' encode to six bytes (C3 AF C2 BB C2 BF)
+    # and leave strict readers unable to determine the encoding.
     xmp = (
-        '<?xpacket begin="\xef\xbb\xbf" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+        '<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>'
         '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
         '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
         '<rdf:Description rdf:about="" '

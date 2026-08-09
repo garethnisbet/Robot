@@ -60,6 +60,43 @@ function attachGrade(material) {
     };
 }
 
+// Pole repair, shared by every shader path that samples the panorama directly.
+// Rows within poleFill of either pole are blended towards the average of the
+// last good ring of pixels, which hides the nadir hole a drone leaves under
+// itself. Sampling runs in the texture's own vertical sense, where v = 0 is the
+// nadir and v = 1 the zenith; both callers map latitude to v that way.
+const poleFill = { value: 0.0 };
+
+const SAMPLE_GLSL = `
+uniform sampler2D panoTexture;
+uniform float poleFill;
+
+vec4 samplePanorama(vec2 texUV) {
+    if (poleFill <= 0.0) return texture2D(panoTexture, texUV);
+
+    float v = texUV.y;
+    float threshold = poleFill;
+
+    bool nearNadir = v < threshold;
+    bool nearZenith = v > 1.0 - threshold;
+
+    if (!nearNadir && !nearZenith) return texture2D(panoTexture, texUV);
+
+    float edgeV = nearNadir ? threshold : 1.0 - threshold;
+    float dist = nearNadir ? v : 1.0 - v;
+    float blend = smoothstep(0.0, threshold, dist);
+
+    vec4 ringColor = vec4(0.0);
+    for (int i = 0; i < 32; i++) {
+        float u = float(i) / 32.0;
+        ringColor += texture2D(panoTexture, vec2(u, edgeV));
+    }
+    ringColor /= 32.0;
+
+    return mix(ringColor, texture2D(panoTexture, texUV), blend);
+}
+`;
+
 // --- Stereographic projection modes ---
 // 0 = normal, 1 = tiny planet (ground center), 2 = inverse (sky center)
 let stereoMode = 0;
@@ -77,7 +114,7 @@ const tpMaterial = new THREE.ShaderMaterial({
         zoom: { value: 1.0 },
         invertY: { value: 1.0 },
         stretch: { value: 1.0 },
-        poleFill: { value: 0.0 },
+        poleFill: poleFill,
         brightness: grade.brightness,
         contrast: grade.contrast,
         saturation: grade.saturation,
@@ -90,43 +127,17 @@ const tpMaterial = new THREE.ShaderMaterial({
     `,
     fragmentShader: `
         precision highp float;
-        uniform sampler2D panoTexture;
         uniform vec2 resolution;
         uniform float rotation;
         uniform float tilt;
         uniform float zoom;
         uniform float invertY;
         uniform float stretch;
-        uniform float poleFill;
+        ${SAMPLE_GLSL}
         ${GRADE_GLSL}
 
         #define PI 3.14159265359
         #define TWO_PI 6.28318530718
-
-        vec4 samplePanorama(vec2 texUV) {
-            if (poleFill <= 0.0) return texture2D(panoTexture, texUV);
-
-            float v = texUV.y;
-            float threshold = poleFill;
-
-            bool nearNorth = v < threshold;
-            bool nearSouth = v > 1.0 - threshold;
-
-            if (!nearNorth && !nearSouth) return texture2D(panoTexture, texUV);
-
-            float edgeV = nearNorth ? threshold : 1.0 - threshold;
-            float dist = nearNorth ? v : 1.0 - v;
-            float blend = smoothstep(0.0, threshold, dist);
-
-            vec4 ringColor = vec4(0.0);
-            for (int i = 0; i < 32; i++) {
-                float u = float(i) / 32.0;
-                ringColor += texture2D(panoTexture, vec2(u, edgeV));
-            }
-            ringColor /= 32.0;
-
-            return mix(ringColor, texture2D(panoTexture, texUV), blend);
-        }
 
         void main() {
             vec2 uv = (gl_FragCoord.xy / resolution - 0.5) * 2.0;
@@ -152,15 +163,65 @@ const tpMaterial = new THREE.ShaderMaterial({
 
             float eLon = atan(rot.x, rot.z);
             float eLat = asin(clamp(rot.y, -1.0, 1.0));
-            vec2 texUV = vec2(eLon / TWO_PI + 0.5, 0.5 - eLat / PI);
+            // v grows towards the zenith, matching the sphere's UVs. Negating
+            // eLat here instead — as this used to — flips the projection top to
+            // bottom, which swapped what the tiny planet and tunnel buttons did:
+            // "ground centre" put the sky in the middle and vice versa.
+            vec2 texUV = vec2(eLon / TWO_PI + 0.5, 0.5 + eLat / PI);
 
             vec4 sampled = samplePanorama(texUV);
             gl_FragColor = vec4(applyGrade(sampled.rgb), sampled.a);
+            // Sampling an sRGB texture yields linear light, so without this the
+            // stereographic modes render darker than the sphere does.
+            #include <colorspace_fragment>
         }
     `,
 });
 
 tpScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), tpMaterial));
+
+// --- Equirectangular re-render ---
+// Only ever used by exportEquirect: it rewrites the panorama at 2:1 with the
+// grade and pole fill baked into the pixels, leaving the projection itself
+// untouched. The UV mapping matches the sphere's (v = 1 at the north pole), so
+// with the grade at its defaults and no pole fill the output is the input.
+const eqScene = new THREE.Scene();
+
+const eqMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+        panoTexture: { value: null },
+        resolution: { value: new THREE.Vector2(1, 1) },
+        poleFill: poleFill,
+        brightness: grade.brightness,
+        contrast: grade.contrast,
+        saturation: grade.saturation,
+        warmth: grade.warmth,
+    },
+    vertexShader: `
+        void main() {
+            gl_Position = vec4(position.xy, 0.0, 1.0);
+        }
+    `,
+    fragmentShader: `
+        precision highp float;
+        uniform vec2 resolution;
+        ${SAMPLE_GLSL}
+        ${GRADE_GLSL}
+
+        void main() {
+            vec2 texUV = gl_FragCoord.xy / resolution;
+            vec4 sampled = samplePanorama(texUV);
+            gl_FragColor = vec4(applyGrade(sampled.rgb), sampled.a);
+            // An sRGB texture is decoded to linear on sampling, so without this
+            // the readback is linear light and the exported JPEG comes out dark.
+            // Needs a render target whose texture is tagged SRGBColorSpace,
+            // which is what generates the conversion this include expands to.
+            #include <colorspace_fragment>
+        }
+    `,
+});
+
+eqScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), eqMaterial));
 
 let stretchValue = 1.0;
 
@@ -197,7 +258,7 @@ function setStretch(val) {
 
 function setPoleFill(val) {
     poleFillValue = THREE.MathUtils.clamp(val, 0.0, 0.25);
-    tpMaterial.uniforms.poleFill.value = poleFillValue;
+    poleFill.value = poleFillValue;
     const slider = document.getElementById("polefill-slider");
     const display = document.getElementById("polefill-value");
     slider.value = poleFillValue;
@@ -255,6 +316,7 @@ function loadPanoramaTexture(url) {
                 if (panoTexture) panoTexture.dispose();
                 panoTexture = texture;
                 tpMaterial.uniforms.panoTexture.value = texture;
+                eqMaterial.uniforms.panoTexture.value = texture;
 
                 if (sphereMesh) {
                     sphereMesh.material.map?.dispose();
@@ -425,6 +487,7 @@ window.addEventListener("keydown", (e) => {
         case "]": if (stereoMode > 0) setStretch(stretchValue + 0.1); break;
         case "c": toggleColorPanel(); break;
         case "e": exportFullRes(); break;
+        case "x": exportEquirect(); break;
         case "d": downloadPanorama(); break;
         case " ": autoRotate = !autoRotate; updateAutoRotateUI(); e.preventDefault(); break;
     }
@@ -446,6 +509,7 @@ document.getElementById("btn-fullscreen").addEventListener("click", toggleFullsc
 document.getElementById("btn-tinyplanet").addEventListener("click", () => setStereoMode(stereoMode === 1 ? 0 : 1));
 document.getElementById("btn-tunnel").addEventListener("click", () => setStereoMode(stereoMode === 2 ? 0 : 2));
 document.getElementById("btn-export").addEventListener("click", exportFullRes);
+document.getElementById("btn-export-360").addEventListener("click", exportEquirect);
 document.getElementById("btn-download").addEventListener("click", downloadPanorama);
 const editorBtn = document.getElementById("btn-editor");
 editorBtn.addEventListener("click", () => {
@@ -508,9 +572,9 @@ function updateAutoRotateUI() {
 }
 
 // Hands over the stitched equirectangular file itself, at whatever resolution it
-// was rendered. Distinct from exportFullRes, which captures the current view:
-// this is the whole 360x180 sphere, and the only way to get the panorama out at
-// full size without the GPU's texture limit or the viewport framing in the way.
+// was rendered. Distinct from both export paths: this is the file on disk, so it
+// carries no viewer edits, and it is the only way to get the panorama out at
+// full size without the GPU's texture limit in the way.
 function downloadPanorama() {
     const statusEl = document.getElementById("upload-status");
     const msgEl = document.getElementById("upload-message");
@@ -542,6 +606,146 @@ function downloadPanorama() {
         });
 }
 
+// Builds the GPano XMP packet that marks a JPEG as a full equirectangular
+// sphere. Keep this in step with _inject_xmp_pano in stitcher.py, which writes
+// the same properties onto the stitcher's own output.
+function gpanoPacket(width, height, headingDeg) {
+    // begin must carry the byte-order mark itself, encoded in the packet's
+    // encoding — "\uFEFF" through TextEncoder is EF BB BF.
+    return (
+        '<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>' +
+        '<x:xmpmeta xmlns:x="adobe:ns:meta/">' +
+        '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">' +
+        '<rdf:Description rdf:about="" ' +
+        'xmlns:GPano="http://ns.google.com/photos/1.0/panorama/" ' +
+        'GPano:ProjectionType="equirectangular" ' +
+        'GPano:UsePanoramaViewer="True" ' +
+        `GPano:CroppedAreaImageWidthPixels="${width}" ` +
+        `GPano:CroppedAreaImageHeightPixels="${height}" ` +
+        `GPano:FullPanoWidthPixels="${width}" ` +
+        `GPano:FullPanoHeightPixels="${height}" ` +
+        'GPano:CroppedAreaLeftPixels="0" ' +
+        'GPano:CroppedAreaTopPixels="0" ' +
+        `GPano:InitialViewHeadingDegrees="${headingDeg}" ` +
+        '/></rdf:RDF></x:xmpmeta>' +
+        '<?xpacket end="w"?>'
+    );
+}
+
+// Splices an XMP APP1 segment in directly after the SOI marker. Canvas JPEGs
+// carry no metadata of their own, so there is nothing to strip first.
+function injectGPano(jpeg, width, height, headingDeg) {
+    if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8) return jpeg;
+
+    const encoder = new TextEncoder();
+    const signature = encoder.encode("http://ns.adobe.com/xap/1.0/\0");
+    const packet = encoder.encode(gpanoPacket(width, height, headingDeg));
+    const length = signature.length + packet.length + 2; // includes the length field
+
+    const segment = new Uint8Array(4 + signature.length + packet.length);
+    segment[0] = 0xff;
+    segment[1] = 0xe1;
+    segment[2] = length >> 8;
+    segment[3] = length & 0xff;
+    segment.set(signature, 4);
+    segment.set(packet, 4 + signature.length);
+
+    const out = new Uint8Array(jpeg.length + segment.length);
+    out.set(jpeg.subarray(0, 2), 0);
+    out.set(segment, 2);
+    out.set(jpeg.subarray(2), 2 + segment.length);
+    return out;
+}
+
+// A true 360 export: the whole sphere at 2:1 with the colour grade and pole
+// fill baked in, tagged with GPano so Google Photos, Facebook and VR players
+// recognise it. Distinct from exportFullRes, which is a screenshot of the
+// current view in whatever projection is on screen and is not a 360 image at
+// all. The projection modes and the camera are deliberately ignored here; the
+// direction you are facing is recorded as the initial view heading instead of
+// being rotated into the pixels, which would tilt the horizon.
+function exportEquirect() {
+    if (!panoTexture) return;
+
+    const gl = renderer.getContext();
+    const maxSize = gl.getParameter(gl.MAX_RENDERBUFFER_SIZE);
+    // Even dimensions keep the 2:1 ratio exact, which is what GPano readers
+    // check when deciding whether the image covers the full sphere.
+    let outW = Math.min(panoTexture.image.width, maxSize);
+    outW -= outW % 2;
+    const outH = outW / 2;
+
+    const statusEl = document.getElementById("upload-status");
+    const msgEl = document.getElementById("upload-message");
+    msgEl.textContent = `Exporting 360 ${outW}×${outH}...`;
+    statusEl.classList.add("visible");
+
+    requestAnimationFrame(() => {
+        try {
+            const rt = new THREE.WebGLRenderTarget(outW, outH);
+            rt.texture.colorSpace = THREE.SRGBColorSpace;
+            renderer.setRenderTarget(rt);
+            eqMaterial.uniforms.resolution.value.set(outW, outH);
+            renderer.render(eqScene, tpCamera);
+
+            const pixels = new Uint8Array(outW * outH * 4);
+            renderer.readRenderTargetPixels(rt, 0, 0, outW, outH, pixels);
+            renderer.setRenderTarget(null);
+            rt.dispose();
+
+            const canvas = document.createElement("canvas");
+            canvas.width = outW;
+            canvas.height = outH;
+            const ctx = canvas.getContext("2d");
+            const img = ctx.createImageData(outW, outH);
+            for (let y = 0; y < outH; y++) {
+                const src = (outH - 1 - y) * outW * 4;
+                img.data.set(pixels.subarray(src, src + outW * 4), y * outW * 4);
+            }
+            ctx.putImageData(img, 0, 0);
+
+            const heading = Math.round(((lon % 360) + 360) % 360);
+            const fail = (err) => {
+                console.error("Equirectangular export failed:", err);
+                msgEl.textContent = "Export failed";
+                setTimeout(() => statusEl.classList.remove("visible"), 2000);
+            };
+            // Everything past this point is asynchronous and so outside the
+            // catch below; without its own handling a failure here just leaves
+            // the spinner up forever. toBlob hands back null rather than
+            // throwing when it cannot encode, which at this size is a real
+            // possibility.
+            canvas.toBlob(
+                (blob) => {
+                    if (!blob) {
+                        fail(new Error(`toBlob returned null at ${outW}x${outH}`));
+                        return;
+                    }
+                    blob.arrayBuffer().then((buf) => {
+                        const tagged = injectGPano(new Uint8Array(buf), outW, outH, heading);
+                        const a = document.createElement("a");
+                        a.href = URL.createObjectURL(
+                            new Blob([tagged], { type: "image/jpeg" })
+                        );
+                        a.download = `panorama_equirect_${outW}x${outH}.jpg`;
+                        a.click();
+                        URL.revokeObjectURL(a.href);
+                        msgEl.textContent = "Exported 360!";
+                        setTimeout(() => statusEl.classList.remove("visible"), 1200);
+                    }).catch(fail);
+                },
+                "image/jpeg",
+                0.95
+            );
+        } catch (err) {
+            console.error("Equirectangular export failed:", err);
+            renderer.setRenderTarget(null);
+            msgEl.textContent = "Export failed";
+            setTimeout(() => statusEl.classList.remove("visible"), 2000);
+        }
+    });
+}
+
 function exportFullRes() {
     if (!panoTexture) return;
 
@@ -571,6 +775,11 @@ function exportFullRes() {
     requestAnimationFrame(() => {
         try {
             const rt = new THREE.WebGLRenderTarget(exportW, exportH);
+            // A render target defaults to no colour space, which turns the
+            // linear→sRGB step at the end of both shaders into a no-op and
+            // saves a dark JPEG. Rendering to the canvas gets this from
+            // renderer.outputColorSpace; a target has to be told.
+            rt.texture.colorSpace = THREE.SRGBColorSpace;
             renderer.setRenderTarget(rt);
 
             if (stereoMode > 0) {
