@@ -122,6 +122,8 @@
     font-size: 11px; color: #889;
   }
   #collision-info.hit { color: #f66; }
+  #collision-rate { color: #6a9; font-size: 10px; }
+  #collision-pairs { display: block; }
   #collision-info .collision-pair {
     color: #fa8; font-size: 10px; display: block;
     padding-left: 8px; margin-top: 2px;

@@ -113,6 +113,7 @@
     <button id="resetBtn">Reset to Home</button>
     <button id="demoBtn" style="display:none;">Demo Pose</button>
     <button id="ikBtn">IK Mode: OFF</button>
+    <button id="limitsBtn" title="Turn off to drive joints beyond their configured limits">Limits: ON</button>
     <button id="labelBtn">Labels: OFF</button>
     <button id="chainBtn">Chain: OFF</button>
     <button id="originsBtn">Origins: OFF</button>
@@ -128,6 +129,7 @@
     <button id="screenshotBtn">Screenshot</button>
     <button id="collisionBtn">Collision: OFF</button>
     <button id="floorCollisionBtn">Floor Collision: ON</button>
+    <button id="headlessCollisionBtn" title="Run collision checks off the render loop, as fast as they complete">Headless Collision: OFF</button>
     <button id="stlSelectBtn">Mesh Select: ON</button>
   </div>
   <div id="visBoxSection" style="display:none; margin-top:4px;">
@@ -228,7 +230,7 @@
       </select>
     </div>
   </div>
-  <div id="collision-info" style="display:none;">Collisions: <span id="collision-text">none</span></div>
+  <div id="collision-info" style="display:none;">Collisions: <span id="collision-text">none</span><span id="collision-rate"></span><span id="collision-pairs"></span></div>
   <div style="display:flex; gap:4px; margin-top:8px; padding-top:8px; border-top:1px solid #334;">
     <button id="saveSceneBtn" style="flex:1; margin:0;">Save Scene</button>
     <button id="loadSceneBtn" style="flex:1; margin:0;">Load Scene</button>

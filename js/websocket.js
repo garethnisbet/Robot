@@ -19,7 +19,9 @@ import {
   setSTLParent, addPrimitive, duplicateSTL, deselectSTL,
   exportSceneState,
 } from './stl.js';
-import { clearCollisionHighlights } from './collision.js';
+import {
+  clearCollisionHighlights, setCollisionHeadless, isCollisionHeadless, updateCollisionLoop,
+} from './collision.js';
 import { setOrtho } from './scene.js';
 import { updateHexapodPose, computeLegLengthsFromPose, solveHexapodFK } from './hexapod.js';
 
@@ -739,13 +741,23 @@ export function handleCommand(data) {
       collisionBtn.classList.toggle('active', on);
       collisionInfoEl.style.display = on ? 'block' : 'none';
       if (!on) clearCollisionHighlights();
+      updateCollisionLoop();
     }
     wsSend(buildState(dev));
+
+  } else if (cmd === 'setCollisionHeadless') {
+    const on = data.enabled !== undefined ? !!data.enabled : !isCollisionHeadless();
+    setCollisionHeadless(on);
+    const btn = document.getElementById('headlessCollisionBtn');
+    btn.textContent = `Headless Collision: ${on ? 'ON' : 'OFF'}`;
+    btn.classList.toggle('active', on);
+    wsSend({ type: 'collisionHeadless', enabled: on, collisionEnabled: State.collisionEnabled });
 
   } else if (cmd === 'getCollisions') {
     wsSend({
       type: 'collisions',
       enabled: State.collisionEnabled,
+      headless: isCollisionHeadless(),
       collision: State.collisionEnabled && State.lastCollisions.length > 0,
       pairs: State.collisionEnabled ? State.lastCollisions.map(c => ({ link: c.linkName, object: c.stlName })) : [],
     });
@@ -1049,6 +1061,7 @@ export function handleCommand(data) {
         worldToLocal:     { params: 'device?, position?, orientation?', description: 'Transform world-frame position/orientation to device-local frame (mm, deg)' },
         // Collision
         setCollision:     { params: 'enabled?', description: 'Toggle or set collision detection' },
+        setCollisionHeadless: { params: 'enabled?', description: 'Run collision checks off the render loop (not capped by frame rate)' },
         getCollisions:    { params: '', description: 'Get current collision pairs' },
         // Objects
         listObjects:      { params: '', description: 'List all imported objects' },
