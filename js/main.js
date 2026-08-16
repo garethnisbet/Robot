@@ -934,7 +934,7 @@ floorCollisionBtn.addEventListener('click', () => {
 const headlessCollisionBtn = document.getElementById('headlessCollisionBtn');
 headlessCollisionBtn.addEventListener('click', () => {
   const on = setCollisionHeadless(!isCollisionHeadless());
-  headlessCollisionBtn.textContent = `Headless Collision: ${on ? 'ON' : 'OFF'}`;
+  headlessCollisionBtn.textContent = `Headless: ${on ? 'ON' : 'OFF'}`;
   headlessCollisionBtn.classList.toggle('active', on);
 });
 

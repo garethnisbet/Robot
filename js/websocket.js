@@ -749,7 +749,7 @@ export function handleCommand(data) {
     const on = data.enabled !== undefined ? !!data.enabled : !isCollisionHeadless();
     setCollisionHeadless(on);
     const btn = document.getElementById('headlessCollisionBtn');
-    btn.textContent = `Headless Collision: ${on ? 'ON' : 'OFF'}`;
+    btn.textContent = `Headless: ${on ? 'ON' : 'OFF'}`;
     btn.classList.toggle('active', on);
     wsSend({ type: 'collisionHeadless', enabled: on, collisionEnabled: State.collisionEnabled });
 
