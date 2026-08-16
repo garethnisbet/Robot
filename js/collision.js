@@ -726,7 +726,30 @@ const COLLISION_THROTTLE = 6;
 export function checkCollisions() {
   if (!State.collisionEnabled) return;
   if (headlessRunning) return;   // the headless loop owns the checks
-  if (++_collisionFrame % COLLISION_THROTTLE !== 0) return;
+
+  // A frame throttle must never be the last word here. Rendering is
+  // on-demand, so a change that draws only a few frames — importing a
+  // point cloud, deleting one — can have every one of those frames land
+  // on a skipped count. The loop then goes idle and the panel keeps a
+  // result that no longer describes the scene, naming objects that have
+  // since been removed.
+  //
+  // The worker path needs no throttle at all: runCollisionPass already
+  // refuses to dispatch while a pass is in flight (workerBusy), and
+  // early-outs on an unchanged scene fingerprint before doing any real
+  // work, so the per-frame cost on a settled scene is just the hash.
+  if (workerReady && worker) {
+    runCollisionPass();
+    return;
+  }
+
+  // Main-thread fallback: the pass is synchronous, so the throttle earns
+  // its keep. Hold the render loop awake across the skipped frames so a
+  // pass still lands once the scene settles.
+  if (++_collisionFrame % COLLISION_THROTTLE !== 0) {
+    State.requestRender();
+    return;
+  }
 
   runCollisionPass();
 }
