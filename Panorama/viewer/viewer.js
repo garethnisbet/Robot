@@ -72,7 +72,22 @@ uniform sampler2D panoTexture;
 uniform float poleFill;
 
 vec4 samplePanorama(vec2 texUV) {
-    if (poleFill <= 0.0) return texture2D(panoTexture, texUV);
+    // Gradients have to be taken up here, in uniform control flow: the pole
+    // branches below are per-pixel, and a derivative taken inside one is
+    // undefined for the fragments whose neighbours took the other path.
+    vec2 dx = dFdx(texUV);
+    vec2 dy = dFdy(texUV);
+    // u wraps from 1 straight back to 0 down the panorama's seam. Left alone,
+    // that jump reads to the hardware as "this pixel covers the whole
+    // panorama", so it picks the coarsest mip and paints a thin grey line
+    // along the seam — in tiny planet mode, a line running out of the centre
+    // of the planet. Taking the wrap back out of the gradients keeps the mip
+    // level continuous across it.
+    if (abs(dx.x) > 0.5) dx.x -= sign(dx.x);
+    if (abs(dy.x) > 0.5) dy.x -= sign(dy.x);
+
+    vec4 base = textureGrad(panoTexture, texUV, dx, dy);
+    if (poleFill <= 0.0) return base;
 
     float v = texUV.y;
     float threshold = poleFill;
@@ -80,7 +95,7 @@ vec4 samplePanorama(vec2 texUV) {
     bool nearNadir = v < threshold;
     bool nearZenith = v > 1.0 - threshold;
 
-    if (!nearNadir && !nearZenith) return texture2D(panoTexture, texUV);
+    if (!nearNadir && !nearZenith) return base;
 
     float edgeV = nearNadir ? threshold : 1.0 - threshold;
     float dist = nearNadir ? v : 1.0 - v;
@@ -89,11 +104,11 @@ vec4 samplePanorama(vec2 texUV) {
     vec4 ringColor = vec4(0.0);
     for (int i = 0; i < 32; i++) {
         float u = float(i) / 32.0;
-        ringColor += texture2D(panoTexture, vec2(u, edgeV));
+        ringColor += textureLod(panoTexture, vec2(u, edgeV), 0.0);
     }
     ringColor /= 32.0;
 
-    return mix(ringColor, texture2D(panoTexture, texUV), blend);
+    return mix(ringColor, base, blend);
 }
 `;
 
@@ -313,6 +328,10 @@ function loadPanoramaTexture(url) {
             url,
             (texture) => {
                 texture.colorSpace = THREE.SRGBColorSpace;
+                // A panorama joins back onto itself horizontally, so the
+                // filter taps either side of u = 0 have to come from the far
+                // edge rather than being clamped to the first column.
+                texture.wrapS = THREE.RepeatWrapping;
                 if (panoTexture) panoTexture.dispose();
                 panoTexture = texture;
                 tpMaterial.uniforms.panoTexture.value = texture;
