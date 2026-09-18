@@ -4,18 +4,21 @@
 // Imports Three.js + three-mesh-bvh from esm.sh (self-contained).
 // ============================================================
 
+import { buildPointGrid, pointCloudIntersectsMesh,
+         POINT_CLOUD_COLLISION_THRESHOLD } from './point-grid.js';
+
 let THREE;
 let initialized = false;
 
 // Geometry & mesh registries
-const geometryStore = new Map(); // geomId -> { geometry, refCount, samples?, sampleCount? }
+const geometryStore = new Map(); // geomId -> { geometry, refCount, grid? }
 const meshStore     = new Map(); // meshId -> { geomId, isPointCloud }
 
 // Reusable math objects (allocated after init)
-let _box1, _box2, _matrix, _matA, _matB, _point, _toLocal;
+let _box1, _box2, _matrix, _matA, _matB, _point;
 let _corners;
 
-const POINT_CLOUD_THRESHOLD = 0.04;
+const POINT_CLOUD_THRESHOLD = POINT_CLOUD_COLLISION_THRESHOLD;
 
 // ============================================================
 // Initialisation — dynamic import from esm.sh
@@ -34,7 +37,6 @@ async function init() {
     _matA    = new THREE.Matrix4();
     _matB    = new THREE.Matrix4();
     _point   = new THREE.Vector3();
-    _toLocal = new THREE.Matrix4();
     _corners = Array.from({ length: 8 }, () => new THREE.Vector3());
 
     initialized = true;
@@ -60,18 +62,10 @@ function addMesh(meshId, geomId, positions, index, isPointCloud) {
       geom.computeBoundsTree();
     }
 
+    // Every point is indexed — no subsampling, or sparse structure in
+    // the cloud would never be tested against (see js/point-grid.js).
     if (isPointCloud) {
-      const count  = positions.length / 3;
-      const stride = Math.max(1, Math.floor(count / 20000));
-      const arr    = new Float32Array(Math.ceil(count / stride) * 3);
-      let j = 0;
-      for (let i = 0; i < count; i += stride) {
-        arr[j++] = positions[i * 3];
-        arr[j++] = positions[i * 3 + 1];
-        arr[j++] = positions[i * 3 + 2];
-      }
-      entry.samples     = arr;
-      entry.sampleCount = (j / 3) | 0;
+      entry.grid = buildPointGrid(positions, POINT_CLOUD_THRESHOLD);
     }
 
     geometryStore.set(geomId, entry);
@@ -147,29 +141,12 @@ function testPointCloudVsMesh(pcGeomEntry, pcMat, meshGeomEntry, meshMat) {
   fastWorldAABB(meshGeomEntry.geometry.boundingBox, meshMat, _box2);
   if (!_box1.intersectsBox(_box2)) return false;
 
-  const bvh = meshGeomEntry.geometry.boundsTree;
-  if (!bvh) return false;
-
-  const samples = pcGeomEntry.samples;
-  const n       = pcGeomEntry.sampleCount;
-
-  _toLocal.fromArray(meshMat).invert();
-  const pm = pcMat;
-  const lm = _toLocal.elements;
-
-  for (let i = 0; i < n; i++) {
-    const sx = samples[i*3], sy = samples[i*3+1], sz = samples[i*3+2];
-    const wx = pm[0]*sx + pm[4]*sy + pm[8]*sz  + pm[12];
-    const wy = pm[1]*sx + pm[5]*sy + pm[9]*sz  + pm[13];
-    const wz = pm[2]*sx + pm[6]*sy + pm[10]*sz + pm[14];
-    _point.set(
-      lm[0]*wx + lm[4]*wy + lm[8]*wz  + lm[12],
-      lm[1]*wx + lm[5]*wy + lm[9]*wz  + lm[13],
-      lm[2]*wx + lm[6]*wy + lm[10]*wz + lm[14],
-    );
-    if (bvh.closestPointToPoint(_point, {}, 0, POINT_CLOUD_THRESHOLD)) return true;
-  }
-  return false;
+  return pointCloudIntersectsMesh(
+    pcGeomEntry.grid, pcMat, meshMat,
+    meshGeomEntry.geometry.boundingBox,
+    meshGeomEntry.geometry.boundsTree,
+    _point, POINT_CLOUD_THRESHOLD,
+  );
 }
 
 // ============================================================

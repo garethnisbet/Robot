@@ -4,6 +4,8 @@
 import * as THREE from 'three';
 import * as State from './state.js';
 import { resolveParentLink } from './stl.js';
+import { buildPointGrid, pointCloudIntersectsMesh,
+         POINT_CLOUD_COLLISION_THRESHOLD } from './point-grid.js';
 
 // ============================================================
 // Highlight helpers
@@ -387,8 +389,6 @@ const _collBox1   = new THREE.Box3();
 const _collBox2   = new THREE.Box3();
 const _collMatrix = new THREE.Matrix4();
 const _collPoint  = new THREE.Vector3();
-const _collToLocal = new THREE.Matrix4();
-const POINT_CLOUD_COLLISION_THRESHOLD = 0.04;
 
 const _corners = new Array(8).fill(null).map(() => new THREE.Vector3());
 function fastWorldAABB(mesh, target) {
@@ -414,53 +414,25 @@ function testPointCloudCollision(pointsObj, meshObj) {
   fastWorldAABB(meshObj, _collBox2);
   if (!_collBox1.intersectsBox(_collBox2)) return false;
 
-  const bvh = meshObj.geometry.boundsTree;
-  if (!bvh) return false;
+  if (!meshObj.geometry.boundingBox) meshObj.geometry.computeBoundingBox();
 
-  if (!pointsObj._collSamples) {
+  // Built once per cloud and reused; indexes every point, so sparse
+  // structure is tested like anything else (see js/point-grid.js).
+  if (pointsObj._collGrid === undefined) {
     const pos = pointsObj.geometry.getAttribute('position');
-    if (!pos || pos.count === 0) return false;
-    const stride = Math.max(1, Math.floor(pos.count / 20000));
-    const arr = new Float32Array(Math.ceil(pos.count / stride) * 3);
-    let j = 0;
-    for (let i = 0; i < pos.count; i += stride) {
-      arr[j++] = pos.getX(i);
-      arr[j++] = pos.getY(i);
-      arr[j++] = pos.getZ(i);
-    }
-    pointsObj._collSamples = arr;
-    pointsObj._collSampleCount = j / 3 | 0;
+    pointsObj._collGrid = pos && pos.count
+      ? buildPointGrid(pos.array, POINT_CLOUD_COLLISION_THRESHOLD)
+      : null;
   }
 
-  const matKey = pointsObj.matrixWorld.elements.join(',');
-  if (!pointsObj._collWorld || pointsObj._collWorldKey !== matKey) {
-    const src = pointsObj._collSamples;
-    const n   = pointsObj._collSampleCount;
-    const dst = pointsObj._collWorld = new Float32Array(n * 3);
-    const m   = pointsObj.matrixWorld.elements;
-    for (let i = 0; i < n; i++) {
-      const x = src[i*3], y = src[i*3+1], z = src[i*3+2];
-      dst[i*3]   = m[0]*x + m[4]*y + m[8]*z  + m[12];
-      dst[i*3+1] = m[1]*x + m[5]*y + m[9]*z  + m[13];
-      dst[i*3+2] = m[2]*x + m[6]*y + m[10]*z + m[14];
-    }
-    pointsObj._collWorldKey = matKey;
-  }
-
-  _collToLocal.copy(meshObj.matrixWorld).invert();
-  const m   = _collToLocal.elements;
-  const src = pointsObj._collWorld;
-  const n   = pointsObj._collSampleCount;
-  for (let i = 0; i < n; i++) {
-    const x = src[i*3], y = src[i*3+1], z = src[i*3+2];
-    _collPoint.set(
-      m[0]*x + m[4]*y + m[8]*z  + m[12],
-      m[1]*x + m[5]*y + m[9]*z  + m[13],
-      m[2]*x + m[6]*y + m[10]*z + m[14],
-    );
-    if (bvh.closestPointToPoint(_collPoint, {}, 0, POINT_CLOUD_COLLISION_THRESHOLD)) return true;
-  }
-  return false;
+  return pointCloudIntersectsMesh(
+    pointsObj._collGrid,
+    pointsObj.matrixWorld.elements,
+    meshObj.matrixWorld.elements,
+    meshObj.geometry.boundingBox,
+    meshObj.geometry.boundsTree,
+    _collPoint, POINT_CLOUD_COLLISION_THRESHOLD,
+  );
 }
 
 function testFloorCollision(mesh) {
