@@ -226,11 +226,16 @@ export function rememberSourceFileHandle(name, handle) {
   dbSaveFileHandle(name, handle).catch(() => {});
 }
 
-// Modal asking whether to reload the scene's splat/point-cloud file(s) from
-// their last known location. Resolves to 'last', 'browse', or 'skip'. A real
-// button click is required anyway: requestPermission()/showOpenFilePicker()
-// need a user gesture.
-function _promptSplatRestoreChoice(names) {
+// Modal offering to restore the scene's splat/point-cloud file(s). Resolves to
+// a Map of file name -> File (possibly empty), or null if the user skips.
+//
+// Both ways out of this dialog need transient user activation:
+// showOpenFilePicker() and FileSystemFileHandle.requestPermission() throw
+// without it. A scene load is many seconds of device GLB fetches past the
+// click that started it, so the activation from that click is long gone — the
+// picker must be opened from a button in *this* dialog, synchronously inside
+// the click handler, and never from the restore flow itself.
+function _promptForSourceFiles(names, handles) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.style.cssText =
@@ -248,91 +253,138 @@ function _promptSplatRestoreChoice(names) {
 
     const msg = document.createElement('div');
     msg.style.cssText = 'margin-bottom:8px;color:#bbb;';
-    msg.textContent = 'Only the position and orientation were saved in the scene file. Reload from the last known location?';
+    msg.textContent = 'Only the position and orientation were saved in the scene file. ' +
+                      'Load the point cloud / splat data to place ' +
+                      (names.length > 1 ? 'them' : 'it') + ' correctly.';
     box.appendChild(msg);
 
     for (const n of names) {
       const row = document.createElement('div');
       row.style.cssText = 'color:#8cf;margin:2px 0;word-break:break-all;';
-      row.textContent = n;
+      row.textContent = n + (handles.has(n) ? '' : '  (location not remembered)');
       box.appendChild(row);
     }
 
     const btnRow = document.createElement('div');
     btnRow.style.cssText = 'display:flex;gap:8px;margin-top:14px;justify-content:flex-end;';
-    const mkBtn = (label, value, primary) => {
+    const mkBtn = (label, primary, onClick) => {
       const b = document.createElement('button');
       b.textContent = label;
       b.style.cssText =
         'padding:6px 14px;border-radius:5px;border:1px solid #555;cursor:pointer;' +
         (primary ? 'background:#3a6ea5;color:#fff;border-color:#3a6ea5;' : 'background:#333;color:#ddd;');
-      b.addEventListener('click', () => {
-        overlay.remove();
-        resolve(value);
-      });
+      b.addEventListener('click', onClick);
       return b;
     };
-    btnRow.appendChild(mkBtn('Load last location', 'last', true));
-    btnRow.appendChild(mkBtn('Browse…', 'browse', false));
-    btnRow.appendChild(mkBtn('Skip', 'skip', false));
-    box.appendChild(btnRow);
 
+    // Only offered when at least one file has a remembered location.
+    const haveHandles = names.some(n => handles.has(n));
+    if (haveHandles) {
+      btnRow.appendChild(mkBtn('Load last location', true, async () => {
+        overlay.remove();
+        const map = new Map();
+        for (const n of names) {
+          const handle = handles.get(n);
+          if (!handle) continue;
+          try {
+            let perm = await handle.queryPermission({ mode: 'read' });
+            if (perm !== 'granted') perm = await handle.requestPermission({ mode: 'read' });
+            if (perm !== 'granted') throw new Error('read permission denied');
+            _mapFile(map, await handle.getFile());
+          } catch (err) {
+            // Moved, renamed or refused: forget the handle so the next round
+            // offers Browse rather than a button that just failed.
+            handles.delete(n);
+            console.warn('[Load Scene] Could not reload from last location:', n, err);
+          }
+        }
+        resolve(map);
+      }));
+    }
+
+    // Called synchronously from the click so the picker still has activation.
+    btnRow.appendChild(mkBtn('Browse\u2026', !haveHandles, () => {
+      overlay.remove();
+      resolve(_pickSourceFiles(names));
+    }));
+    btnRow.appendChild(mkBtn('Skip', false, () => {
+      overlay.remove();
+      resolve(null);
+    }));
+
+    box.appendChild(btnRow);
     overlay.appendChild(box);
     document.body.appendChild(overlay);
   });
 }
 
-async function _promptForSplatFiles(expectedNames) {
+function _mapFile(map, file) {
+  map.set(file.name, file);
+  map.set(file.name.toLowerCase(), file);
+}
+
+// Must be called synchronously from a click handler — see _promptForSourceFiles.
+async function _pickSourceFiles(expectedNames) {
   const extensions = [...new Set(expectedNames.map(n => '.' + n.split('.').pop().toLowerCase()))];
   const map = new Map();
 
   if (window.showOpenFilePicker) {
+    let handles = null;
     try {
-      const handles = await window.showOpenFilePicker({
+      handles = await window.showOpenFilePicker({
         multiple: true,
         types: [{
           description: 'Point cloud / splat files',
           accept: { 'application/octet-stream': extensions },
         }],
       });
+    } catch (err) {
+      if (err && err.name === 'AbortError') return map;      // user cancelled
+      // Anything else (most often a lost user gesture) is a real failure, not
+      // a cancel: fall through to the plain file input rather than silently
+      // dropping every object in the scene that needed a file.
+      console.warn('[Load Scene] File picker unavailable, falling back to file input:', err);
+    }
+    if (handles) {
       for (const handle of handles) {
-        const file = await handle.getFile();
-        map.set(file.name, file);
-        map.set(file.name.toLowerCase(), file);
-        dbSaveFileHandle(file.name, handle).catch(() => {});
-      }
-    } catch { /* user cancelled */ }
-  } else {
-    await new Promise((resolve) => {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.multiple = true;
-      input.accept = extensions.join(',');
-      input.style.display = 'none';
-      document.body.appendChild(input);
-      let done = false;
-      const cleanup = () => {
-        if (done) return;
-        done = true;
-        if (input.parentNode) input.parentNode.removeChild(input);
-        resolve();
-      };
-      input.addEventListener('change', () => {
-        for (const file of input.files) {
-          map.set(file.name, file);
-          map.set(file.name.toLowerCase(), file);
+        try {
+          _mapFile(map, await handle.getFile());
+          dbSaveFileHandle(handle.name, handle).catch(() => {});
+        } catch (err) {
+          console.warn('[Load Scene] Could not read picked file:', handle.name, err);
         }
-        cleanup();
-      });
-      window.addEventListener('focus', function onFocus() {
-        setTimeout(() => {
-          if (!done && input.files.length === 0) cleanup();
-          window.removeEventListener('focus', onFocus);
-        }, 500);
-      });
-      input.click();
-    });
+      }
+      return map;
+    }
   }
+
+  await new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.accept = extensions.join(',');
+    input.style.display = 'none';
+    document.body.appendChild(input);
+    let done = false;
+    const cleanup = () => {
+      if (done) return;
+      done = true;
+      if (input.parentNode) input.parentNode.removeChild(input);
+      resolve();
+    };
+    input.addEventListener('change', () => {
+      for (const file of input.files) _mapFile(map, file);
+      cleanup();
+    });
+    input.addEventListener('cancel', cleanup);
+    window.addEventListener('focus', function onFocus() {
+      setTimeout(() => {
+        if (!done && input.files.length === 0) cleanup();
+        window.removeEventListener('focus', onFocus);
+      }, 500);
+    });
+    input.click();
+  });
 
   return map;
 }
@@ -341,63 +393,54 @@ export async function restoreSTLsFromState(records) {
   console.log('[Load Scene v3] Restoring', records.length, 'objects — two-phase restore');
 
   // ── Pre-phase: resolve missing splat/point-cloud files (scene JSON stores
-  // only the transform and source file name, not the heavy buffer). Prefer
-  // reloading from the last known location via a persisted
-  // FileSystemFileHandle; fall back to a browse dialog.
+  // only the transform and source file name, not the heavy buffer). The user
+  // is asked once per round: reload from the remembered location, browse, or
+  // skip. Browsing has to be driven from that dialog's own button — by the
+  // time we get here the scene load has burned through any user activation.
   // Older saves used `splatFile`; newer ones use `sourceFile` for both types.
   const _srcNameOf = r => r.sourceFile || r.splatFile;
   const missingFiles = records.filter(r => (r.isSplat || r.isPointCloud) && !r.buffer && _srcNameOf(r));
   if (missingFiles.length > 0) {
-    const names = missingFiles.map(_srcNameOf);
-    console.log('[Load Scene] Need source files:', names.join(', '));
+    console.log('[Load Scene] Need source files:', missingFiles.map(_srcNameOf).join(', '));
     const loadingEl = document.getElementById('loading');
 
-    const withHandles = [];
+    const handles = new Map();
     for (const rec of missingFiles) {
-      const handle = await dbLoadFileHandle(_srcNameOf(rec)).catch(() => null);
-      if (handle) withHandles.push({ rec, handle });
+      const name = _srcNameOf(rec);
+      const handle = await dbLoadFileHandle(name).catch(() => null);
+      if (handle) handles.set(name, handle);
     }
 
-    let browse = withHandles.length === 0;
-    if (withHandles.length > 0) {
-      const choice = await _promptSplatRestoreChoice(withHandles.map(w => _srcNameOf(w.rec)));
-      if (choice === 'last') {
-        for (const { rec, handle } of withHandles) {
-          try {
-            let perm = await handle.queryPermission({ mode: 'read' });
-            if (perm !== 'granted') perm = await handle.requestPermission({ mode: 'read' });
-            if (perm !== 'granted') continue;
-            const file = await handle.getFile();
-            rec.buffer = await file.arrayBuffer();
-            console.log('[Load Scene] Reloaded from last known location:', _srcNameOf(rec));
-          } catch (err) {
-            console.warn('[Load Scene] Could not reload from last location:', _srcNameOf(rec), err);
-          }
-        }
-        // Any that failed (file moved/renamed, permission denied) → browse
-        browse = missingFiles.some(r => !r.buffer);
-      } else if (choice === 'browse') {
-        browse = true;
-      }
-      // 'skip' → leave buffers missing; those objects are skipped in Phase 1
-    }
-
-    const stillMissing = missingFiles.filter(r => !r.buffer);
-    if (browse && stillMissing.length > 0) {
-      const missingNames = stillMissing.map(_srcNameOf);
+    // Keep asking while each round resolves something — a browse that picks
+    // only some of the files should not strand the rest.
+    let remaining = missingFiles;
+    while (remaining.length > 0) {
       if (loadingEl) {
         loadingEl.style.display = 'block';
-        loadingEl.textContent = 'Select file' + (missingNames.length > 1 ? 's' : '') + ': ' + missingNames.join(', ');
+        loadingEl.textContent = 'Waiting for source file' + (remaining.length > 1 ? 's' : '') + '…';
       }
-      const fileMap = await _promptForSplatFiles(missingNames);
-      for (const rec of stillMissing) {
-        const srcName = _srcNameOf(rec);
-        const file = fileMap.get(srcName) || fileMap.get(srcName.toLowerCase());
+      const files = await _promptForSourceFiles(remaining.map(_srcNameOf), handles);
+      if (!files) break;                                   // skipped
+
+      for (const rec of remaining) {
+        const name = _srcNameOf(rec);
+        let file = files.get(name) || files.get(name.toLowerCase());
+        // One file wanted, one file chosen: accept it even if it was renamed.
+        if (!file && remaining.length === 1 && files.size > 0) file = [...files.values()][0];
         if (file) {
           rec.buffer = await file.arrayBuffer();
-          console.log('[Load Scene] Resolved source file:', srcName);
+          console.log('[Load Scene] Resolved source file:', name, '←', file.name);
         }
       }
+
+      const next = remaining.filter(r => !r.buffer);
+      if (next.length === remaining.length) break;         // no progress
+      remaining = next;
+    }
+
+    const unresolved = missingFiles.filter(r => !r.buffer).map(_srcNameOf);
+    if (unresolved.length > 0) {
+      console.warn('[Load Scene] Not restored (no file supplied):', unresolved.join(', '));
     }
     if (loadingEl) {
       loadingEl.style.display = 'block';
