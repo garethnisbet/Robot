@@ -572,14 +572,40 @@ async def get_collisions() -> str:
     pairs = r.get("pairs", [])
     floor = [p for p in pairs if p.get("link") == "floor"]
     real = [p for p in pairs if p.get("link") != "floor"]
+
+    # 'current' is the viewer comparing the scene's fingerprint against the one
+    # the standing result was computed from — an exact answer to "does this
+    # still describe the scene", not a guess from elapsed time.
+    current = r.get("current")
+    age = r.get("ageMs")
+    stale = current is False
+
+    if not r.get("enabled"):
+        note = "collision checking is off; run set_collision(enabled=True) first"
+    elif "passes" not in r:
+        note = ("this viewer predates freshness reporting, so there is no way to tell "
+                "a current result from a frozen one — reload the tab to pick it up")
+    elif r.get("passes") == 0:
+        note = "the checker has not completed a pass yet; this result means nothing"
+    elif stale:
+        note = ("the scene has changed since this result was computed, so it is out "
+                "of date — treat it as unknown, not as clear. The checker runs in "
+                "the viewer's render loop, which the browser pauses while the tab is "
+                "hidden; use set_collision(headless=True) for unattended runs.")
+    else:
+        note = None
+
     return json.dumps({
         "enabled": r.get("enabled"),
         "headless": r.get("headless"),
         "contact": bool(real),
         "contacts": real,
         "floorContacts": floor,
-        "note": None if r.get("enabled") else
-                "collision checking is off; run set_collision(enabled=True) first",
+        "describesCurrentScene": current,
+        "stale": stale,
+        "passes": r.get("passes"),
+        "ageMs": age,
+        "note": note,
     }, indent=2)
 
 

@@ -21,6 +21,7 @@ import {
 } from './stl.js';
 import {
   clearCollisionHighlights, setCollisionHeadless, isCollisionHeadless, updateCollisionLoop,
+  getCollisionFreshness,
 } from './collision.js';
 import { setOrtho } from './scene.js';
 import { updateHexapodPose, computeLegLengthsFromPose, solveHexapodFK } from './hexapod.js';
@@ -830,12 +831,19 @@ export function handleCommand(data) {
     wsSend({ type: 'floorCollision', enabled: on, collisionEnabled: State.collisionEnabled });
 
   } else if (cmd === 'getCollisions') {
+    // passes/ageMs let a remote client tell a current result from a frozen
+    // one. They look identical otherwise, and a hidden tab freezes the
+    // checker without stopping it answering.
+    const fresh = getCollisionFreshness();
     wsSend({
       type: 'collisions',
       enabled: State.collisionEnabled,
       headless: isCollisionHeadless(),
       collision: State.collisionEnabled && State.lastCollisions.length > 0,
       pairs: State.collisionEnabled ? State.lastCollisions.map(c => ({ link: c.linkName, object: c.stlName })) : [],
+      passes: fresh.passes,
+      current: fresh.current,
+      ageMs: fresh.ageMs,
     });
 
   // ── Object queries ──────────────────────────────────────────
@@ -1240,7 +1248,7 @@ export function handleCommand(data) {
         // Collision
         setCollision:     { params: 'enabled?', description: 'Toggle or set collision detection' },
         setCollisionHeadless: { params: 'enabled?', description: 'Run collision checks off the render loop (not capped by frame rate)' },
-        getCollisions:    { params: '', description: 'Get current collision pairs' },
+        getCollisions:    { params: '', description: 'Get current collision pairs, with passes/ageMs freshness' },
         // Objects
         listObjects:      { params: '', description: 'List all imported objects' },
         getObject:        { params: 'index|name|object', description: 'Get info for one object' },

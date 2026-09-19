@@ -443,9 +443,17 @@ Two places that bites, and what to do about each:
 - **Straight after enabling.** The first pass has not run. `set_collision` therefore waits
   for it before returning, so a read immediately afterwards is real. This was a live bug:
   enabling checks with the arm already touching a wall reported no contacts at all.
-- **Straight after moving.** Nothing waits for you here. Give the checker a moment between
-  moving the device and reading the result, or you will get the pass from before the move.
-  Around 0.5 s is comfortable when the tab is visible.
+- **Straight after moving.** Nothing waits for you here, so a read can return the pass from
+  before the move. Rather than guessing with a sleep, check the result's own freshness:
+  `getCollisions` reports `current` (`describesCurrentScene` through MCP), which is the
+  viewer comparing the scene's fingerprint against the one the standing result was computed
+  from. `false` means the scene has moved on and the result is out of date — treat that as
+  *unknown*, not as clear. `passes` counts completed checks, so it also shows whether the
+  checker is making progress at all.
+
+  Elapsed time deliberately is not the signal. Rendering is on-demand, so a settled scene is
+  legitimately not re-checked for as long as it sits still, and an age-based test reads that
+  as a fault.
 
 For unattended use, `set_collision(headless=True)` takes the checks off the render loop —
 otherwise they stop entirely while the browser tab is hidden, because `requestAnimationFrame`
@@ -734,6 +742,9 @@ The `getState` response for hexapod devices includes `platformPose`, `legLengths
 ```
 
 `setCollisionHeadless` decouples the checks from the render loop so their rate is not capped by the display refresh — see [Headless Mode](#headless-mode).
+
+`getCollisions` returns `passes` and `current` alongside the pairs — see
+[Reading collisions without being lied to](#reading-collisions-without-being-lied-to).
 
 `setFloorCollision` toggles the floor-plane check independently of mesh-vs-mesh checking. Turn it off when the scene contains a scanned room or terrain: the scan's floor points lie in the plane, so the whole cloud reports a permanent floor contact that masks every real collision. Floor contacts are reported with `"link": "floor"`, so they can also just be filtered out of `getCollisions`.
 

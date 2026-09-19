@@ -83,6 +83,8 @@ let _lastCollisionSig = null;
 
 function publishCollisions(list) {
   State.setLastCollisions(list);
+  _passes++;
+  _verifiedAt = performance.now();
 
   let sig = '';
   for (const c of list) sig += c.linkName + '↔' + c.stlName + ';';
@@ -119,6 +121,35 @@ function publishCollisions(list) {
 // stays honest (a static scene ticks with no work and reads "idle").
 // The frame-driven path can stop being called entirely when the render
 // loop goes idle, which would leave a stale number on screen.
+// Freshness bookkeeping. A remote client cannot see whether the checker is
+// running, and a frozen result is indistinguishable from a current one: in a
+// hidden tab the render loop stops, checkCollisions is never called, and
+// getCollisions keeps answering with whatever was last computed.
+//
+// Elapsed time is the wrong measure of that. Rendering is on-demand, so a
+// settled scene is legitimately not re-checked for as long as it sits still,
+// and "not looked at recently" would read as a fault. What a caller actually
+// needs to know is whether the standing result still describes the scene,
+// which the fingerprint answers exactly: recompute it and compare. Costs one
+// context build per query, the same work a pass does before deciding to run.
+let _passes = 0, _verifiedAt = 0;
+
+export function getCollisionFreshness() {
+  let current = null;
+  if (_passes > 0) {
+    try {
+      current = contextFingerprint(buildCollisionContext()) === _lastSceneHash;
+    } catch {
+      current = null;               // scene mid-teardown; say nothing rather than guess
+    }
+  }
+  return {
+    passes: _passes,
+    current,
+    ageMs: _verifiedAt === 0 ? null : Math.round(performance.now() - _verifiedAt),
+  };
+}
+
 let _rateWork = 0, _rateT0 = 0, _rateShown = -1;
 
 function resetRateMeter() {
@@ -631,7 +662,10 @@ function runCollisionPass() {
 
   const ctx  = buildCollisionContext();
   const hash = contextFingerprint(ctx);
-  if (hash === _lastSceneHash) return PASS_SKIPPED;
+  if (hash === _lastSceneHash) {
+    _verifiedAt = performance.now();   // unchanged scene: the standing result still holds
+    return PASS_SKIPPED;
+  }
   _lastSceneHash = hash;
 
   if (useWorker) {
