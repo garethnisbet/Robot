@@ -178,8 +178,9 @@ class Obstacle:
 @dataclass
 class AABBObstacle:
     """
-    Axis-aligned bounding box obstacle in world space (Z-up, metres).
-    Built automatically from the viewer's listObjects response.
+    Axis-aligned bounding box obstacle in world space (metres), in the same
+    Y-up frame as fk(). Built automatically from the viewer's listObjects
+    response, which reports Z-up and is converted by sync_from_viewer_objects.
     """
     min: np.ndarray   # [x, y, z] lower corner
     max: np.ndarray   # [x, y, z] upper corner
@@ -329,6 +330,12 @@ class RobotPlanner:
         objects_data: the 'objects' list from the viewer's {"type":"objects",...} message.
         Each entry needs 'visible' and 'worldBB' (added in buildObjectInfo).
         Manually added obstacles (add_obstacle / --obstacles file) are preserved.
+
+        The viewer reports worldBB in the API's Z-up convention, [x, z, y] of
+        the underlying Three.js frame, while fk() here works directly from the
+        config's restPos/restQuat and so stays in Three.js Y-up. The axes are
+        swapped back on the way in; without that the obstacles sit in a
+        different space from the arm and never register a hit.
         """
         # Drop previously synced viewer obstacles; keep manual ones
         self.obstacles = [o for o in self.obstacles if not getattr(o, '_from_viewer', False)]
@@ -340,9 +347,10 @@ class RobotPlanner:
             bb = obj.get('worldBB')
             if bb is None:
                 continue  # point cloud or no geometry
+            lo, hi = bb['min'], bb['max']
             obs = AABBObstacle(
-                min=np.array(bb['min'], dtype=float),
-                max=np.array(bb['max'], dtype=float),
+                min=np.array([lo[0], lo[2], lo[1]], dtype=float),
+                max=np.array([hi[0], hi[2], hi[1]], dtype=float),
                 name=obj.get('name', ''),
             )
             obs._from_viewer = True
