@@ -85,6 +85,7 @@ function publishCollisions(list) {
   State.setLastCollisions(list);
   _passes++;
   _verifiedAt = performance.now();
+  _publishedHash = _inFlightHash;
 
   let sig = '';
   for (const c of list) sig += c.linkName + '↔' + c.stlName + ';';
@@ -132,13 +133,18 @@ function publishCollisions(list) {
 // needs to know is whether the standing result still describes the scene,
 // which the fingerprint answers exactly: recompute it and compare. Costs one
 // context build per query, the same work a pass does before deciding to run.
-let _passes = 0, _verifiedAt = 0;
+// _publishedHash is the fingerprint the *published* result was computed from.
+// _lastSceneHash cannot stand in for it: that is set when a pass is dispatched,
+// so between dispatch and the worker's reply it already matches the new scene
+// while State.lastCollisions still holds the previous answer — the one window
+// where a stale result would be vouched for.
+let _passes = 0, _verifiedAt = 0, _inFlightHash = null, _publishedHash = null;
 
 export function getCollisionFreshness() {
   let current = null;
-  if (_passes > 0) {
+  if (_passes > 0 && _publishedHash !== null) {
     try {
-      current = contextFingerprint(buildCollisionContext()) === _lastSceneHash;
+      current = contextFingerprint(buildCollisionContext()) === _publishedHash;
     } catch {
       current = null;               // scene mid-teardown; say nothing rather than guess
     }
@@ -667,6 +673,7 @@ function runCollisionPass() {
     return PASS_SKIPPED;
   }
   _lastSceneHash = hash;
+  _inFlightHash  = hash;               // carried to _publishedHash when the result lands
 
   if (useWorker) {
     return checkCollisionsOffThread(ctx) ? PASS_DISPATCHED : PASS_DONE;
