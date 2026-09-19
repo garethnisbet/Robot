@@ -635,7 +635,8 @@ Cartesian `ee:` axes can be combined with ordinary joint axes on *other* devices
 | `objscale MyPart 2` | `robot.objscale('MyPart', 2)` | Set uniform scale |
 | `objvis MyPart on` | `robot.objvis('MyPart', True)` | Show/hide object |
 | `collision on` | `robot.collision(True)` | Enable/disable collision detection |
-| `collision headless on` | `robot.collision_headless(True)` | Run checks off the render loop (uncapped rate) |
+| `collision headless on` | `robot.collision_headless(True)` | Run checks off the render loop (~2x the rate on a heavy scene, and keeps checking while the tab is hidden) |
+| `collision floor off` | `robot.collision_floor(False)` | Toggle the floor-plane check — turn off for a scanned room or terrain |
 | `collisions` | `robot.collisions()` | Get current collision pairs |
 
 Object transforms accept a `space` parameter (`'parent'`, `'local'`, or `'world'`):

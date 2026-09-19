@@ -473,11 +473,27 @@ class RobotClient:
             status = _bgreen("ON") if enabled else _dim("OFF")
             lines.append(f"  {_bold('COLLISION')} detection: {status}")
             if enabled:
+                # 'current' is the viewer confirming this result still matches
+                # the scene. Without it an unchecked result prints as a green
+                # "No collisions", which is the one mistake worth not making.
+                current = data.get("current")
+                unverified = current is False or data.get("passes") == 0
                 if pairs:
                     for p in pairs:
                         lines.append(f"    {_red(p['link'])} <> {_red(p['object'])}")
-                else:
+                elif not unverified:
                     lines.append(f"    {_green('No collisions')}")
+                if current is False:
+                    lines.append(f"    {_yellow('Out of date')} - the scene has changed "
+                                 f"since this was computed; treat it as unknown")
+                elif data.get("passes") == 0:
+                    lines.append(f"    {_yellow('Not checked yet')} - no pass has completed")
+
+        elif msg_type in ("collisionHeadless", "floorCollision"):
+            on = data.get("enabled", False)
+            what = "Headless" if msg_type == "collisionHeadless" else "Floor"
+            lines.append(f"  {_bold('COLLISION')} {what.lower()}: "
+                         f"{_bgreen('ON') if on else _dim('OFF')}")
 
         elif msg_type == "objects":
             objs = data.get("objects", [])
@@ -1472,14 +1488,33 @@ class RobotClient:
         """Toggle or set headless collision mode.
 
         Headless mode runs the collision checks off the render loop, so the
-        check rate is bound by the collision computation rather than by the
-        display refresh (the frame-driven path checks at ~1/6 of frame rate,
-        and not at all while the view is idle).
+        check rate is bound by the collision computation rather than by how
+        fast the scene draws. On a heavy scene that roughly doubles the rate
+        (measured ~31 -> ~60 passes/sec on a 1.9M-triangle scene with a point
+        cloud); on a cheap one the two are close. It also keeps the checks
+        running while the browser tab is hidden, where the render loop — and
+        with it the frame-driven path — stops entirely.
 
         Usage: robot.collision_headless()       # toggle
                robot.collision_headless(True)   # enable
         """
         msg = {"cmd": "setCollisionHeadless"}
+        if enabled is not None:
+            msg["enabled"] = bool(enabled)
+        self._send(msg)
+
+    def collision_floor(self, enabled=None):
+        """Toggle or set the floor-plane collision check.
+
+        Independent of mesh-vs-mesh checking. Turn it off when the scene
+        holds a scanned room or terrain: the scan's floor points lie in the
+        plane, so the whole cloud reports a permanent floor contact that
+        masks every real collision.
+
+        Usage: robot.collision_floor()        # toggle
+               robot.collision_floor(False)   # off, for a scanned scene
+        """
+        msg = {"cmd": "setFloorCollision"}
         if enabled is not None:
             msg["enabled"] = bool(enabled)
         self._send(msg)
@@ -3181,7 +3216,8 @@ class RobotClient:
             ]),
             ("Collision", [
                 ("robot.collision([True|False])", "Toggle or set collision detection"),
-                ("robot.collision_headless([True|False])", "Run checks off the render loop (uncapped rate)"),
+                ("robot.collision_headless([True|False])", "Run checks off the render loop (faster on a heavy scene)"),
+                ("robot.collision_floor([True|False])", "Toggle the floor-plane check (off for scanned scenes)"),
                 ("robot.collisions()", "Get current collision pairs"),
             ]),
             ("Objects", [
@@ -3569,7 +3605,7 @@ def _register_magics(ipython, robot):
     # ── Collision ────────────────────────────────────────────────────
 
     def _m_collision(line):
-        """collision [on|off|headless [on|off]]"""
+        """collision [on|off|headless [on|off]|floor [on|off]]"""
         arg = line.strip().lower()
         if arg.startswith("headless"):
             rest = arg[len("headless"):].strip()
@@ -3579,6 +3615,14 @@ def _register_magics(ipython, robot):
                 robot.collision_headless(False)
             else:
                 robot.collision_headless()
+        elif arg.startswith("floor"):
+            rest = arg[len("floor"):].strip()
+            if rest == "on":
+                robot.collision_floor(True)
+            elif rest == "off":
+                robot.collision_floor(False)
+            else:
+                robot.collision_floor()
         elif arg == "on":
             robot.collision(True)
         elif arg == "off":
