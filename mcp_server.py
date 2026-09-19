@@ -530,6 +530,11 @@ async def set_collision(enabled: Optional[bool] = None,
     if enabled is not None:
         r = await v.request({"cmd": "setCollision", "enabled": bool(enabled)}, "state")
         out["collisionEnabled"] = r.get("collisionEnabled")
+        if enabled:
+            # The first checking pass has not run yet. Returning before it
+            # lands leaves the next get_collisions reporting an empty list,
+            # which reads as "all clear" when it only means "not looked yet".
+            await asyncio.sleep(0.6)
     if headless is not None:
         r = await v.request({"cmd": "setCollisionHeadless", "enabled": bool(headless)},
                             "collisionHeadless")
@@ -558,6 +563,10 @@ async def get_collisions() -> str:
     Floor-plane contacts are reported separately from everything else, because
     a scanned room sits permanently in the floor plane and would otherwise
     bury the contacts you care about.
+
+    This reports the last completed checking pass. After moving something,
+    give the checker a moment before reading, or an empty result may mean
+    "not looked yet" rather than "clear".
     """
     r = await viewer().request({"cmd": "getCollisions"}, "collisions")
     pairs = r.get("pairs", [])
