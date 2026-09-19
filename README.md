@@ -46,6 +46,8 @@ New devices can be added from Blender scenes using `import_robot.py` (serial rob
 - **Screenshot** — one-click PNG capture of the WebGL view composited with the control panel overlay
 - **Unified Euler convention** — viewer, WebSocket state, and the Python `GNKinematics` library all report end-effector orientation as the same ZYX Euler triple (α=Rx, β=Ry, γ=Rz), with matching gimbal-lock branches
 - **Remote control API** — two-way WebSocket API for controlling any device from Python or any WebSocket client
+- **MCP server** — exposes the viewer to Claude and other agents as a simulation sandbox for planning and validating experiments
+- **API lockout** — an `API: ON/OFF` button to stop remote clients driving the tab while you work in it
 - **Session routing** — each browser tab gets a unique session ID; controllers can target a specific tab or broadcast to all
 - **Connection info panel** — click the API status indicator (top-left) to see the session ID, connection command, and download `RemoteAPI.zip` (IPython client + `GNKinematics` library + robot definitions)
 
@@ -345,6 +347,23 @@ Toggle **Headless Collision: ON/OFF** (or `{"cmd": "setCollisionHeadless", "enab
 
 The WebSocket API at `ws://localhost:8080/ws` allows any client to control devices, manage multi-device scenes, manipulate objects, and control the camera in real time. All commands target the active device by default; include `"device": "<name>"` to target a specific device.
 
+### Switching Remote Control Off
+
+The **API: ON/OFF** button in the control panel is a local override: while it is off, the
+viewer refuses every inbound command and replies with an error naming the command that was
+dropped, so a connected client is told it is locked out rather than silently ignored.
+
+```json
+{"type": "error", "error": "Remote control is switched off in the viewer (API: OFF). Command 'setJoints' was not executed.", "apiEnabled": false}
+```
+
+The socket stays connected and the status line reads `API: OFF [ab12cd34]`, so outbound
+state still flows and a controller keeps seeing what the viewer is doing. Local control in
+the tab is unaffected. It defaults to ON, and the setting is per-tab and not persisted —
+a reload returns it to ON.
+
+Use it when you are working in a tab that a script or an MCP agent is also connected to.
+
 ### Session Routing
 
 Each browser tab that connects to the viewer is assigned a unique **session ID** (an 8-character hex string, e.g. `ab12cd34`). The ID is shown in the status bar (`API: connected [ab12cd34]`) and in the connection info panel.
@@ -361,6 +380,56 @@ Active sessions can be listed via the HTTP endpoint:
 GET http://localhost:8080/sessions
 → [{"id": "ab12cd34", "viewers": 1}, ...]
 ```
+
+### MCP Server (agent control)
+
+`mcp_server.py` exposes the viewer to an MCP client — Claude Desktop, Claude Code, or
+any agent runtime — as a **simulation sandbox** for planning experiments across
+physical space (is this pose reachable, does it collide) and measurement space
+(does this scan cover what I need).
+
+```bash
+pip install "mcp>=1.2" websockets numpy       # or: pip install -e ".[mcp]"
+python3 server.py --config meca500_config.json   # viewer must be running, tab open
+claude mcp add robot-vis -- python3 /path/to/mcp_server.py --config meca500_config.json
+```
+
+Options: `--url` (default `ws://localhost:8000/ws`) and `--config` (the device config the
+planner uses). Both also read the environment: `ROBOT_VIS_URL`, `ROBOT_VIS_CONFIG`.
+Use a `?session=` URL to pin the server to one viewer tab.
+
+| Tool | Purpose |
+|------|---------|
+| `list_devices` | Devices, joint names and order — call first |
+| `get_state` | Joints, EE pose, mode, live collisions |
+| `set_joints` / `home` | Move the twin in joint space |
+| `move_to` | Cartesian IK; reports `ikError_mm` and `reachable` |
+| `check_pose` | Verdict on one configuration: limits, self-collision, scene objects |
+| `check_trajectory` | Same, densified across a whole path; names the first failure |
+| `plan_path` | RRT-Connect around the current scene; returns waypoints, runs nothing |
+| `execute_path` | Plays a validated trajectory through the twin; refuses one that collides |
+| `plan_scan` | Expands an axis range into waypoints and validates them |
+| `set_collision` | Live collision checking: master switch, floor-plane checks, headless mode |
+| `get_collisions` | What is in contact now, with floor contacts reported separately |
+| `capture_view` | Renders the scene and returns it as an image |
+| `get_scene` | Devices, imported objects and camera |
+
+Two design decisions worth knowing:
+
+- **Curated, not a bridge.** The WebSocket API has ~55 commands; exposing all of them
+  would fill the model's context with near-indistinguishable choices. These twelve are
+  the verbs experiment planning actually uses.
+- **Nothing here drives hardware.** Every motion tool moves the digital twin, and the
+  simulate/commit line sits at the tool boundary: an agent cannot move a real motor with
+  these tools because no tool here can. A hardware path belongs behind its own server
+  and its own approval step.
+
+Tools return verdicts rather than state dumps — `check_trajectory` answers
+`"J6 Flange collides with Cube"` with the step index, not raw geometry.
+
+To lock an agent out of a tab you are working in, switch off **API: ON/OFF** in the control
+panel (see [Switching Remote Control Off](#switching-remote-control-off)); the tools then
+fail with a message saying remote control is off, rather than moving anything.
 
 ### Interactive Client (IPython)
 
@@ -637,10 +706,13 @@ The `getState` response for hexapod devices includes `platformPose`, `legLengths
 ```json
 {"cmd": "setCollision", "enabled": true}
 {"cmd": "setCollisionHeadless", "enabled": true}
+{"cmd": "setFloorCollision", "enabled": false}
 {"cmd": "getCollisions"}
 ```
 
 `setCollisionHeadless` decouples the checks from the render loop so their rate is not capped by the display refresh — see [Headless Mode](#headless-mode).
+
+`setFloorCollision` toggles the floor-plane check independently of mesh-vs-mesh checking. Turn it off when the scene contains a scanned room or terrain: the scan's floor points lie in the plane, so the whole cloud reports a permanent floor contact that masks every real collision. Floor contacts are reported with `"link": "floor"`, so they can also just be filtered out of `getCollisions`.
 
 **Visualization toggles:**
 ```json
@@ -657,6 +729,15 @@ The `getState` response for hexapod devices includes `platformPose`, `legLengths
 {"cmd": "snapCamera", "view": "front"}
 ```
 Snap views: `+X`, `-X`, `+Y`, `-Y`, `+Z`, `-Z`, `top`, `bottom`, `front`, `back`, `left`, `right`, `iso`.
+
+**Image capture:**
+```json
+{"cmd": "captureImage", "maxWidth": 800}
+→ {"type": "image", "format": "png", "width": 800, "height": 331, "data": "<base64>"}
+```
+Renders one frame and returns it, so a remote client can see the scene without a human
+at the tab. `maxWidth` (64–2048, default 800) bounds the longest edge — a full-resolution
+canvas is megabytes of base64.
 
 **Scene persistence:**
 ```json
@@ -798,6 +879,8 @@ import_robot.py          Blender import script — extracts serial robot armatur
 import_hexapod.py        Blender import script — extracts hexapod (Damped Track legs) to config JSON + GLB
 server.py                WebSocket + HTTP server for remote control API
 robot_ipython.py         IPython remote control client (any device)
+mcp_server.py            MCP server exposing the viewer as a simulation sandbox to agents
+planner.py               RRT-Connect joint-space planner with capsule collision checking
 GNKinematics/            Python forward/inverse kinematics library (matches viewer's ZYX Euler)
 RobotDefinitions.py      Robot DH / geometry parameters for GNKinematics
 RemoteAPI.zip            Bundled client (ipython client + GNKinematics + RobotDefinitions); served from viewer

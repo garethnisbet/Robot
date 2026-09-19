@@ -270,11 +270,15 @@ class RobotPlanner:
         start = np.array(start_deg, dtype=float)
         goal  = np.array(goal_deg,  dtype=float)
 
+        # These respect verbose like every other message here: a library caller
+        # (the MCP server speaks JSON-RPC over stdout) cannot afford stray prints.
         if not self._valid(start):
-            print("  [planner] start config is in collision or out of limits")
+            if verbose:
+                print("  [planner] start config is in collision or out of limits")
             return None
         if not self._valid(goal):
-            print("  [planner] goal config is in collision or out of limits")
+            if verbose:
+                print("  [planner] goal config is in collision or out of limits")
             return None
 
         t0 = time.time()
@@ -495,6 +499,42 @@ class RobotPlanner:
                         return False
 
         return True
+
+    def diagnose(self, q):
+        """Explain why config q is invalid, or return None if it is fine.
+
+        _valid answers yes/no, which is all RRT needs. A caller reporting to a
+        person (or an agent) needs to know which link hit what, so this repeats
+        the same three checks and names the first failure it finds.
+        """
+        q = np.asarray(q, dtype=float)
+        if len(q) != self.n:
+            return f"expected {self.n} joint angles, got {len(q)}"
+
+        for i, (lo, hi) in enumerate(self.limits):
+            if q[i] < lo or q[i] > hi:
+                name = self.joints_cfg[i].get("name", f"joint {i}")
+                return (f"{name} at {q[i]:.2f} deg is outside its limits "
+                        f"[{lo:g}, {hi:g}]")
+
+        capsules = self._make_capsules(fk(self.joints_cfg, q))
+        names = [j.get("name", f"link {i}") for i, j in enumerate(self.joints_cfg)]
+
+        n = len(capsules)
+        for i in range(n):
+            for j in range(i + 2, n):
+                if capsules_collide(capsules[i], capsules[j]):
+                    return f"self-collision between {names[i]} and {names[j]}"
+
+        for i, cap in enumerate(capsules):
+            for obs in self.obstacles:
+                hit = (capsule_aabb_collide(cap, obs)
+                       if isinstance(obs, AABBObstacle)
+                       else capsule_sphere_collide(cap, obs.centre, obs.radius))
+                if hit:
+                    return f"{names[i]} collides with {obs.name or 'obstacle'}"
+
+        return None
 
     def _make_capsules(self, frames):
         """Build one capsule per link from FK frames."""

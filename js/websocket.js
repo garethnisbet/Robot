@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import * as State from './state.js';
 import {
-  updateFK, getEEWorldPosition, getEEWorldQuaternion, clampJoints,
+  updateFK, getEEWorldPosition, getEEWorldQuaternion, clampJoints, solveIK,
   kappaToEuler, eulerToKappa, getCompensation, updateVirtualAngles,
   updateChain, pyEulerFromRelQuat, relQuatFromPyEuler,
 } from './kinematics.js';
@@ -95,7 +95,8 @@ export function wsSetStatus(state) {
   const wsText = document.getElementById('ws-text');
   wsDot.className = 'dot ' + (state === 'on' ? 'on' : state === 'err' ? 'err' : 'off');
   const sid = getSessionId();
-  wsText.textContent = state === 'on'  ? `API: connected [${sid}]` :
+  wsText.textContent = state === 'on'  ? (_apiEnabled ? `API: connected [${sid}]`
+                                                        : `API: OFF [${sid}]`) :
                         state === 'err' ? 'API: error' : 'API: not connected';
 }
 
@@ -282,6 +283,26 @@ export function applyIKTarget(dev, data) {
 }
 
 // ============================================================
+// settleIK — drive the IK solver to convergence right now
+//
+// Normally solveIK is called once per animation frame, which is fine for a
+// human dragging the gizmo. A WebSocket client gets no such loop: Chrome
+// pauses requestAnimationFrame in a hidden tab, so a remote moveTo would set
+// the target and then never converge. Solving inline here makes the API's
+// answer independent of whether anyone is looking at the tab.
+// ============================================================
+function settleIK(dev, maxIter = 400, tolerance = 0.00005) {
+  if (!dev || dev.type === 'hexapod') return null;
+  let err = null;
+  for (let i = 0; i < maxIter / 10; i++) {
+    err = solveIK(dev, dev.ikTarget.position, dev.ikTargetQuat, 10, tolerance);
+    if (err !== null && err < tolerance) break;
+  }
+  updateSliders(dev);
+  return err;
+}
+
+// ============================================================
 // syncIKAfterFK — helper to update IK target after FK changes
 // ============================================================
 function syncIKAfterFK(dev) {
@@ -369,11 +390,47 @@ function _applyRotation(obj, delta, space) {
 }
 
 // ============================================================
+// API lockout
+//
+// A local override so someone working in the tab can stop a remote client
+// (a script, an MCP agent) from moving things under their hands. Inbound
+// commands are refused while this is off; outbound state still flows, so a
+// controller keeps seeing what the viewer is doing and is told plainly why
+// its command was dropped rather than having it silently ignored.
+// ============================================================
+let _apiEnabled = true;
+
+export function isApiEnabled() {
+  return _apiEnabled;
+}
+
+export function setApiEnabled(on) {
+  _apiEnabled = !!on;
+  const btn = document.getElementById('apiBtn');
+  if (btn) {
+    btn.textContent = `API: ${_apiEnabled ? 'ON' : 'OFF'}`;
+    btn.classList.toggle('active', _apiEnabled);
+  }
+  wsSetStatus(State.ws && State.ws.readyState === WebSocket.OPEN ? 'on' : 'off');
+  return _apiEnabled;
+}
+
+// ============================================================
 // handleCommand
 // ============================================================
 export function handleCommand(data) {
   const cmd = data.cmd;
   if (!cmd) return;
+
+  if (!_apiEnabled) {
+    wsSend({
+      type: 'error',
+      error: `Remote control is switched off in the viewer (API: OFF). `
+           + `Command '${cmd}' was not executed.`,
+      apiEnabled: false,
+    });
+    return;
+  }
 
   const collisionBtn    = document.getElementById('collisionBtn');
   const collisionInfoEl = document.getElementById('collision-info');
@@ -690,12 +747,14 @@ export function handleCommand(data) {
   } else if (cmd === 'setIKTarget') {
     if (!dev) return;
     applyIKTarget(dev, data);
+    if (dev.ikMode) settleIK(dev);
     wsSend(buildState(dev));
 
   } else if (cmd === 'moveTo') {
     if (!dev) return;
     if (!dev.ikMode) setIKMode(dev, true);
     applyIKTarget(dev, data);
+    settleIK(dev);
     wsSend(buildState(dev));
 
   // ── Coordinate transforms ──────────────────────────────────
@@ -752,6 +811,23 @@ export function handleCommand(data) {
     btn.textContent = `Headless: ${on ? 'ON' : 'OFF'}`;
     btn.classList.toggle('active', on);
     wsSend({ type: 'collisionHeadless', enabled: on, collisionEnabled: State.collisionEnabled });
+
+  } else if (cmd === 'setFloorCollision') {
+    // The floor check is a cheap AABB pass against the floor plane, separate
+    // from mesh-vs-mesh. A scanned room is the case that needs it off: its
+    // floor points sit in the plane, so the whole cloud reports a permanent
+    // floor contact that masks everything else.
+    const on = data.enabled !== undefined ? !!data.enabled : !State.floorCollisionEnabled;
+    if (on !== State.floorCollisionEnabled) {
+      State.setFloorCollisionEnabled(on);
+      const btn = document.getElementById('floorCollisionBtn');
+      if (btn) {
+        btn.textContent = `Floor Collision: ${on ? 'ON' : 'OFF'}`;
+        btn.classList.toggle('active', on);
+      }
+      if (!on) clearCollisionHighlights();
+    }
+    wsSend({ type: 'floorCollision', enabled: on, collisionEnabled: State.collisionEnabled });
 
   } else if (cmd === 'getCollisions') {
     wsSend({
@@ -1091,6 +1167,31 @@ export function handleCommand(data) {
       floorSize: State.floorSize,
     });
 
+  } else if (cmd === 'captureImage') {
+    // Render one frame and return it as a base64 PNG, so a remote client
+    // (an MCP agent, a script) can see the scene without a human at the tab.
+    // Downscaled by default: a full-res canvas is megabytes of base64 and the
+    // point here is a readable view, not a print-quality render.
+    const maxW = Math.max(64, Math.min(2048, Number(data.maxWidth) || 800));
+    State.orbitControls.update();
+    State.renderer.render(State.scene, State.activeCamera);
+
+    const glCanvas = State.renderer.domElement;
+    const scale = Math.min(1, maxW / glCanvas.width);
+    const out = document.createElement('canvas');
+    out.width  = Math.round(glCanvas.width  * scale);
+    out.height = Math.round(glCanvas.height * scale);
+    const ctx = out.getContext('2d');
+    ctx.drawImage(glCanvas, 0, 0, out.width, out.height);
+
+    wsSend({
+      type: 'image',
+      format: 'png',
+      width: out.width,
+      height: out.height,
+      data: out.toDataURL('image/png').split(',')[1],
+    });
+
   } else if (cmd === 'saveScene') {
     // Trigger browser download of scene JSON file
     exportSceneState();
@@ -1161,6 +1262,8 @@ export function handleCommand(data) {
         getCamera:        { params: '', description: 'Get camera position and target (mm)' },
         setCamera:        { params: 'position?, target?', description: 'Set camera position and/or target (mm)' },
         snapCamera:       { params: 'view', description: 'Snap to axis view (+X,-X,+Y,-Y,+Z,-Z,top,bottom,front,back,left,right,iso)' },
+        captureImage:     { params: 'maxWidth?', description: 'Render one frame and return it as a base64 PNG' },
+        setFloorCollision:{ params: 'enabled?', description: 'Toggle floor-plane collision checks' },
         // Scene
         getSceneState:    { params: '', description: 'Get full scene state (devices, objects, camera)' },
         getStats:         { params: 'frames?, device?, transparency?', description: 'Benchmark frame time (blocks the viewer while it runs)' },

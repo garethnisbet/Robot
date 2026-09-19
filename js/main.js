@@ -58,6 +58,7 @@ import {
 import { initVR, updateVR } from './vr.js';
 import {
   wsConnect, initWsInfoPanel, registerSetActiveDevice, registerAvailableConfigs,
+  setApiEnabled, isApiEnabled,
 } from './websocket.js';
 
 // Register callbacks for websocket.js
@@ -948,6 +949,11 @@ headlessCollisionBtn.addEventListener('click', () => {
   headlessCollisionBtn.textContent = `Headless: ${on ? 'ON' : 'OFF'}`;
   headlessCollisionBtn.classList.toggle('active', on);
 });
+
+// Remote-control lockout — defaults to ON so existing setups are unchanged
+const apiBtn = document.getElementById('apiBtn');
+apiBtn.classList.add('active');
+apiBtn.addEventListener('click', () => setApiEnabled(!isApiEnabled()));
 
 // Mesh-select toggle
 const stlSelectBtn = document.getElementById('stlSelectBtn');
