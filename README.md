@@ -417,7 +417,7 @@ Use a `?session=` URL to pin the server to one viewer tab.
 Two design decisions worth knowing:
 
 - **Curated, not a bridge.** The WebSocket API has ~55 commands; exposing all of them
-  would fill the model's context with near-indistinguishable choices. These twelve are
+  would fill the model's context with near-indistinguishable choices. These fourteen are
   the verbs experiment planning actually uses.
 - **Nothing here drives hardware.** Every motion tool moves the digital twin, and the
   simulate/commit line sits at the tool boundary: an agent cannot move a real motor with
@@ -430,6 +430,29 @@ Tools return verdicts rather than state dumps — `check_trajectory` answers
 To lock an agent out of a tab you are working in, switch off **API: ON/OFF** in the control
 panel (see [Switching Remote Control Off](#switching-remote-control-off)); the tools then
 fail with a message saying remote control is off, rather than moving anything.
+
+#### Reading collisions without being lied to
+
+`get_collisions` reports the **last completed checking pass**, so an empty result can mean
+"nothing has been checked yet" rather than "nothing is touching". The distinction matters:
+for a tool whose job is to answer *is this safe*, those two look identical and only one of
+them is good news.
+
+Two places that bites, and what to do about each:
+
+- **Straight after enabling.** The first pass has not run. `set_collision` therefore waits
+  for it before returning, so a read immediately afterwards is real. This was a live bug:
+  enabling checks with the arm already touching a wall reported no contacts at all.
+- **Straight after moving.** Nothing waits for you here. Give the checker a moment between
+  moving the device and reading the result, or you will get the pass from before the move.
+  Around 0.5 s is comfortable when the tab is visible.
+
+For unattended use, `set_collision(headless=True)` takes the checks off the render loop —
+otherwise they stop entirely while the browser tab is hidden, because `requestAnimationFrame`
+is suspended there and the result you keep reading back is frozen at whatever it last
+computed. Note that this reduces the exposure rather than removing it: a hidden tab also has
+its timers throttled, so the checks continue at a much lower rate and a hidden tab wants a
+correspondingly longer settle before each read.
 
 ### Interactive Client (IPython)
 
