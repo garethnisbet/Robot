@@ -186,11 +186,19 @@ async def sessions_handler(request):
 
 @web.middleware
 async def cross_origin_isolation_mw(request, handler):
-    """Add COOP/COEP headers so the page is cross-origin isolated.
+    """Add COOP/COEP headers so the page is cross-origin isolated, and
+    force every response to be revalidated before it is reused.
 
-    This makes SharedArrayBuffer available, which lets the Gaussian-splat
+    Isolation makes SharedArrayBuffer available, which lets the Gaussian-splat
     viewer run its depth sort zero-copy in a worker (big win on mobile/VR).
     All assets here are same-origin, so isolation does not break any loads.
+
+    The static route sends Last-Modified but no freshness information, which
+    leaves the browser free to guess one: a module edited hours ago looks
+    fresh for a long while, so a reload can quietly keep running yesterday's
+    code while the server serves today's. "no-cache" does not disable the
+    cache -- it keeps the stored copy and requires a conditional request
+    first, so an unchanged file still costs only a 304.
     """
     resp = await handler(request)
     # The WebSocket upgrade response is already sent during handler execution;
@@ -199,6 +207,7 @@ async def cross_origin_isolation_mw(request, handler):
         resp.headers["Cross-Origin-Opener-Policy"] = "same-origin"
         resp.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
         resp.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        resp.headers.setdefault("Cache-Control", "no-cache")
     return resp
 
 
