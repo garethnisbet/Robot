@@ -92,6 +92,10 @@ function clampInt(v, n) {
 const _m  = new Float64Array(16);   // pc local -> mesh local
 const _b  = new Float64Array(16);   // mesh local -> pc local
 const _t  = new Float64Array(16);   // scratch
+// Reused hit record. closestPointToPoint fills .point on first use and
+// copies into it afterwards, so this costs one allocation, not one per
+// point tested.
+const _hit = {};
 
 export function pointCloudIntersectsMesh(grid, pcMatrix, meshMatrix, meshBox, bvh, point,
                                          threshold = POINT_CLOUD_COLLISION_THRESHOLD) {
@@ -161,7 +165,15 @@ export function pointCloudIntersectsMesh(grid, pcMatrix, meshMatrix, meshBox, bv
         const lz = _m[2]*sx + _m[6]*sy + _m[10]*sz + _m[14];
         if (lz < pz0 || lz > pz1) continue;
         point.set(lx, ly, lz);
-        if (bvh.closestPointToPoint(point, {}, 0, meshThr)) return true;
+        // maxThreshold cannot be trusted to reject on its own: it is
+        // enforced in the bounds test, which shapecast only runs while
+        // descending into children. A mesh small enough that the BVH
+        // root is itself a leaf (a 12-triangle box) has every triangle
+        // tested unconditionally and returns a hit at any distance, so
+        // the point-cloud test would fall back to the padded-AABB test
+        // above. Measure the distance instead.
+        const hit = bvh.closestPointToPoint(point, _hit, 0, meshThr);
+        if (hit && hit.distance <= meshThr) return true;
       }
     }
   }
