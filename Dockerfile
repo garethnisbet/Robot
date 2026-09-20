@@ -6,8 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm && \
 
 WORKDIR /app
 
-COPY package.json ./
-RUN npm install --omit=dev
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 
 RUN pip install uv && \
     uv venv /app/.venv && \
@@ -23,7 +23,7 @@ COPY --from=build /app/node_modules ./node_modules/
 
 COPY server.py robot_ipython.py RemoteAPI.zip threejs_scene.html viewer.css *.glb ./
 COPY js/ ./js/
-COPY *.json ./
+COPY *_config.json ./
 
 RUN echo "=== Files in /app ===" && ls -lh /app && \
     echo "=== Verifying Python ===" && \
