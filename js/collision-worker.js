@@ -1,7 +1,8 @@
 // ============================================================
 // js/collision-worker.js — offloaded collision detection
 // Runs BVH intersection tests in a background thread.
-// Imports Three.js + three-mesh-bvh from esm.sh (self-contained).
+// Imports Three.js + three-mesh-bvh from esm.sh (self-contained); keep the
+// pinned versions in step with package.json.
 // ============================================================
 
 import { buildPointGrid, pointCloudIntersectsMesh,
@@ -26,7 +27,7 @@ const POINT_CLOUD_THRESHOLD = POINT_CLOUD_COLLISION_THRESHOLD;
 async function init() {
   try {
     THREE = await import('https://esm.sh/three@0.168.0');
-    const bvh = await import('https://esm.sh/three-mesh-bvh@0.7.8?deps=three@0.168.0');
+    const bvh = await import('https://esm.sh/three-mesh-bvh@0.8.0?deps=three@0.168.0');
 
     THREE.BufferGeometry.prototype.computeBoundsTree  = bvh.computeBoundsTree;
     THREE.BufferGeometry.prototype.disposeBoundsTree   = bvh.disposeBoundsTree;
