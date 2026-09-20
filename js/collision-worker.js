@@ -1,8 +1,9 @@
 // ============================================================
 // js/collision-worker.js — offloaded collision detection
 // Runs BVH intersection tests in a background thread.
-// Imports Three.js + three-mesh-bvh from esm.sh (self-contained); keep the
-// pinned versions in step with package.json.
+// Imports Three.js + three-mesh-bvh from the locally served node_modules, so
+// the viewer needs no outbound network and the versions are the ones
+// package-lock.json pins for the main thread.
 // ============================================================
 
 import { buildPointGrid, pointCloudIntersectsMesh,
@@ -22,12 +23,39 @@ let _corners;
 const POINT_CLOUD_THRESHOLD = POINT_CLOUD_COLLISION_THRESHOLD;
 
 // ============================================================
-// Initialisation — dynamic import from esm.sh
+// Initialisation — dynamic import from /node_modules
 // ============================================================
+
+// Fully qualified, because the patched blob module below cannot resolve a
+// root-relative path against a blob: base.
+const THREE_URL = new URL('/node_modules/three/build/three.module.js', self.location.href).href;
+const BVH_URL   = new URL('/node_modules/three-mesh-bvh/build/index.module.js', self.location.href).href;
+
+// Import maps do not apply inside workers, so three-mesh-bvh's bare `three`
+// specifier cannot resolve here. Rewrite it to the same absolute URL the
+// worker imports Three.js from — module identity is keyed on the resolved
+// URL, so both end up sharing one Three.js instance.
+async function importBVH() {
+  const src = await fetch(BVH_URL).then(r => {
+    if (!r.ok) throw new Error(`${BVH_URL} → HTTP ${r.status}`);
+    return r.text();
+  });
+  const patched = src
+    .replace(/(\bfrom\s*)(['"])three\2/g, `$1'${THREE_URL}'`)
+    // the source map sits next to BVH_URL, not next to the blob
+    .replace(/\/\/#\s*sourceMappingURL=.*$/m, '');
+  const url = URL.createObjectURL(new Blob([patched], { type: 'text/javascript' }));
+  try {
+    return await import(url);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 async function init() {
   try {
-    THREE = await import('https://esm.sh/three@0.168.0');
-    const bvh = await import('https://esm.sh/three-mesh-bvh@0.8.0?deps=three@0.168.0');
+    THREE = await import(THREE_URL);
+    const bvh = await importBVH();
 
     THREE.BufferGeometry.prototype.computeBoundsTree  = bvh.computeBoundsTree;
     THREE.BufferGeometry.prototype.disposeBoundsTree   = bvh.disposeBoundsTree;
