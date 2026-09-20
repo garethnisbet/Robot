@@ -265,10 +265,21 @@ export function removeCollisionMesh(mesh) {
 // ============================================================
 // Shared: build extended links + pair context
 // ============================================================
+// Hiding a device clears its root group's `visible` flag and leaves every
+// link mesh's own flag set, so a mesh's own flag says nothing about whether
+// it is really in the scene. Walk up instead: a hidden machine is treated as
+// absent, which also covers an STL parented to one of its links.
+function isEffectivelyVisible(obj) {
+  for (let o = obj; o; o = o.parent) {
+    if (!o.visible) return false;
+  }
+  return true;
+}
+
 function buildCollisionContext() {
-  const visibleSTLs       = State.importedSTLs.filter(e => e.mesh.visible && !e.isPointCloud && !e.isSplat);
-  const visiblePointClouds = State.importedSTLs.filter(e => e.mesh.visible && e.isPointCloud);
-  const visibleSplatClouds = State.importedSTLs.filter(e => e.mesh.visible && e.isSplat && e._collisionPoints);
+  const visibleSTLs       = State.importedSTLs.filter(e => isEffectivelyVisible(e.mesh) && !e.isPointCloud && !e.isSplat);
+  const visiblePointClouds = State.importedSTLs.filter(e => isEffectivelyVisible(e.mesh) && e.isPointCloud);
+  const visibleSplatClouds = State.importedSTLs.filter(e => isEffectivelyVisible(e.mesh) && e.isSplat && e._collisionPoints);
   for (const s of visibleSplatClouds) {
     visiblePointClouds.push({ mesh: s._collisionPoints, name: s.name, parentLink: s.parentLink, isPointCloud: true });
   }
@@ -276,14 +287,18 @@ function buildCollisionContext() {
   const worldSTLs    = visibleSTLs.filter(e => !e.parentLink);
   const parentedSTLs = visibleSTLs.filter(e => e.parentLink);
 
+  // A hidden device drops out entirely. Its links are still enumerated when
+  // it is visible even if they hold no visible mesh of their own, so a
+  // visible STL parented to one of them still finds its link below.
   const allExtendedLinks = [];
   for (const dev of State.devices) {
+    if (!isEffectivelyVisible(dev.rootGroup)) continue;
     for (const link of dev.robotLinkMeshes) {
       allExtendedLinks.push({
         name: link.name,
         deviceName: dev.name,
         deviceId: dev.id,
-        meshes: [...link.meshes],
+        meshes: link.meshes.filter(isEffectivelyVisible),
         stlEntries: [],
       });
     }
