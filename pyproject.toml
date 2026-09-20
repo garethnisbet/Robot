@@ -1,7 +1,7 @@
 [project]
 name = "robot-visualisation"
 version = "0.1.0"
-description = "Meca500 Robot 3D Visualisation — Three.js WebSocket viewer"
+description = "Interactive 3D visualisation and control for robots and scientific instruments — Three.js viewer with a WebSocket remote API"
 requires-python = ">=3.11"
 dependencies = [
     "aiohttp>=3.9",
@@ -29,6 +29,8 @@ include = [
     "mcp_server.py",
     "planner.py",
     "threejs_scene.html",
-    "robot_scene.glb",
-    "stl_files/**",
+    "viewer.css",
+    "js/**",
+    "*_config.json",
+    "*_scene.glb",
 ]

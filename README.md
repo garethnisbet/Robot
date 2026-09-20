@@ -909,8 +909,13 @@ js/
   stl.js                 Mesh import/export, primitives, duplication, IndexedDB persistence
   collision.js           BVH-accelerated collision detection (Web Worker + main-thread fallback)
   collision-worker.js    Background thread for collision math
+  point-grid.js          Point-cloud sampling grid shared by worker and main thread
+  visbox.js              Visibility/bounding box helpers
+  storage.js             IndexedDB scene persistence
+  vr.js                  WebXR VR interaction (Meta Quest controllers)
   websocket.js           WebSocket client for remote control API
 import_robot.py          Blender import script — extracts serial robot armature to config JSON + GLB
+import_kappa.py          Blender import script — extracts kappa diffractometer rigs to config JSON + GLB
 import_hexapod.py        Blender import script — extracts hexapod (Damped Track legs) to config JSON + GLB
 server.py                WebSocket + HTTP server for remote control API
 robot_ipython.py         IPython remote control client (any device)
@@ -925,12 +930,18 @@ i19_config.json          i19 kappa diffractometer device config
 gp225_config.json        Yaskawa GP225 device config
 gp280_config.json        Yaskawa GP280 device config
 gp180_config.json        Yaskawa GP180-120 device config
-robot_scene.glb          Meca500 GLB model
+gp250_config.json        Yaskawa GP250 device config
+gp50_config.json         Yaskawa GP50 device config
+motomini_config.json     Yaskawa MotoMini device config
+meca500_scene.glb        Meca500 GLB model
 i16_scene.glb            i16 diffractometer GLB model
 i19_scene.glb            i19 kappa diffractometer GLB model
 gp225_scene.glb          Yaskawa GP225 GLB model
 gp280_scene.glb          Yaskawa GP280 GLB model
 gp180_scene.glb          Yaskawa GP180-120 GLB model
+gp250_scene.glb          Yaskawa GP250 GLB model
+gp50_scene.glb           Yaskawa GP50 GLB model
+motomini_scene.glb       Yaskawa MotoMini GLB model
 hexapod_config.json      Hexapod Stewart platform device config
 hexapod_scene.glb        Hexapod GLB model
 Dockerfile               Multi-stage container build
