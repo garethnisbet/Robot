@@ -52,7 +52,7 @@ export function clearCollisionHighlights() {
   // Force a full refresh of highlights/panel next time a result arrives.
   _lastCollisionSig = null;
   _lastSceneHash    = NaN;
-  infoPanel();
+  if (!infoPanel()) return;   // no page (headless)
   _infoEl.classList.remove('hit');
   _textEl.textContent  = 'none';
   _pairsEl.textContent = '';
@@ -81,11 +81,17 @@ function _highlightObject(obj) {
 // ============================================================
 let _lastCollisionSig = null;
 
-function publishCollisions(list) {
+// Make a result the standing one: State.lastCollisions plus the freshness
+// bookkeeping getCollisions reports. No page involved.
+function recordCollisions(list) {
   State.setLastCollisions(list);
   _passes++;
   _verifiedAt = performance.now();
   _publishedHash = _inFlightHash;
+}
+
+function publishCollisions(list) {
+  recordCollisions(list);
 
   let sig = '';
   for (const c of list) sig += c.linkName + '↔' + c.stlName + ';';
@@ -324,44 +330,28 @@ function meshDisplayName(link, mesh) {
   return State.devices.length > 1 ? `${link.deviceName}:${link.name}` : link.name;
 }
 
-// ============================================================
-// Worker path: build pairs & send to worker
-// ============================================================
-// Returns true when a request was posted to the worker (so its 'results'
-// message will drive the next headless step), false when it completed
-// synchronously because there was nothing to test.
-function checkCollisionsOffThread(ctx) {
+// Every pair a pass tests, in one place so the worker path and the
+// synchronous path (main-thread fallback, headless engine) cannot drift
+// apart. visit(kind, meshA, meshB, nameA, nameB) is called once per
+// distinct mesh pair; kind is 'mesh' or 'pointCloud' (meshA is the cloud).
+function forEachCollisionPair(ctx, visit) {
   const { worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks } = ctx;
+  const seen = new Set();
 
-  const matrices  = {};
-  const meshPairs = [];
-  const pcPairs   = [];
-  const hitPairs  = new Set();
-
-  function collectMatrix(mesh) {
-    if (!matrices[mesh.uuid]) {
-      matrices[mesh.uuid] = Array.from(mesh.matrixWorld.elements);
-    }
-    ensureMeshInWorker(mesh);
-  }
-
-  function addPair(target, meshA, meshB, nameA, nameB) {
+  function pair(kind, meshA, meshB, nameA, nameB) {
     const key = meshA.uuid < meshB.uuid
       ? meshA.uuid + '|' + meshB.uuid
       : meshB.uuid + '|' + meshA.uuid;
-    if (hitPairs.has(key)) return;
-    hitPairs.add(key);
-    collectMatrix(meshA);
-    collectMatrix(meshB);
-    target.push([meshA.uuid, meshB.uuid, nameA, nameB]);
+    if (seen.has(key)) return;
+    seen.add(key);
+    visit(kind, meshA, meshB, nameA, nameB);
   }
 
   // 1) World STLs vs all device links
   for (const stlEntry of worldSTLs) {
     for (const link of allExtendedLinks) {
       for (const robotMesh of link.meshes) {
-        const displayName = meshDisplayName(link, robotMesh);
-        addPair(meshPairs, stlEntry.mesh, robotMesh, displayName, stlEntry.name);
+        pair('mesh', stlEntry.mesh, robotMesh, meshDisplayName(link, robotMesh), stlEntry.name);
       }
     }
   }
@@ -372,8 +362,7 @@ function checkCollisionsOffThread(ctx) {
     for (const link of allExtendedLinks) {
       if (link.deviceId === (stlDev ? stlDev.id : null) && link.name === stlLinkName) continue;
       for (const robotMesh of link.meshes) {
-        const displayName = meshDisplayName(link, robotMesh);
-        addPair(meshPairs, stl.mesh, robotMesh, displayName, stl.name);
+        pair('mesh', stl.mesh, robotMesh, meshDisplayName(link, robotMesh), stl.name);
       }
     }
   }
@@ -382,13 +371,12 @@ function checkCollisionsOffThread(ctx) {
   for (const pc of visiblePointClouds) {
     for (const link of allExtendedLinks) {
       for (const robotMesh of link.meshes) {
-        const displayName = meshDisplayName(link, robotMesh);
-        addPair(pcPairs, pc.mesh, robotMesh, displayName, pc.name);
+        pair('pointCloud', pc.mesh, robotMesh, meshDisplayName(link, robotMesh), pc.name);
       }
     }
   }
 
-  // 4) Link vs link (self-collision + cross-device)
+  // 4) Link vs link (self-collision within same device + cross-device)
   for (let i = 0; i < allExtendedLinks.length; i++) {
     for (let j = i + 1; j < allExtendedLinks.length; j++) {
       const linkA = allExtendedLinks[i];
@@ -401,12 +389,38 @@ function checkCollisionsOffThread(ctx) {
       for (const meshA of linkA.meshes) {
         const nameA = meshDisplayName(linkA, meshA);
         for (const meshB of linkB.meshes) {
-          const nameB = meshDisplayName(linkB, meshB);
-          addPair(meshPairs, meshA, meshB, nameA, nameB);
+          pair('mesh', meshA, meshB, nameA, meshDisplayName(linkB, meshB));
         }
       }
     }
   }
+}
+
+// ============================================================
+// Worker path: build pairs & send to worker
+// ============================================================
+// Returns true when a request was posted to the worker (so its 'results'
+// message will drive the next headless step), false when it completed
+// synchronously because there was nothing to test.
+function checkCollisionsOffThread(ctx) {
+  const { worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks } = ctx;
+
+  const matrices  = {};
+  const meshPairs = [];
+  const pcPairs   = [];
+
+  function collectMatrix(mesh) {
+    if (!matrices[mesh.uuid]) {
+      matrices[mesh.uuid] = Array.from(mesh.matrixWorld.elements);
+    }
+    ensureMeshInWorker(mesh);
+  }
+
+  forEachCollisionPair(ctx, (kind, meshA, meshB, nameA, nameB) => {
+    collectMatrix(meshA);
+    collectMatrix(meshB);
+    (kind === 'pointCloud' ? pcPairs : meshPairs).push([meshA.uuid, meshB.uuid, nameA, nameB]);
+  });
 
   // Collect floor collisions synchronously (cheap AABB check, no worker needed)
   _pendingFloorCollisions = State.floorCollisionEnabled
@@ -544,7 +558,10 @@ function collectFloorCollisions(worldSTLs, parentedSTLs, visiblePointClouds, all
   return results;
 }
 
-function checkCollisionsMainThread(ctx) {
+// The whole check, synchronously: every pair from forEachCollisionPair,
+// then the floor. Returns [{ linkName, stlName, meshA, meshB }], one entry
+// per distinct pair of names.
+export function findCollisions(ctx = buildCollisionContext()) {
   const { worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks } = ctx;
 
   const collisions = [];
@@ -557,74 +574,38 @@ function checkCollisionsMainThread(ctx) {
     collisions.push({ linkName: nameA, stlName: nameB, meshA, meshB });
   }
 
-  // 1) World STLs vs all device links
-  for (const stlEntry of worldSTLs) {
-    for (const link of allExtendedLinks) {
-      for (const robotMesh of link.meshes) {
-        const displayName = meshDisplayName(link, robotMesh);
-        if (testMeshPairCollision(stlEntry.mesh, robotMesh)) {
-          addCollision(displayName, stlEntry.name, stlEntry.mesh, robotMesh);
-        }
-      }
-    }
-  }
+  forEachCollisionPair(ctx, (kind, meshA, meshB, nameA, nameB) => {
+    const hit = kind === 'pointCloud'
+      ? testPointCloudCollision(meshA, meshB)
+      : testMeshPairCollision(meshA, meshB);
+    if (hit) addCollision(nameA, nameB, meshA, meshB);
+  });
 
-  // 2) Parented STLs vs other links
-  for (const stl of parentedSTLs) {
-    const { dev: stlDev, linkName: stlLinkName } = resolveParentLink(stl.parentLink);
-    for (const link of allExtendedLinks) {
-      if (link.deviceId === (stlDev ? stlDev.id : null) && link.name === stlLinkName) continue;
-      for (const robotMesh of link.meshes) {
-        const displayName = meshDisplayName(link, robotMesh);
-        if (testMeshPairCollision(stl.mesh, robotMesh)) {
-          addCollision(displayName, stl.name, stl.mesh, robotMesh);
-        }
-      }
-    }
-  }
-
-  // 3) Point clouds vs all device links
-  for (const pc of visiblePointClouds) {
-    for (const link of allExtendedLinks) {
-      for (const robotMesh of link.meshes) {
-        const displayName = meshDisplayName(link, robotMesh);
-        if (testPointCloudCollision(pc.mesh, robotMesh)) {
-          addCollision(displayName, pc.name, pc.mesh, robotMesh);
-        }
-      }
-    }
-  }
-
-  // 4) Link vs link (self-collision within same device + cross-device)
-  for (let i = 0; i < allExtendedLinks.length; i++) {
-    for (let j = i + 1; j < allExtendedLinks.length; j++) {
-      const linkA = allExtendedLinks[i];
-      const linkB = allExtendedLinks[j];
-      if (linkA.deviceId === linkB.deviceId) {
-        const dev = State.devices.find(d => d.id === linkA.deviceId);
-        if (dev && dev.type === 'hexapod') continue;
-        if (dev && dev.adjPairs.has([linkA.name, linkB.name].sort().join('|'))) continue;
-      }
-      for (const meshA of linkA.meshes) {
-        const nameA = meshDisplayName(linkA, meshA);
-        for (const meshB of linkB.meshes) {
-          const nameB = meshDisplayName(linkB, meshB);
-          if (testMeshPairCollision(meshA, meshB)) {
-            addCollision(nameA, nameB, meshA, meshB);
-          }
-        }
-      }
-    }
-  }
-
-  // 5) Floor collisions (imported objects + robot links below y=0)
+  // Floor collisions (imported objects + robot links below y=0)
   if (State.floorCollisionEnabled) {
     for (const fc of collectFloorCollisions(worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks)) {
       addCollision('floor', fc.name, fc.mesh, null);
     }
   }
 
-  publishCollisions(collisions);
+  return collisions;
+}
+
+function checkCollisionsMainThread(ctx) {
+  publishCollisions(findCollisions(ctx));
+}
+
+// A synchronous pass for callers with no page (the headless engine):
+// brings world matrices up to date, runs findCollisions and records the
+// result where getCollisions and getState read it, freshness included.
+export function checkCollisionsNow() {
+  State.scene.updateMatrixWorld();
+  const ctx = buildCollisionContext();
+  _inFlightHash = contextFingerprint(ctx);
+  _lastSceneHash = _inFlightHash;
+  const list = findCollisions(ctx);
+  recordCollisions(list);
+  return list;
 }
 
 // ============================================================

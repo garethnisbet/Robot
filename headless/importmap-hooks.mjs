@@ -1,11 +1,12 @@
 // Node module-resolution hooks that apply the browser import map from
-// threejs_scene.html, so tests import the very same modules the page does.
+// threejs_scene.html, so Node (tests, the headless engine) imports the very
+// same modules the page does.
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const html = readFileSync(path.join(root, 'threejs_scene.html'), 'utf8');
 const { imports } = JSON.parse(html.match(/<script type="importmap">([\s\S]*?)<\/script>/)[1]);
 

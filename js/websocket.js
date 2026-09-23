@@ -230,7 +230,7 @@ export function buildObjectInfo(entry, index) {
 // ============================================================
 // buildDeviceInfo
 // ============================================================
-function buildDeviceInfo(dev) {
+export function buildDeviceInfo(dev) {
   const rg = dev.rootGroup;
   rg.updateWorldMatrix(true, false);
   rg.getWorldPosition(_objWorldPos);
@@ -797,9 +797,11 @@ export function handleCommand(data) {
       State.setCollisionEnabled(on);
       const collisionBtn    = document.getElementById('collisionBtn');
       const collisionInfoEl = document.getElementById('collision-info');
-      collisionBtn.textContent = `Collision: ${on ? 'ON' : 'OFF'}`;
-      collisionBtn.classList.toggle('active', on);
-      collisionInfoEl.style.display = on ? 'block' : 'none';
+      if (collisionBtn) {
+        collisionBtn.textContent = `Collision: ${on ? 'ON' : 'OFF'}`;
+        collisionBtn.classList.toggle('active', on);
+      }
+      if (collisionInfoEl) collisionInfoEl.style.display = on ? 'block' : 'none';
       if (!on) clearCollisionHighlights();
       updateCollisionLoop();
     }

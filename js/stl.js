@@ -390,6 +390,30 @@ async function _pickSourceFiles(expectedNames) {
   return map;
 }
 
+// Geometry of a saved mesh object, parsed the way a scene restore does it.
+// Point clouds and splats are not meshes and are handled separately.
+export async function parseMeshGeometry(buffer, fileType) {
+  if (fileType === 'stl') {
+    const geometry = stlLoader.parse(buffer);
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+  if (fileType === 'ply') {
+    const geometry = plyLoader.parse(buffer);
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+  if (fileType === 'obj') {
+    return _mergeObject3D(objLoader.parse(new TextDecoder().decode(buffer)));
+  }
+  if (fileType === 'glb') {
+    const gltf = await new Promise((resolve, reject) =>
+      gltfImportLoader.parse(buffer, '', resolve, reject));
+    return _mergeObject3D(gltf.scene);
+  }
+  throw new Error(`not a mesh file type: ${fileType}`);
+}
+
 export async function restoreSTLsFromState(records) {
   console.log('[Load Scene v3] Restoring', records.length, 'objects — two-phase restore');
 
@@ -463,7 +487,7 @@ export async function restoreSTLsFromState(records) {
     const fileType = rec.fileType || 'stl';
     const srcName = rec.sourceFile || rec.splatFile || null;
     if (fileType === 'stl') {
-      entry = createSTLFromBuffer(buffer, rec.name, rec.color, rec.id, null);
+      entry = _addMeshToScene(await parseMeshGeometry(buffer, 'stl'), buffer, 'stl', rec.name, rec.color, rec.id, null);
     } else if (fileType === 'ply' && (rec.isSplat || _isPLYGaussianSplat(buffer))) {
       entry = _addSplatToScene(buffer, 'ply', rec.name, rec.color, rec.id, null, srcName);
     } else if (fileType === 'ply') {
@@ -471,20 +495,13 @@ export async function restoreSTLsFromState(records) {
       if (rec.isPointCloud || _isPLYPointCloud(buffer)) {
         entry = _addPointsToScene(geometry, buffer, rec.name, rec.color, rec.id, null, srcName);
       } else {
-        geometry.computeVertexNormals();
-        entry = _addMeshToScene(geometry, buffer, 'ply', rec.name, rec.color, rec.id, null);
+        entry = _addMeshToScene(await parseMeshGeometry(buffer, 'ply'), buffer, 'ply', rec.name, rec.color, rec.id, null);
       }
     } else if (fileType === 'obj') {
-      const objText = new TextDecoder().decode(buffer);
-      const group = objLoader.parse(objText);
-      const geometry = _mergeObject3D(group);
-      entry = _addMeshToScene(geometry, buffer, 'obj', rec.name, rec.color, rec.id, null);
+      entry = _addMeshToScene(await parseMeshGeometry(buffer, 'obj'), buffer, 'obj', rec.name, rec.color, rec.id, null);
     } else if (fileType === 'glb') {
       try {
-        const gltf = await new Promise((resolve, reject) =>
-          gltfImportLoader.parse(buffer, '', resolve, reject));
-        const geometry = _mergeObject3D(gltf.scene);
-        entry = _addMeshToScene(geometry, buffer, 'glb', rec.name, rec.color, rec.id, null);
+        entry = _addMeshToScene(await parseMeshGeometry(buffer, 'glb'), buffer, 'glb', rec.name, rec.color, rec.id, null);
       } catch (e) {
         console.warn('Failed to restore GLB mesh:', rec.name, e);
       }
@@ -498,45 +515,52 @@ export async function restoreSTLsFromState(records) {
   console.log('[Load Scene v3] Phase 2: applying transforms & parents');
   for (const { rec, entry } of created) {
     if (!entry) continue;
+    applySavedObjectState(entry, rec);
     const m = entry.mesh;
-
-    // Apply saved transforms
-    if (rec.position) m.position.set(rec.position[0], rec.position[1], rec.position[2]);
-    if (rec.rotation) m.rotation.set(rec.rotation[0], rec.rotation[1], rec.rotation[2]);
-    if (rec.scale)    m.scale.set(rec.scale[0], rec.scale[1], rec.scale[2]);
-    if (rec.visible !== undefined) {
-      m.visible = rec.visible;
-      syncSTLVisibility(entry);
-    }
-    if (rec.opacity !== undefined && !entry.isSplat) {
-      m.material.opacity = rec.opacity;
-      entry.opacity = rec.opacity;
-    }
-    // Splats apply opacity/tint through shader uniforms (no material.opacity),
-    // so restore them onto the entry; updateSplatClip() pushes them each frame.
-    if (entry.isSplat) {
-      if (rec.opacity !== undefined) entry.opacity = rec.opacity;
-      if (rec.splatTint !== undefined) entry._splatTint = rec.splatTint;
-    }
-    if (entry.isPointCloud) {
-      if (rec.pointSize !== undefined) entry.pointSize = rec.pointSize;
-      // Older saves stored a boolean roundPoints instead of pointShape.
-      entry.pointShape = rec.pointShape ?? (rec.roundPoints ? 'round' : 'square');
-      applyPointCloudSettings(entry);
-    }
-
-    // Apply parent link
-    const resolvedParent = _parentLinkFromStable(rec.parentLink);
-    if (resolvedParent) {
-      setSTLParent(entry, resolvedParent, true);
-    }
-
     console.log('[Restore]', rec.name,
       'pos:', [m.position.x.toFixed(4), m.position.y.toFixed(4), m.position.z.toFixed(4)],
       'rot:', [m.rotation.x.toFixed(4), m.rotation.y.toFixed(4), m.rotation.z.toFixed(4)],
       'scale:', [m.scale.x.toFixed(4), m.scale.y.toFixed(4), m.scale.z.toFixed(4)],
       'parent:', entry.parentLink,
       'meshParent:', m.parent?.name || 'Scene');
+  }
+}
+
+// Apply one saved object record (transforms, visibility, appearance,
+// parent link) to an entry created without transforms. The second phase of
+// a scene restore; the headless engine loads scenes through it too.
+export function applySavedObjectState(entry, rec) {
+  const m = entry.mesh;
+
+  // Apply saved transforms
+  if (rec.position) m.position.set(rec.position[0], rec.position[1], rec.position[2]);
+  if (rec.rotation) m.rotation.set(rec.rotation[0], rec.rotation[1], rec.rotation[2]);
+  if (rec.scale)    m.scale.set(rec.scale[0], rec.scale[1], rec.scale[2]);
+  if (rec.visible !== undefined) {
+    m.visible = rec.visible;
+    syncSTLVisibility(entry);
+  }
+  if (rec.opacity !== undefined && !entry.isSplat) {
+    m.material.opacity = rec.opacity;
+    entry.opacity = rec.opacity;
+  }
+  // Splats apply opacity/tint through shader uniforms (no material.opacity),
+  // so restore them onto the entry; updateSplatClip() pushes them each frame.
+  if (entry.isSplat) {
+    if (rec.opacity !== undefined) entry.opacity = rec.opacity;
+    if (rec.splatTint !== undefined) entry._splatTint = rec.splatTint;
+  }
+  if (entry.isPointCloud) {
+    if (rec.pointSize !== undefined) entry.pointSize = rec.pointSize;
+    // Older saves stored a boolean roundPoints instead of pointShape.
+    entry.pointShape = rec.pointShape ?? (rec.roundPoints ? 'round' : 'square');
+    applyPointCloudSettings(entry);
+  }
+
+  // Apply parent link
+  const resolvedParent = _parentLinkFromStable(rec.parentLink);
+  if (resolvedParent) {
+    setSTLParent(entry, resolvedParent, true);
   }
 }
 
@@ -723,7 +747,10 @@ export function _addPointsToScene(geometry, buffer, name, color, stlId, transfor
   return entry;
 }
 
-export function _addMeshToScene(geometry, buffer, fileType, name, color, stlId, transforms, zUp = false) {
+// The object itself, with no page attached: mesh, BVH, transforms, and its
+// entry in State.importedSTLs (parented if the transforms say so). Shared
+// by the viewer and the headless engine.
+export function createMeshEntry(geometry, buffer, fileType, name, color, stlId, transforms, zUp = false) {
   geometry.boundsTree = new MeshBVH(geometry);
 
   const hasVertexColors = geometry.hasAttribute('color');
@@ -750,6 +777,20 @@ export function _addMeshToScene(geometry, buffer, fileType, name, color, stlId, 
   }
 
   State.scene.add(mesh);
+  const entry = { mesh, label: null, name, color, opacity: material.opacity, stlId, _buffer: buffer, fileType, parentLink: null, importScale: mesh.scale.clone() };
+  State.importedSTLs.push(entry);
+  State.setStlColorIdx(Math.max(State.stlColorIdx, stlColors.indexOf(color) + 1));
+
+  if (transforms && transforms.parentLink) {
+    setSTLParent(entry, transforms.parentLink, true);
+  }
+  return entry;
+}
+
+export function _addMeshToScene(geometry, buffer, fileType, name, color, stlId, transforms, zUp = false) {
+  const entry = createMeshEntry(geometry, buffer, fileType, name, color, stlId, transforms, zUp);
+  const mesh = entry.mesh;
+
   const box = new THREE.Box3().setFromObject(mesh);
   const div = document.createElement('div');
   div.className = 'mesh-label';
@@ -760,15 +801,9 @@ export function _addMeshToScene(geometry, buffer, fileType, name, color, stlId, 
   mesh.worldToLocal(center);
   label.position.copy(center);
   mesh.add(label);
+  entry.label = label;
 
-  const entry = { mesh, label, name, color, opacity: material.opacity, stlId, _buffer: buffer, fileType, parentLink: null, importScale: mesh.scale.clone() };
-  State.importedSTLs.push(entry);
-  State.setStlColorIdx(Math.max(State.stlColorIdx, stlColors.indexOf(color) + 1));
   addSTLListItem(entry);
-
-  if (transforms && transforms.parentLink) {
-    setSTLParent(entry, transforms.parentLink, true);
-  }
   State.requestRender();
   return entry;
 }
@@ -1334,7 +1369,9 @@ function geometryToSTLBuffer(geometry) {
   return buf;
 }
 
-export function addPrimitive(type) {
+// A primitive as the STL buffer the viewer stores it as (so it saves and
+// restores like any imported mesh), with its default name.
+export function primitiveSTLBuffer(type) {
   const size = 0.05;
   let geometry;
   let name;
@@ -1352,7 +1389,11 @@ export function addPrimitive(type) {
   const buffer = geometryToSTLBuffer(nonIndexed);
   geometry.dispose();
   nonIndexed.dispose();
+  return { buffer, name };
+}
 
+export function addPrimitive(type) {
+  const { buffer, name } = primitiveSTLBuffer(type);
   const color = nextColor();
   const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
   createSTLFromBuffer(buffer, name, color, stlId, null);

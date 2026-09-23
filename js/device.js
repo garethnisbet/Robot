@@ -5,58 +5,20 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
-import { MeshBVH } from 'three-mesh-bvh';
 
 import * as State from './state.js';
 import {
   updateFK, getEEWorldPosition, getEEWorldQuaternion,
   clampJoints,
-  kappaToEuler, eulerToKappa, getCompensation, updateVirtualAngles,
+  eulerToKappa, getCompensation, updateVirtualAngles,
   pyEulerFromRelQuat,
 } from './kinematics.js';
 import { loadHexapod } from './hexapod.js';
-import { buildChain } from './chain.js';
+import { assembleDevice, attachModel, HIDDEN_NODE_NAMES } from './model.js';
+export { buildAdjacencyPairs } from './model.js';
 
 const deg2rad = Math.PI / 180;
 const rad2deg = 180 / Math.PI;
-
-// ============================================================
-// buildAdjacencyPairs
-// ============================================================
-export function buildAdjacencyPairs(config) {
-  const adjPairs = new Set();
-  function movableAncestor(jointIdx) {
-    let idx = config.joints[jointIdx].parent;
-    while (idx >= 0) {
-      if (!config.joints[idx].fixed) return idx;
-      idx = config.joints[idx].parent;
-    }
-    return -1;
-  }
-  const linksByJoint = {};
-  for (const link of config.links) {
-    if (!linksByJoint[link.joint]) linksByJoint[link.joint] = [];
-    linksByJoint[link.joint].push(link.name);
-  }
-  for (const names of Object.values(linksByJoint)) {
-    for (let a = 0; a < names.length; a++)
-      for (let b = a + 1; b < names.length; b++)
-        adjPairs.add([names[a], names[b]].sort().join('|'));
-  }
-  for (const linkA of config.links) {
-    const ancA = movableAncestor(linkA.joint);
-    for (const linkB of config.links) {
-      if (linkA.name >= linkB.name) continue;
-      const ancB = movableAncestor(linkB.joint);
-      const jA = config.joints[linkA.joint].fixed ? movableAncestor(linkA.joint) : linkA.joint;
-      const jB = config.joints[linkB.joint].fixed ? movableAncestor(linkB.joint) : linkB.joint;
-      if (jA === jB || jA === ancB || jB === ancA) {
-        adjPairs.add([linkA.name, linkB.name].sort().join('|'));
-      }
-    }
-  }
-  return adjPairs;
-}
 
 // ============================================================
 // loadDevice
@@ -68,11 +30,10 @@ export async function loadDevice(configFile) {
   const config = peek;
   const id = State.incrementDeviceId();
 
-  const chain = buildChain(config);
-  const {
-    numJoints, rootGroup, eeMarker, jointLimits, jointRotGroups, linkToJoint,
-    isKappaGeometry, kappaJointIdx,
-  } = chain;
+  // Chain, link bookkeeping and API state come from model.js, shared with
+  // the headless engine; everything below adds only what the page shows.
+  const dev = assembleDevice(config, { id, configFile });
+  const { numJoints, rootGroup, eeMarker, isKappaGeometry } = dev;
   State.scene.add(rootGroup);
 
   // End-effector axes
@@ -122,9 +83,6 @@ export async function loadDevice(configFile) {
   ikTarget.visible = false;
   State.scene.add(ikTarget);
 
-  const ikTargetQuat = new THREE.Quaternion();
-  const ikTargetEuler = new THREE.Euler(0, 0, 0, 'YZX');
-
   const lineGeo = new THREE.BufferGeometry().setFromPoints([
     new THREE.Vector3(), new THREE.Vector3()
   ]);
@@ -155,19 +113,7 @@ export async function loadDevice(configFile) {
     originLabels.push(lbl);
   }
 
-  // Build adjacency for collision detection
-  const adjPairs = buildAdjacencyPairs(config);
-
-  const dev = {
-    ...chain,
-    id,
-    config,
-    configFile,
-    name: config.name,
-    meshLabels: [],
-    robotLinkMeshes: [],
-    staticMeshes: [],
-    opacity: 1,
+  Object.assign(dev, {
     originHelpers,
     originLabels,
     chainVisible: false,
@@ -175,85 +121,33 @@ export async function loadDevice(configFile) {
     chainSpheres,
     chainLineGeo,
     chainPts,
-    ikMode: false,
     ikTarget,
-    ikTargetQuat,
-    ikTargetEuler,
     ikLine,
-    adjPairs,
-    kappaSignPositive: true,
-    parentLink: null,
-    loaded: false,
-  };
+  });
 
   // Load GLB model
   await new Promise((resolve, reject) => {
     const loader = new GLTFLoader();
     loader.load(config.model, (gltf) => {
       const model = gltf.scene;
-      const allNodes = {};
       model.traverse((child) => {
-        if (child.name) allNodes[child.name] = child;
         if (child.isMesh) {
           child.castShadow = true;
           child.receiveShadow = true;
         }
       });
+
+      const allNodes = attachModel(dev, model);
       console.log(`[${config.name}] glTF nodes:`, Object.keys(allNodes));
 
-      const reparented = new Set();
-      for (const [linkName, jointIdx] of Object.entries(linkToJoint)) {
-        const node = allNodes[linkName];
-        if (!node) {
-          console.warn(`${linkName} not found in glTF`);
-          continue;
-        }
-        node.updateWorldMatrix(true, false);
-        const worldMat = node.matrixWorld.clone();
-        node.removeFromParent();
-
-        const target = jointRotGroups[jointIdx];
-        target.updateWorldMatrix(true, false);
-        const localMat = target.matrixWorld.clone().invert().multiply(worldMat);
-
-        node.matrix.copy(localMat);
-        node.matrix.decompose(node.position, node.quaternion, node.scale);
-        target.add(node);
-
-        reparented.add(linkName);
-        node.traverse((c) => { if (c.name) reparented.add(c.name); });
-      }
-
       // Remove hidden objects
-      const hideNames = ['Icosphere', 'Cross'];
       State.scene.traverse((child) => {
-        if (child.name && hideNames.includes(child.name)) {
+        if (child.name && HIDDEN_NODE_NAMES.includes(child.name)) {
           child.removeFromParent();
         }
       });
-      const hiddenNodes = new Set();
-      model.traverse((child) => {
-        if (child.name && hideNames.includes(child.name)) {
-          child.traverse((c) => hiddenNodes.add(c));
-        }
-      });
-      const statics = [];
-      model.traverse((child) => {
-        if (child.isMesh && !reparented.has(child.name) && !hiddenNodes.has(child)) {
-          statics.push(child);
-        }
-      });
-      for (const mesh of statics) {
-        mesh.updateWorldMatrix(true, false);
-        const wm = mesh.matrixWorld.clone();
-        mesh.removeFromParent();
-        rootGroup.add(mesh);
-        mesh.matrix.copy(wm);
-        mesh.matrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
-        dev.staticMeshes.push(mesh);
-      }
 
-      // Create labels and build collision data
+      // Labels
       function createLabel(name, parentObj) {
         const div = document.createElement('div');
         div.className = 'mesh-label';
@@ -268,33 +162,14 @@ export async function loadDevice(configFile) {
         dev.meshLabels.push(label);
       }
 
-      for (const [linkName, jointIdx] of Object.entries(linkToJoint)) {
-        const node = allNodes[linkName];
-        if (node) {
-          createLabel(linkName, node);
-          const meshes = [];
-          node.traverse((c) => {
-            if (c.isMesh) {
-              meshes.push(c);
-              c.geometry.boundsTree = new MeshBVH(c.geometry);
-              c.userData.deviceId = dev.id;
-            }
-          });
-          if (meshes.length > 0) dev.robotLinkMeshes.push({ name: linkName, meshes, jointIdx });
-        }
+      for (const linkName of Object.keys(dev.linkToJoint)) {
+        if (allNodes[linkName]) createLabel(linkName, allNodes[linkName]);
       }
-      for (const mesh of statics) {
+      for (const mesh of dev.staticMeshes) {
         if (mesh.name) createLabel(mesh.name, mesh);
-        mesh.userData.deviceId = dev.id;
       }
 
-      // Kappa chi slider limits
       if (isKappaGeometry) {
-        const kappaLimits = [jointLimits[kappaJointIdx][0] * rad2deg, jointLimits[kappaJointIdx][1] * rad2deg];
-        const chiAtMin = -kappaToEuler(dev, kappaLimits[0]).chi;
-        const chiAtMax = -kappaToEuler(dev, kappaLimits[1]).chi;
-        dev._chiLimits = [Math.min(chiAtMin, chiAtMax), Math.max(chiAtMin, chiAtMax)];
-
         const test90 = eulerToKappa(dev, 90);
         if (test90) {
           const comp90 = getCompensation(dev, test90.kappa);

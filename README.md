@@ -895,6 +895,29 @@ pip install -e '.[test]' && pytest        # Python: client, frame conversions, G
 
 The API tests pass commands to `handleCommand` and read the replies from a fake socket. Some tests compare the viewer's end-effector pose with `GNKinematics` for the same API joints, so a wrong `apiSign` in a config fails them. Known IK gaps are marked `xfail(strict=True)` in `tests/test_gnkinematics.py`. Once the solver is fixed, those tests fail as a reminder to remove the marker.
 
+## Headless Collision Engine
+
+`headless/engine.mjs` runs the viewer's scene and collision checking under Node, with no page. Devices are built by the same modules (`chain.js`, `model.js`), objects by the same `stl.js` functions, and commands go through the viewer's own `handleCommand`. It answers the WebSocket API protocol, so a check headless is the viewer's check.
+
+```js
+// node --import ./headless/register.mjs
+import { createEngine } from './headless/engine.mjs';
+const engine = await createEngine();
+await engine.handle({ cmd: 'addDevice', config: 'meca500_config.json' });
+await engine.handle({ cmd: 'setJoints', angles: [0, 60, 60, 0, 60, 0] });
+const [reply] = await engine.handle({ cmd: 'getCollisions' });   // reply.pairs
+```
+
+It also accepts `{ cmd: 'loadScene', scene }` with a scene saved by the viewer. Not yet supported headless: hexapods, point clouds and splats (a loaded scene lists them in `skipped`), and commands that need the page (camera, capture, labels).
+
+`headless/compare-live.mjs` checks the two agree. It runs the same random poses and object positions against a live viewer and the headless engine and reports any difference. It only runs on a viewer holding one serial device and no objects, and it restores the viewer afterwards. Auto-save is per origin, so use a viewer on its own port to keep your working scene out of it:
+
+```bash
+python3 server.py --port 8094          # then open http://<host>:8094 and note the session ID
+node --experimental-websocket --import ./headless/register.mjs \
+     headless/compare-live.mjs --url 'ws://127.0.0.1:8094/ws?session=<id>' --trials 40
+```
+
 ## Deployment
 
 ### Docker
@@ -923,6 +946,7 @@ js/
   scene.js               Three.js scene setup, cameras, lights, ground, nav gizmo
   device.js              Device loading, GLB import, slider/IK sync
   chain.js               Kinematic chain built from a config alone (no GLB, scene or DOM)
+  model.js               Device assembly shared by the viewer and headless engine (GLB meshes onto the chain)
   hexapod.js             Hexapod loader, Damped Track IK, FK solver, platform sync
   kinematics.js          FK, IK solver, kappa geometry math
   panel.js               Control panel UI, device list, parent dropdowns
@@ -945,6 +969,7 @@ planner.py               RRT-Connect joint-space planner with capsule collision 
 GNKinematics/            Python forward/inverse kinematics library (matches viewer's ZYX Euler)
 RobotDefinitions.py      Robot DH / geometry parameters for GNKinematics
 RemoteAPI.zip            Bundled client (robot_client + ipython shell + GNKinematics + RobotDefinitions); served from viewer
+headless/                The viewer's collision checking without a page (engine.mjs, compare-live.mjs)
 test/js/                 Node tests for the viewer modules (npm test)
 tests/                   pytest tests for the Python client, kinematics and planner
 meca500_config.json      Meca500 R3 device config
