@@ -19,6 +19,7 @@ Library usage:
 import argparse
 import json
 import math
+import os
 import random
 import time
 from dataclasses import dataclass, field
@@ -58,10 +59,10 @@ def qfrom_axis_angle(axis, angle_rad):
 # Forward kinematics  (matches Three.js Object3D hierarchy)
 # ---------------------------------------------------------------------------
 
-def fk(joints_cfg, angles_deg):
+def fk_world(joints_cfg, angles_deg):
     """
-    Compute world-space positions (and orientations) of each movable joint,
-    matching the viewer's chain (js/chain.js) for the same API angles.
+    World pose of every joint in the config, matching the viewer's chain
+    (js/chain.js) for the same API angles.
 
     joints_cfg: the full joint list from the device config JSON, fixed
                 joints included — they carry real offsets and rotations
@@ -69,12 +70,11 @@ def fk(joints_cfg, angles_deg):
     angles_deg: one angle per movable joint, in degrees, in the WebSocket
                 API convention (the viewer multiplies each by its apiSign)
 
-    Returns a list of (position_3d, quaternion_wxyz): frame 0 is the world
-    origin, then one frame per movable joint, in config order.
+    Returns one (position_3d, quaternion_wxyz) per config joint: the frame
+    its link meshes hang in (the viewer's jointRotGroups[i]).
     """
     angles = iter(angles_deg)
-    world = []                                 # (pos, ori) per config joint
-    frames = [(np.zeros(3), np.array([1.0, 0.0, 0.0, 0.0]))]
+    world = []
 
     for i, jcfg in enumerate(joints_cfg):
         parent = jcfg.get("parent", i - 1)
@@ -96,10 +96,23 @@ def fk(joints_cfg, angles_deg):
         ori = qmul(ori, qfrom_axis_angle(axis, math.radians(ang_deg)))
 
         world.append((pos, ori))
+
+    return world
+
+
+def fk(joints_cfg, angles_deg):
+    """
+    Frames of the movable joints: frame 0 is the world origin, then one
+    (position_3d, quaternion_wxyz) per movable joint, in config order.
+    See fk_world for the arguments.
+    """
+    world = fk_world(joints_cfg, angles_deg)
+    frames = [(np.zeros(3), np.array([1.0, 0.0, 0.0, 0.0]))]
+    for jcfg, (pos, ori) in zip(joints_cfg, world):
         if not jcfg.get("fixed"):
             frames.append((pos.copy(), ori.copy()))
-
     return frames  # length = movable joints + 1
+
 
 # ---------------------------------------------------------------------------
 # Capsule collision
@@ -275,12 +288,41 @@ class RobotPlanner:
             for j in self.joints_cfg
         ], dtype=float)
 
-        if capsule_radii is None:
-            self._capsule_radii = [0.018] * self.n
-        elif isinstance(capsule_radii, (int, float)):
-            self._capsule_radii = [float(capsule_radii)] * self.n
+        # The arm's collision shapes. Fitted capsules (one per link, enclosing
+        # its mesh; see headless/fit-capsules.mjs) make this check stricter
+        # than the viewer's, never looser. Without them, or when radii are
+        # given explicitly, it falls back to thin joint-to-joint capsules.
+        capsule_file = config_path.replace("_config.json", "_capsules.json")
+        if capsule_radii is None and capsule_file != config_path and os.path.exists(capsule_file):
+            with open(capsule_file) as f:
+                fitted = json.load(f)
+            self.capsule_source = "fitted"
+            self._links = [(l["name"], l["joint"], np.array(l["p0"], dtype=float),
+                            np.array(l["p1"], dtype=float), float(l["radius"]))
+                           for l in fitted["links"]]
+            # Self-collision is left to the exact check on the finished path.
+            # Links two apart (L1–L3, L2–L4) nest into each other at a compact
+            # elbow or wrist, so capsules that enclose them overlap in nearly
+            # every pose while the meshes almost never touch (measured: Meca500
+            # 300/300 poses vs 2/300, GP280 300/300 vs 0/300, and still 244/300
+            # with four capsules per link). Checked here, they would reject
+            # every start pose.
+            self._self_pairs = []
+            # A link resting on the floor by design (a base) would otherwise
+            # always report a floor contact; only the others are checked.
+            home = self._link_capsules(np.zeros(self.n))
+            self._floor_checked = [c.p0[1] - c.radius >= 0 and c.p1[1] - c.radius >= 0 for c in home]
         else:
-            self._capsule_radii = list(capsule_radii)
+            self.capsule_source = "joint-to-joint"
+            if capsule_radii is None:
+                self._capsule_radii = [0.018] * self.n
+            elif isinstance(capsule_radii, (int, float)):
+                self._capsule_radii = [float(capsule_radii)] * self.n
+            else:
+                self._capsule_radii = list(capsule_radii)
+            # Neighbouring capsules share a joint, so only pairs two apart count.
+            self._self_pairs = [(i, j) for i in range(self.n) for j in range(i + 2, self.n)]
+            self._floor_checked = [False] * self.n
 
         self.obstacles: list[Obstacle] = obstacles or []
         self.step_deg   = step_deg
@@ -505,59 +547,37 @@ class RobotPlanner:
 
     def _valid(self, q):
         """Returns True if config q is within limits and collision-free."""
-        # Limits check
-        if np.any(q < self.limits[:, 0]) or np.any(q > self.limits[:, 1]):
-            return False
-
-        frames = fk(self.all_joints, q)
-        capsules = self._make_capsules(frames)
-
-        # Self-collision: skip adjacent pairs (they share a joint)
-        n = len(capsules)
-        for i in range(n):
-            for j in range(i + 2, n):  # skip i, i+1
-                if capsules_collide(capsules[i], capsules[j]):
-                    return False
-
-        # Obstacle collision
-        for cap in capsules:
-            for obs in self.obstacles:
-                if isinstance(obs, AABBObstacle):
-                    if capsule_aabb_collide(cap, obs):
-                        return False
-                else:
-                    if capsule_sphere_collide(cap, obs.centre, obs.radius):
-                        return False
-
-        return True
+        return self._problem(np.asarray(q, dtype=float)) is None
 
     def diagnose(self, q):
         """Explain why config q is invalid, or return None if it is fine.
 
         _valid answers yes/no, which is all RRT needs. A caller reporting to a
-        person (or an agent) needs to know which link hit what, so this repeats
-        the same three checks and names the first failure it finds.
+        person (or an agent) needs to know which link hit what; this names the
+        first failure found.
         """
         q = np.asarray(q, dtype=float)
         if len(q) != self.n:
             return f"expected {self.n} joint angles, got {len(q)}"
+        return self._problem(q)
 
+    def _problem(self, q):
         for i, (lo, hi) in enumerate(self.limits):
             if q[i] < lo or q[i] > hi:
                 name = self.joints_cfg[i].get("name", f"joint {i}")
                 return (f"{name} at {q[i]:.2f} deg is outside its limits "
                         f"[{lo:g}, {hi:g}]")
 
-        capsules = self._make_capsules(fk(self.all_joints, q))
-        names = [j.get("name", f"link {i}") for i, j in enumerate(self.joints_cfg)]
+        capsules = self._capsules(q)
+        names = self._body_names()
 
-        n = len(capsules)
-        for i in range(n):
-            for j in range(i + 2, n):
-                if capsules_collide(capsules[i], capsules[j]):
-                    return f"self-collision between {names[i]} and {names[j]}"
+        for i, j in self._self_pairs:
+            if capsules_collide(capsules[i], capsules[j]):
+                return f"self-collision between {names[i]} and {names[j]}"
 
         for i, cap in enumerate(capsules):
+            if self._floor_checked[i] and min(cap.p0[1], cap.p1[1]) - cap.radius < 0:
+                return f"{names[i]} goes below the floor"
             for obs in self.obstacles:
                 hit = (capsule_aabb_collide(cap, obs)
                        if isinstance(obs, AABBObstacle)
@@ -567,8 +587,27 @@ class RobotPlanner:
 
         return None
 
+    def _body_names(self):
+        if self.capsule_source == "fitted":
+            return [l[0] for l in self._links]
+        return [j.get("name", f"link {i}") for i, j in enumerate(self.joints_cfg)]
+
+    def _capsules(self, q):
+        if self.capsule_source == "fitted":
+            return self._link_capsules(q)
+        return self._make_capsules(fk(self.all_joints, q))
+
+    def _link_capsules(self, q):
+        """Each link's fitted capsule, placed by its joint's world frame."""
+        world = fk_world(self.all_joints, q)
+        caps = []
+        for _, joint, p0, p1, r in self._links:
+            pos, ori = world[joint]
+            caps.append(Capsule(pos + qrot(ori, p0), pos + qrot(ori, p1), r))
+        return caps
+
     def _make_capsules(self, frames):
-        """Build one capsule per link from FK frames."""
+        """Joint-to-joint capsules from FK frames (no fitted capsules)."""
         capsules = []
         for i in range(self.n):
             p0 = frames[i][0]

@@ -349,6 +349,8 @@ export async function createEngine({ root = REPO_ROOT } = {}) {
 
     if (cmd === 'addDevice') {
       const dev = await addDevice(msg.config);
+      // It joins the end of the viewer's device list.
+      deviceIndexMap.set(Math.max(-1, ...deviceIndexMap.keys()) + 1, State.devices.length - 1);
       replies.push({ type: 'deviceAdded', ...buildDeviceInfo(dev) });
     } else if (cmd === 'addPrimitive') {
       const type = (msg.type || msg.primitive || 'cube').toLowerCase();

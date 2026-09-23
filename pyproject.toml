@@ -37,6 +37,7 @@ include = [
     "viewer.css",
     "js/**",
     "*_config.json",
+    "*_capsules.json",
     "*_scene.glb",
 ]
 
