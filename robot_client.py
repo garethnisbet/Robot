@@ -240,6 +240,7 @@ class RobotClient:
         self._n_movable = len(self._movable_joints)
         self._joint_name_to_idx = {name.lower(): idx for idx, name in self._movable_joints}
         self._device_names_cache = []
+        self._headless = None          # headless engine, started by the first exact check
 
         if connect:
             self.connect()
@@ -297,7 +298,7 @@ class RobotClient:
             self._start_loop()
 
         async def _impl():
-            self._ws = await websockets.connect(self._url)
+            self._ws = await websockets.connect(self._url, max_size=64 * 1024 * 1024)
             self._listener_task = asyncio.ensure_future(self._print_incoming())
 
         print(f"  Connecting to {_dim(self._url)} ...")
@@ -324,6 +325,9 @@ class RobotClient:
             self._thread.join(timeout=2.0)
         self._loop = None
         self._thread = None
+        if self._headless is not None:
+            self._headless.close()
+            self._headless = None
         print(f"  {_dim('Disconnected.')}")
 
     def reconnect(self):
@@ -339,7 +343,7 @@ class RobotClient:
             self._listener_task = None
 
         async def _impl():
-            self._ws = await websockets.connect(self._url)
+            self._ws = await websockets.connect(self._url, max_size=64 * 1024 * 1024)
             self._listener_task = asyncio.ensure_future(self._print_incoming())
 
         print(f"  Reconnecting to {_dim(self._url)} ...")
@@ -1812,10 +1816,28 @@ class RobotClient:
 
         msg = f'Planning... (step size {stepsize}\u00b0)'
         print(f"  {_dim(msg)}")
-        path = planner.plan(start_vals, end_vals)
 
-        if path is None:
-            print(f"  {_bred('No path found.')}")
+        # The planner's capsules only steer the search; the path has to pass
+        # the viewer's own collision check (run headless) before it moves.
+        for attempt in range(3):
+            path = planner.plan(start_vals, end_vals)
+            if path is None:
+                print(f"  {_bred('No path found.')}")
+                return
+            verdict, why_not = self._exact_check(path)
+            if verdict is None:
+                print(f"  {_yellow('Not verified')} against the viewer's meshes ({why_not}); "
+                      f"planned against capsules only.")
+                break
+            if verdict["ok"]:
+                for u in verdict.get("unchecked", []):
+                    print(f"  {_yellow('Not checked against')} {u}")
+                break
+            where = verdict.get("angles")
+            print(f"  {_yellow('Rejected')}: {verdict['reason']}"
+                  + (f" at [{', '.join(f'{v:g}' for v in where)}]" if where else ""))
+        else:
+            print(f"  {_bred('No path passed the exact collision check.')}")
             return
 
         dense = _densify_path(path, stepsize)
@@ -1832,6 +1854,40 @@ class RobotClient:
             print(f"\n  {_yellow('Motion stopped.')}")
         else:
             print(f"  {_bgreen('Done.')}")
+
+    def _exact_check(self, waypoints, resolution_deg=1.0):
+        """Check a path for the active device with the viewer's own collision
+        check, run headless on a copy of the viewer's scene.
+
+        Returns (verdict, None), or (None, reason) when the check cannot run
+        here: it needs Node and the viewer's repo (node_modules, js/, models),
+        which a RemoteAPI.zip install does not have.
+        """
+        try:
+            from headless_client import HeadlessEngine
+        except ImportError:
+            return None, "headless_client.py not found"
+        if not HeadlessEngine.available():
+            return None, "needs Node and the viewer's repo with node_modules"
+        if self._headless is None:
+            self._headless = HeadlessEngine()
+
+        def export(buffers):
+            msg = {"cmd": "exportScene"}
+            if not buffers:
+                msg["buffers"] = False
+            reply = self._send_and_wait(msg, "scene", timeout=60.0)
+            if reply is None:
+                raise RuntimeError("the viewer did not answer exportScene; reload the page")
+            return reply["scene"]
+
+        try:
+            self._headless.sync_scene(export)
+            devices = self._send_and_wait({"cmd": "listDevices"}, "devices", timeout=5.0)
+            index = next((i for i, d in enumerate(devices["devices"]) if d.get("active")), 0)
+            return self._headless.check_path(index, waypoints, resolution_deg), None
+        except Exception as e:
+            return None, str(e)
 
     # ═════════════════════════════════════════════════════════════════════
     #  PUBLIC API — Scanning

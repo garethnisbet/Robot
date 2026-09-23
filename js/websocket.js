@@ -18,6 +18,7 @@ import {
 import {
   setSTLParent, addPrimitive, duplicateSTL, deselectSTL,
   exportSceneState, syncSTLVisibility,
+  buildScenePayload, buildSceneMetadataForDB, sceneBufferSignature,
 } from './stl.js';
 import {
   clearCollisionHighlights, setCollisionHeadless, isCollisionHeadless, updateCollisionLoop,
@@ -1177,6 +1178,14 @@ export function handleCommand(data) {
       floorSize: State.floorSize,
     });
 
+  } else if (cmd === 'exportScene') {
+    // The scene as Save Scene writes it, for a headless copy to check
+    // against. Point clouds and splats carry only their source file name.
+    // buffers: false sends transforms only; the signature (object ids and
+    // buffer sizes) tells the caller whether its geometry is still current.
+    const scene = data.buffers === false ? buildSceneMetadataForDB() : buildScenePayload();
+    wsSend({ type: 'scene', scene, signature: sceneBufferSignature(), _reqId: data._reqId });
+
   } else if (cmd === 'captureImage') {
     // Render one frame and return it as a base64 PNG, so a remote client
     // (an MCP agent, a script) can see the scene without a human at the tab.
@@ -1276,6 +1285,7 @@ export function handleCommand(data) {
         setFloorCollision:{ params: 'enabled?', description: 'Toggle floor-plane collision checks' },
         // Scene
         getSceneState:    { params: '', description: 'Get full scene state (devices, objects, camera)' },
+        exportScene:      { params: 'buffers?', description: 'Scene as Save Scene writes it (buffers: false for transforms only)' },
         getStats:         { params: 'frames?, device?, transparency?', description: 'Benchmark frame time (blocks the viewer while it runs)' },
         saveScene:        { params: '', description: 'Trigger scene file download in viewer' },
         help:             { params: '', description: 'List all available commands' },
