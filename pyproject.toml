@@ -13,6 +13,11 @@ mcp = [
     "websockets>=12",
     "numpy>=1.24",
 ]
+test = [
+    "pytest>=8",
+    "websockets>=12",
+    "numpy>=1.24",
+]
 
 [project.scripts]
 robot-vis = "server:main"
@@ -34,3 +39,6 @@ include = [
     "*_config.json",
     "*_scene.glb",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

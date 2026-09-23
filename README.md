@@ -64,7 +64,7 @@ Open `http://localhost:8000/threejs_scene.html` in a browser. Use the dropdown t
 pip3 install aiohttp websockets ipython
 python3 server.py --config meca500_config.json
 ```
-Open `http://localhost:8080` in a browser. The status indicator in the top-left shows the WebSocket connection state and the session ID for this tab. Click it to open the connection info panel, which shows the full connection command, WebSocket URL, and a link to download `RemoteAPI.zip` — a self-contained bundle with `robot_ipython.py`, the `GNKinematics` Python library, and `RobotDefinitions.py`.
+Open `http://localhost:8080` in a browser. The status indicator in the top-left shows the WebSocket connection state and the session ID for this tab. Click it to open the connection info panel, which shows the full connection command, WebSocket URL, and a link to download `RemoteAPI.zip` — a self-contained bundle with `robot_ipython.py`, `robot_client.py`, the `GNKinematics` Python library, and `RobotDefinitions.py`.
 
 ## Adding New Devices
 
@@ -473,6 +473,14 @@ python3 robot_ipython.py --url ws://192.168.1.100:8080/ws --session ab12cd34  # 
 
 The client launches an IPython terminal with a pre-connected `robot` object. It supports two syntaxes — **Python method calls** for full programmatic control, and **space-separated commands** (via IPython magics) for quick interactive use. The prompt, help text, and tab completion adapt to the loaded device. The `robot_ipython.py` file can also be downloaded from the connection info panel in the viewer.
 
+The `robot` object is a `RobotClient`, defined in `robot_client.py`. That module needs no IPython, so scripts can use it directly:
+
+```python
+from robot_client import RobotClient
+robot = RobotClient(url="ws://localhost:8080/ws?session=ab12cd34", config="meca500_config.json")
+robot.joints(0, 30, 60, 0, 45, 90)
+```
+
 **Both syntaxes work side by side:**
 
 ```python
@@ -876,6 +884,17 @@ async def main():
 asyncio.run(main())
 ```
 
+## Testing
+
+The viewer modules run under Node as well as in the browser. `test/js/setup.mjs` applies the page's own import map from `threejs_scene.html`, so the tests load exactly the modules the page does. Devices are built from their config JSON by `js/chain.js`, with no GLB file or page needed.
+
+```bash
+npm test                                  # viewer: kinematics, hexapod, point-cloud collision, WebSocket API
+pip install -e '.[test]' && pytest        # Python: client, frame conversions, GNKinematics, planner
+```
+
+The API tests pass commands to `handleCommand` and read the replies from a fake socket. Some tests compare the viewer's end-effector pose with `GNKinematics` for the same API joints, so a wrong `apiSign` in a config fails them. Known IK gaps are marked `xfail(strict=True)` in `tests/test_gnkinematics.py`. Once the solver is fixed, those tests fail as a reminder to remove the marker.
+
 ## Deployment
 
 ### Docker
@@ -903,6 +922,7 @@ js/
   state.js               Shared mutable state (scene, cameras, controls, devices)
   scene.js               Three.js scene setup, cameras, lights, ground, nav gizmo
   device.js              Device loading, GLB import, slider/IK sync
+  chain.js               Kinematic chain built from a config alone (no GLB, scene or DOM)
   hexapod.js             Hexapod loader, Damped Track IK, FK solver, platform sync
   kinematics.js          FK, IK solver, kappa geometry math
   panel.js               Control panel UI, device list, parent dropdowns
@@ -918,12 +938,15 @@ import_robot.py          Blender import script — extracts serial robot armatur
 import_kappa.py          Blender import script — extracts kappa diffractometer rigs to config JSON + GLB
 import_hexapod.py        Blender import script — extracts hexapod (Damped Track legs) to config JSON + GLB
 server.py                WebSocket + HTTP server for remote control API
-robot_ipython.py         IPython remote control client (any device)
+robot_client.py          RobotClient — remote control client library (no IPython needed)
+robot_ipython.py         IPython shell around RobotClient (magics, prompt, banner)
 mcp_server.py            MCP server exposing the viewer as a simulation sandbox to agents
 planner.py               RRT-Connect joint-space planner with capsule collision checking
 GNKinematics/            Python forward/inverse kinematics library (matches viewer's ZYX Euler)
 RobotDefinitions.py      Robot DH / geometry parameters for GNKinematics
-RemoteAPI.zip            Bundled client (ipython client + GNKinematics + RobotDefinitions); served from viewer
+RemoteAPI.zip            Bundled client (robot_client + ipython shell + GNKinematics + RobotDefinitions); served from viewer
+test/js/                 Node tests for the viewer modules (npm test)
+tests/                   pytest tests for the Python client, kinematics and planner
 meca500_config.json      Meca500 R3 device config
 i16_config.json          i16 diffractometer device config
 i19_config.json          i19 kappa diffractometer device config
