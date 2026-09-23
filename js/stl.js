@@ -1595,9 +1595,6 @@ export function addSTLListItem(entry) {
 // ============================================================
 // STL Selection & Transform
 // ============================================================
-const stlModePanel = document.getElementById('stl-mode');
-const stlSelName   = document.getElementById('stl-sel-name');
-
 // STL parent-link assignment (multi-device aware)
 const _reparentMat = new THREE.Matrix4();
 
@@ -1663,8 +1660,8 @@ export function selectSTL(entry, listItem) {
   State.setSelectedListItem(listItem || null);
 
   State.stlTransformControls.attach(entry.mesh);
-  stlModePanel.style.display = 'block';
-  stlSelName.textContent = entry.name;
+  document.getElementById('stl-mode').style.display = 'block';
+  document.getElementById('stl-sel-name').textContent = entry.name;
   document.getElementById('stlParentSelect').value = entry.parentLink || '';
   syncSTLNumericInputs(entry);
 
@@ -1705,8 +1702,8 @@ export function deselectSTL() {
     if (State.selectedListItem) State.selectedListItem.classList.remove('selected');
     State.setSelectedSTL(null);
     State.setSelectedListItem(null);
-    stlModePanel.style.display = 'none';
-    stlSelName.textContent = '';
+    document.getElementById('stl-mode').style.display = 'none';
+    document.getElementById('stl-sel-name').textContent = '';
     document.getElementById('stlSpaceBtn').textContent = 'World';
     document.getElementById('stlSpaceBtn').classList.remove('active');
   }

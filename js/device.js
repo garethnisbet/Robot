@@ -10,11 +10,12 @@ import { MeshBVH } from 'three-mesh-bvh';
 import * as State from './state.js';
 import {
   updateFK, getEEWorldPosition, getEEWorldQuaternion,
-  getJointWorldAxis, clampJoints,
+  clampJoints,
   kappaToEuler, eulerToKappa, getCompensation, updateVirtualAngles,
   pyEulerFromRelQuat,
 } from './kinematics.js';
 import { loadHexapod } from './hexapod.js';
+import { buildChain } from './chain.js';
 
 const deg2rad = Math.PI / 180;
 const rad2deg = 180 / Math.PI;
@@ -66,59 +67,15 @@ export async function loadDevice(configFile) {
 
   const config = peek;
   const id = State.incrementDeviceId();
-  const numJoints = config.joints.length;
 
-  // Root group for the entire device (movable origin)
-  const rootGroup = new THREE.Group();
-  rootGroup.name = config.name + '_root';
+  const chain = buildChain(config);
+  const {
+    numJoints, rootGroup, eeMarker, jointLimits, jointRotGroups, linkToJoint,
+    isKappaGeometry, kappaJointIdx,
+  } = chain;
   State.scene.add(rootGroup);
 
-  // Build joint limits, axes, FK chain
-  const jointLimits = config.joints.map(j => [j.limits[0] * deg2rad, j.limits[1] * deg2rad]);
-  const jointFixed = config.joints.map(j => !!j.fixed);
-  const apiSign = config.joints.map(j => (j.apiSign !== undefined) ? j.apiSign : 1);
-
-  const linkToJoint = {};
-  for (const link of config.links) linkToJoint[link.name] = link.joint;
-
-  const jointRestGroups = [];
-  const jointRotGroups = [];
-  const jointAxes = [];
-
-  const isBranching = config.joints.some((j, i) => {
-    const p = j.parent !== undefined ? j.parent : i - 1;
-    return i > 0 && p === -1;
-  });
-
-  for (let i = 0; i < numJoints; i++) {
-    const d = config.joints[i];
-    const parentIdx = d.parent !== undefined ? d.parent : i - 1;
-    const parentGroup = parentIdx < 0 ? rootGroup : jointRotGroups[parentIdx];
-
-    const restGrp = new THREE.Group();
-    restGrp.name = `J${i+1}_rest`;
-    restGrp.position.set(d.restPos[0], d.restPos[1], d.restPos[2]);
-    restGrp.quaternion.set(d.restQuat[1], d.restQuat[2], d.restQuat[3], d.restQuat[0]);
-    parentGroup.add(restGrp);
-    jointRestGroups.push(restGrp);
-
-    const rotGrp = new THREE.Group();
-    rotGrp.name = `J${i+1}_rot`;
-    restGrp.add(rotGrp);
-    jointRotGroups.push(rotGrp);
-
-    if (d.name && d.name.startsWith('virtual_axis')) {
-      rotGrp.add(new THREE.AxesHelper(0.1));
-    }
-
-    jointAxes.push(new THREE.Vector3(d.axis[0], d.axis[1], d.axis[2]).normalize());
-  }
-
-  // End-effector marker
-  const eeMarker = new THREE.Group();
-  const eeParentGroup = isBranching ? jointRotGroups[jointRotGroups.length - 1] : jointRotGroups[numJoints - 1];
-  eeParentGroup.add(eeMarker);
-  if (config.eeOffset) eeMarker.position.set(...config.eeOffset);
+  // End-effector axes
   const axLen = 0.03;
   function makeAxis(dir, color) {
     const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), dir.clone().multiplyScalar(axLen)]);
@@ -176,29 +133,6 @@ export async function loadDevice(configFile) {
   ikLine.visible = false;
   State.scene.add(ikLine);
 
-  // Slider mapping (skip fixed joints)
-  const sliderJointMap = [];
-  const kappaSliderNames = {};
-  {
-    const ki = config.joints.findIndex(j => j.name === 'kappa');
-    const ti = config.joints.findIndex(j => j.name === 'theta');
-    const pi = config.joints.findIndex(j => j.name === 'phi');
-    if (ki >= 0 && ti >= 0 && pi >= 0) {
-      kappaSliderNames[ti] = 'ktheta';
-      kappaSliderNames[pi] = 'kphi';
-    }
-  }
-  for (let i = 0; i < numJoints; i++) {
-    if (config.joints[i].fixed) continue;
-    sliderJointMap.push(i);
-  }
-
-  // Kappa geometry detection
-  const kappaJointIdx = config.joints.findIndex(j => j.name === 'kappa');
-  const thetaJointIdx = config.joints.findIndex(j => j.name === 'theta');
-  const phiJointIdx   = config.joints.findIndex(j => j.name === 'phi');
-  const isKappaGeometry = kappaJointIdx >= 0 && thetaJointIdx >= 0 && phiJointIdx >= 0;
-
   // Origin helper — axis gizmo + coordinate label at device base
   const originHelpers = [];
   const originLabels = [];
@@ -225,24 +159,11 @@ export async function loadDevice(configFile) {
   const adjPairs = buildAdjacencyPairs(config);
 
   const dev = {
+    ...chain,
     id,
     config,
     configFile,
     name: config.name,
-    numJoints,
-    rootGroup,
-    jointLimits,
-    jointFixed,
-    jointAngles: Array(numJoints).fill(0),
-    jointRestGroups,
-    jointRotGroups,
-    jointAxes,
-    apiSign,
-    linkToJoint,
-    sliderJointMap,
-    kappaSliderNames,
-    isBranching,
-    eeMarker,
     meshLabels: [],
     robotLinkMeshes: [],
     staticMeshes: [],
@@ -260,28 +181,10 @@ export async function loadDevice(configFile) {
     ikTargetEuler,
     ikLine,
     adjPairs,
-    isKappaGeometry,
-    kappaAlpha: 0,
-    kappaJointIdx,
-    thetaJointIdx,
-    phiJointIdx,
     kappaSignPositive: true,
-    kappaPhiSign: 1,
-    kappaThetaSign: 1,
     parentLink: null,
     loaded: false,
   };
-
-  // Compute kappa geometry parameters after FK chain is ready
-  if (isKappaGeometry) {
-    State.scene.updateMatrixWorld(true);
-    const thetaWorldAxis = getJointWorldAxis(dev, thetaJointIdx);
-    const kappaWorldAxis = getJointWorldAxis(dev, kappaJointIdx);
-    const phiWorldAxis   = getJointWorldAxis(dev, phiJointIdx);
-    dev.kappaAlpha      = Math.acos(Math.min(1, Math.abs(thetaWorldAxis.dot(kappaWorldAxis))));
-    dev.kappaPhiSign    = thetaWorldAxis.dot(phiWorldAxis) >= 0 ? 1 : -1;
-    dev.kappaThetaSign  = thetaWorldAxis.dot(kappaWorldAxis) >= 0 ? 1 : -1;
-  }
 
   // Load GLB model
   await new Promise((resolve, reject) => {
@@ -398,11 +301,6 @@ export async function loadDevice(configFile) {
           console.log(`Kappa geometry (analytical): alpha=${(dev.kappaAlpha * rad2deg).toFixed(1)} deg, phiSign=${dev.kappaPhiSign}, chi=90 deg -> kappa=${test90.kappa.toFixed(1)} deg, comp_theta=${comp90.theta.toFixed(1)} deg, comp_phi=${comp90.phi.toFixed(1)} deg`);
         }
       }
-
-      // Capture home EE quaternion (all joints at 0)
-      State.scene.updateMatrixWorld(true);
-      dev.homeQuaternion = getEEWorldQuaternion(dev);
-      dev.homeQuaternionInv = dev.homeQuaternion.clone().invert();
 
       dev.loaded = true;
       resolve();

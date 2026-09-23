@@ -23,7 +23,6 @@ import {
   clearCollisionHighlights, setCollisionHeadless, isCollisionHeadless, updateCollisionLoop,
   getCollisionFreshness,
 } from './collision.js';
-import { setOrtho } from './scene.js';
 import { updateHexapodPose, computeLegLengthsFromPose, solveHexapodFK } from './hexapod.js';
 
 const deg2rad = Math.PI / 180;
@@ -94,6 +93,7 @@ export function initWsInfoPanel() {
 export function wsSetStatus(state) {
   const wsDot  = document.getElementById('ws-dot');
   const wsText = document.getElementById('ws-text');
+  if (!wsDot || !wsText) return;
   wsDot.className = 'dot ' + (state === 'on' ? 'on' : state === 'err' ? 'err' : 'off');
   const sid = getSessionId();
   wsText.textContent = state === 'on'  ? (_apiEnabled ? `API: connected [${sid}]`
@@ -433,8 +433,6 @@ export function handleCommand(data) {
     return;
   }
 
-  const collisionBtn    = document.getElementById('collisionBtn');
-  const collisionInfoEl = document.getElementById('collision-info');
   const dev = resolveTargetDevice(data);
 
   // ── Device queries ──────────────────────────────────────────
@@ -797,6 +795,8 @@ export function handleCommand(data) {
     const on = data.enabled !== undefined ? !!data.enabled : !State.collisionEnabled;
     if (on !== State.collisionEnabled) {
       State.setCollisionEnabled(on);
+      const collisionBtn    = document.getElementById('collisionBtn');
+      const collisionInfoEl = document.getElementById('collision-info');
       collisionBtn.textContent = `Collision: ${on ? 'ON' : 'OFF'}`;
       collisionBtn.classList.toggle('active', on);
       collisionInfoEl.style.display = on ? 'block' : 'none';
@@ -1296,6 +1296,13 @@ export function registerSetActiveDevice(fn) { _setActiveDeviceFn = fn; }
 // ============================================================
 let _availableConfigs = [];
 export function registerAvailableConfigs(configs) { _availableConfigs = configs; }
+
+// ============================================================
+// Camera projection toggle (registered by main.js — scene.js builds the
+// renderer on import, so importing it here would tie this module to a page)
+// ============================================================
+let setOrtho = () => {};
+export function registerSetOrtho(fn) { setOrtho = fn; }
 
 // ============================================================
 // wsConnect
