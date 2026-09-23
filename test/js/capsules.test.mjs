@@ -34,6 +34,15 @@ for (const configFile of serialConfigs) {
         worst = Math.max(worst, segmentDistance(p, cap.p0, cap.p1) - cap.radius);
       }
       assert.ok(worst <= 1e-9, `${link.name}: a vertex lies ${(worst * 1000).toFixed(3)} mm outside its capsule`);
+
+      // The parts: every vertex inside at least one of them.
+      let worstPart = 0;
+      for (const p of linkVertices(dev, link)) {
+        let best = Infinity;
+        for (const c of cap.parts) best = Math.min(best, segmentDistance(p, c.p0, c.p1) - c.radius);
+        worstPart = Math.max(worstPart, best);
+      }
+      assert.ok(worstPart <= 1e-9, `${link.name}: a vertex lies ${(worstPart * 1000).toFixed(3)} mm outside every part`);
     }
   });
 }

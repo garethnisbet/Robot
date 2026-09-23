@@ -229,12 +229,37 @@ class AABBObstacle:
     _from_viewer: bool = False
 
 
-@dataclass
-class CapsuleObstacle:
-    """A fixed capsule in world space: a link of another device."""
-    capsule: Capsule
-    name: str = ""
-    _from_viewer: bool = False
+class CapsuleSetObstacle:
+    """Another device, fixed in place: the capsules around its links (their
+    fitted parts), with each capsule's bounding box precomputed so a test
+    measures only the few capsules near the body."""
+
+    def __init__(self, capsules, names, name=""):
+        self.capsules = list(capsules)
+        self.names = list(names)
+        self.name = name
+        self._from_viewer = False
+        self.lo = np.array([np.minimum(c.p0, c.p1) - c.radius for c in self.capsules]).reshape(-1, 3)
+        self.hi = np.array([np.maximum(c.p0, c.p1) + c.radius for c in self.capsules]).reshape(-1, 3)
+
+    def _near(self, lo, hi):
+        return np.nonzero(np.all(self.hi >= lo, axis=1) & np.all(self.lo <= hi, axis=1))[0]
+
+    def hit_by_capsule(self, cap):
+        """Name of the first capsule `cap` meets, or None."""
+        lo = np.minimum(cap.p0, cap.p1) - cap.radius
+        hi = np.maximum(cap.p0, cap.p1) + cap.radius
+        for k in self._near(lo, hi):
+            if capsules_collide(cap, self.capsules[k]):
+                return self.names[k]
+        return None
+
+    def hit_by_box(self, lo, hi):
+        box = AABBObstacle(min=lo, max=hi)
+        for k in self._near(lo, hi):
+            if capsule_aabb_collide(self.capsules[k], box):
+                return self.names[k]
+        return None
 
 
 @dataclass
@@ -441,6 +466,12 @@ class RobotPlanner:
             self._links = [(l["name"], l["joint"], np.array(l["p0"], dtype=float),
                             np.array(l["p1"], dtype=float), float(l["radius"]))
                            for l in fitted["links"]]
+            # The tighter set per link (its union also encloses the link),
+            # used when this device is an obstacle to another.
+            self._parts = [(l["name"], l["joint"],
+                            [(np.array(c["p0"], dtype=float), np.array(c["p1"], dtype=float),
+                              float(c["radius"])) for c in l.get("parts") or [l]])
+                           for l in fitted["links"]]
             # Self-collision is left to the exact check on the finished path.
             # Links two apart (L1–L3, L2–L4) nest into each other at a compact
             # elbow or wrist, so capsules that enclose them overlap in nearly
@@ -588,7 +619,7 @@ class RobotPlanner:
 
           * the device's world pose;
           * every other visible serial device as fixed capsules, at its
-            current joints and pose (its fitted capsules, so they enclose it);
+            current joints and pose (its fitted parts, whose union encloses it);
           * objects parented to a link of this device as payload carried by
             that link; every other visible object as a fixed box;
           * visible point clouds (and PLY splats) as their points, when
@@ -611,9 +642,11 @@ class RobotPlanner:
                 continue        # no enclosing shapes to stand in for it
             other = RobotPlanner(config)
             other.set_base_pose(*api_pose_to_three(d["worldPosition"], d["worldRotation"]))
-            joints = np.asarray(d["joints"], dtype=float)
-            for (link, *_), cap in zip(other._links, other._capsules(joints)):
-                self.obstacles.append(CapsuleObstacle(cap, f"{d['name']}:{link}", _from_viewer=True))
+            parts = other.part_capsules(np.asarray(d["joints"], dtype=float))
+            obs = CapsuleSetObstacle([c for _, c in parts],
+                                     [f"{d['name']}:{link}" for link, _ in parts], d["name"])
+            obs._from_viewer = True
+            self.obstacles.append(obs)
 
         current = np.asarray(me["joints"], dtype=float)
         world_now = fk_world(self.all_joints, current)
@@ -793,8 +826,11 @@ class RobotPlanner:
             for obs in self.obstacles:
                 if isinstance(obs, AABBObstacle):
                     hit = capsule_aabb_collide(cap, obs)
-                elif isinstance(obs, CapsuleObstacle):
-                    hit = capsules_collide(cap, obs.capsule)
+                elif isinstance(obs, CapsuleSetObstacle):
+                    part = obs.hit_by_capsule(cap)
+                    if part:
+                        return f"{names[i]} collides with {part}"
+                    hit = False
                 elif isinstance(obs, PointCloudObstacle):
                     hit = obs.hits_capsule(cap)
                 else:
@@ -806,8 +842,11 @@ class RobotPlanner:
             for obs in self.obstacles:
                 if isinstance(obs, AABBObstacle):
                     hit = _aabb_overlap(lo, hi, obs.min, obs.max)
-                elif isinstance(obs, CapsuleObstacle):
-                    hit = capsule_aabb_collide(obs.capsule, AABBObstacle(min=lo, max=hi))
+                elif isinstance(obs, CapsuleSetObstacle):
+                    part = obs.hit_by_box(lo, hi)
+                    if part:
+                        return f"{name} (carried) collides with {part}"
+                    hit = False
                 elif isinstance(obs, PointCloudObstacle):
                     hit = obs.hits_box(lo, hi)
                 else:
@@ -849,6 +888,18 @@ class RobotPlanner:
             pts = np.array([self._to_world(pos + qrot(ori, c)) for c in box.corners])
             boxes.append((pts.min(axis=0), pts.max(axis=0), box.name))
         return boxes
+
+    def part_capsules(self, q):
+        """(name, world capsule) for every fitted part of every link at pose q,
+        placed by the base pose. Their union encloses each link's mesh."""
+        world = fk_world(self.all_joints, q)
+        out = []
+        for name, joint, parts in self._parts:
+            pos, ori = world[joint]
+            for p0, p1, r in parts:
+                out.append((name, Capsule(self._to_world(pos + qrot(ori, p0)),
+                                          self._to_world(pos + qrot(ori, p1)), r)))
+        return out
 
     def _link_capsules(self, q):
         """Each link's fitted capsule, placed by its joint's world frame."""
