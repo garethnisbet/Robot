@@ -198,23 +198,38 @@ class AABBObstacle:
     _from_viewer: bool = False
 
 
-def _segment_aabb_min_dist(p0, p1, aabb_min, aabb_max, n=12):
-    """Minimum distance from segment p0-p1 to AABB [aabb_min, aabb_max]."""
-    min_dist = np.inf
-    for k in range(n):
-        t = k / (n - 1)
-        pt = p0 + t * (p1 - p0)
-        # Distance from point to AABB = length of over-shoot vector
-        d = np.maximum(0.0, np.maximum(aabb_min - pt, pt - aabb_max))
-        min_dist = min(min_dist, np.linalg.norm(d))
-        if min_dist == 0.0:
-            return 0.0
-    return min_dist
+def _segment_aabb_min_dist(p0, p1, aabb_min, aabb_max):
+    """Minimum distance from segment p0-p1 to AABB [aabb_min, aabb_max].
+
+    Exact to float precision: distance to a convex set is convex along a
+    line, so a ternary search over the segment parameter finds its minimum.
+    (Sampling points along the segment instead would overstate the distance
+    between samples, and let a small box slip past a long capsule.)
+    """
+    d = p1 - p0
+
+    def dist(t):
+        pt = p0 + t * d
+        return float(np.linalg.norm(np.maximum(0.0, np.maximum(aabb_min - pt, pt - aabb_max))))
+
+    lo, hi = 0.0, 1.0
+    for _ in range(60):
+        m1 = lo + (hi - lo) / 3.0
+        m2 = hi - (hi - lo) / 3.0
+        if dist(m1) <= dist(m2):
+            hi = m2
+        else:
+            lo = m1
+    return min(dist(lo), dist(hi))
 
 
 def capsule_aabb_collide(c: Capsule, aabb: AABBObstacle) -> bool:
-    dist = _segment_aabb_min_dist(c.p0, c.p1, aabb.min, aabb.max)
-    return dist < c.radius
+    # Cheap reject: the capsule's own bounding box misses the obstacle's.
+    lo = np.minimum(c.p0, c.p1) - c.radius
+    hi = np.maximum(c.p0, c.p1) + c.radius
+    if np.any(hi < aabb.min) or np.any(lo > aabb.max):
+        return False
+    return _segment_aabb_min_dist(c.p0, c.p1, aabb.min, aabb.max) < c.radius
 
 
 class RobotPlanner:

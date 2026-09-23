@@ -27,6 +27,20 @@ def test_capsule_collisions():
     assert not planner.capsule_sphere_collide(a, np.array([0.5, 0.5, 0]), 0.3)
 
 
+def test_capsule_box_test_is_exact_between_sample_points():
+    # A 1.1 m capsule of radius 20 mm, and a 20 mm box whose nearest point
+    # is 15 mm from the capsule's axis, midway between where 12 evenly
+    # spaced samples would fall. The capsule overlaps it.
+    cap = Capsule(np.zeros(3), np.array([1.1, 0, 0]), 0.02)
+    x = 1.1 * 0.5 / 11          # halfway between samples 0 and 1
+    box = planner.AABBObstacle(min=np.array([x - 0.01, 0.015, -0.01]),
+                               max=np.array([x + 0.01, 0.035, 0.01]))
+    assert planner.capsule_aabb_collide(cap, box)
+    far = planner.AABBObstacle(min=np.array([x - 0.01, 0.025, -0.01]),
+                               max=np.array([x + 0.01, 0.045, 0.01]))
+    assert not planner.capsule_aabb_collide(cap, far)
+
+
 def test_meca500_fk_home_flange(config_path):
     p = RobotPlanner(config_path("meca500"))
     flange = p.fk_frames([0] * 6)[-1][0]
