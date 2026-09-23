@@ -52,3 +52,43 @@ def test_plan_refuses_a_goal_inside_an_obstacle(config_path):
     flange = p.fk_frames(goal)[-1][0]
     p.add_obstacle(flange, 0.05, "block")
     assert p.plan([30, 0, 0, 0, 0, 0], goal, verbose=False) is None
+
+
+# The planner's arm must be the arm the viewer draws. The viewer is tied to
+# GNKinematics by test/js/websocket-api.test.mjs; this ties the planner to
+# GNKinematics too. The wrist centre (J5 origin) is GNKinematics' v3, row 3
+# of f_kinematics. Planner frames are Three.js Y-up in metres; the
+# kinematic frame is [x, −z, y] of that, in mm. GP225's config and
+# RobotDefinitions differ by a few mm; every other arm agrees to well under
+# 0.1 mm. The bug this guards against (fixed joints dropped, apiSign
+# ignored) put the wrist metres away.
+WRIST_TOLERANCE_MM = {"meca500": 0.1, "gp180": 0.1, "gp225": 3.0, "gp280": 0.1, "motomini": 0.1}
+
+
+@pytest.mark.parametrize("name", WRIST_TOLERANCE_MM)
+def test_wrist_centre_matches_gnkinematics(name, config_path):
+    import RobotDefinitions as rd
+    kin = {"meca500": rd.Meca500_kin, "gp180": rd.GP180_120_kin, "gp225": rd.GP225_kin,
+           "gp280": rd.GP280_kin, "motomini": rd.MotoMini_kin}[name]
+    p = RobotPlanner(config_path(name))
+    rng = np.random.default_rng(4)
+    for _ in range(20):
+        q = p.limits[:, 0] + rng.uniform(0, 1, p.n) * (p.limits[:, 1] - p.limits[:, 0])
+        wrist = p.fk_frames(q)[5][0]
+        wrist_kin = np.array([wrist[0], -wrist[2], wrist[1]]) * 1000
+        err = np.linalg.norm(wrist_kin - kin.f_kinematics(q)[3])
+        assert err < WRIST_TOLERANCE_MM[name], f"{name} at {q.round(1)}: wrist {err:.1f} mm off"
+
+
+def test_limits_are_in_api_convention(config_path):
+    # GP225 J2 is stored as [-76, 60] in the model's convention with
+    # apiSign -1; in API angles that is [-60, 76], as RobotDefinitions has it.
+    p = RobotPlanner(config_path("gp225"))
+    np.testing.assert_allclose(p.limits[1], [-60, 76])
+    np.testing.assert_allclose(p.limits[0], [-180, 180])     # apiSign +1: unchanged
+
+
+def test_fixed_joints_are_part_of_the_arm(config_path):
+    # GP280's base column is a fixed joint: the shoulder sits 650 mm up.
+    shoulder = RobotPlanner(config_path("gp280")).fk_frames([0] * 6)[2][0]
+    assert shoulder[1] == pytest.approx(0.65, abs=1e-3)

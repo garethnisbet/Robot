@@ -2,7 +2,7 @@
 """
 Robot Path Planner — RRT-Connect with capsule collision detection
 
-Replicates the Three.js FK chain from meca500_config.json, then runs
+Replicates the viewer's FK chain from a device config (any serial arm), then runs
 RRT-Connect in joint space with capsule self-collision and obstacle checks.
 
 Usage (CLI):
@@ -60,36 +60,46 @@ def qfrom_axis_angle(axis, angle_rad):
 
 def fk(joints_cfg, angles_deg):
     """
-    Compute world-space positions (and orientations) of each joint frame.
+    Compute world-space positions (and orientations) of each movable joint,
+    matching the viewer's chain (js/chain.js) for the same API angles.
 
-    joints_cfg: list of joint dicts from the device config JSON
-    angles_deg: list of joint angles in degrees (same length as joints_cfg)
+    joints_cfg: the full joint list from the device config JSON, fixed
+                joints included — they carry real offsets and rotations
+                (a GP arm's base column is one)
+    angles_deg: one angle per movable joint, in degrees, in the WebSocket
+                API convention (the viewer multiplies each by its apiSign)
 
-    Returns list of (position_3d, quaternion_wxyz) for each joint,
-    plus one extra entry for the end-effector (tip of last link chain).
-    The 0-th frame is the world origin (identity).
+    Returns a list of (position_3d, quaternion_wxyz): frame 0 is the world
+    origin, then one frame per movable joint, in config order.
     """
-    pos = np.zeros(3)
-    ori = np.array([1.0, 0.0, 0.0, 0.0])  # identity [w,x,y,z]
+    angles = iter(angles_deg)
+    world = []                                 # (pos, ori) per config joint
+    frames = [(np.zeros(3), np.array([1.0, 0.0, 0.0, 0.0]))]
 
-    frames = [(pos.copy(), ori.copy())]  # frame 0 = world origin
+    for i, jcfg in enumerate(joints_cfg):
+        parent = jcfg.get("parent", i - 1)
+        if parent < 0:
+            pos, ori = np.zeros(3), np.array([1.0, 0.0, 0.0, 0.0])
+        else:
+            pos, ori = world[parent]
 
-    for jcfg, ang_deg in zip(joints_cfg, angles_deg):
-        rest_pos  = np.array(jcfg["restPos"],  dtype=float)
-        rest_quat = np.array(jcfg["restQuat"], dtype=float)
-        axis      = np.array(jcfg["axis"],     dtype=float)
+        # Step the parent frame forward by restPos, then apply restQuat
+        pos = pos + qrot(ori, np.array(jcfg["restPos"], dtype=float))
+        ori = qmul(ori, np.array(jcfg["restQuat"], dtype=float))
 
-        # Step parent frame forward by restPos, then apply restQuat
-        pos = pos + qrot(ori, rest_pos)
-        ori = qmul(ori, rest_quat)
+        # Fixed joints stay at rest; movable ones turn about their local axis
+        if jcfg.get("fixed"):
+            ang_deg = 0.0
+        else:
+            ang_deg = jcfg.get("apiSign", 1) * next(angles)
+        axis = np.array(jcfg["axis"], dtype=float)
+        ori = qmul(ori, qfrom_axis_angle(axis, math.radians(ang_deg)))
 
-        # Apply joint rotation around local axis
-        joint_q = qfrom_axis_angle(axis, math.radians(ang_deg))
-        ori = qmul(ori, joint_q)
+        world.append((pos, ori))
+        if not jcfg.get("fixed"):
+            frames.append((pos.copy(), ori.copy()))
 
-        frames.append((pos.copy(), ori.copy()))
-
-    return frames  # length = num_joints + 1
+    return frames  # length = movable joints + 1
 
 # ---------------------------------------------------------------------------
 # Capsule collision
@@ -240,9 +250,15 @@ class RobotPlanner:
         with open(config_path) as f:
             cfg = json.load(f)
 
-        self.joints_cfg = [j for j in cfg["joints"] if not j.get("fixed")]
+        self.all_joints = cfg["joints"]
+        self.joints_cfg = [j for j in self.all_joints if not j.get("fixed")]
         self.n = len(self.joints_cfg)
-        self.limits = np.array([j["limits"] for j in self.joints_cfg], dtype=float)
+        # Config limits are in the model's convention; the planner works in
+        # API angles, so a joint with apiSign −1 has its range mirrored.
+        self.limits = np.array([
+            j["limits"] if j.get("apiSign", 1) > 0 else [-j["limits"][1], -j["limits"][0]]
+            for j in self.joints_cfg
+        ], dtype=float)
 
         if capsule_radii is None:
             self._capsule_radii = [0.018] * self.n
@@ -364,7 +380,7 @@ class RobotPlanner:
 
     def fk_frames(self, angles_deg):
         """Return FK frames for given joint angles (degrees)."""
-        return fk(self.joints_cfg, angles_deg)
+        return fk(self.all_joints, angles_deg)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -478,7 +494,7 @@ class RobotPlanner:
         if np.any(q < self.limits[:, 0]) or np.any(q > self.limits[:, 1]):
             return False
 
-        frames = fk(self.joints_cfg, q)
+        frames = fk(self.all_joints, q)
         capsules = self._make_capsules(frames)
 
         # Self-collision: skip adjacent pairs (they share a joint)
@@ -517,7 +533,7 @@ class RobotPlanner:
                 return (f"{name} at {q[i]:.2f} deg is outside its limits "
                         f"[{lo:g}, {hi:g}]")
 
-        capsules = self._make_capsules(fk(self.joints_cfg, q))
+        capsules = self._make_capsules(fk(self.all_joints, q))
         names = [j.get("name", f"link {i}") for i, j in enumerate(self.joints_cfg)]
 
         n = len(capsules)
