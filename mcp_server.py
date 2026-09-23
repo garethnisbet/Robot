@@ -316,6 +316,38 @@ def _headless():
     return _engine
 
 
+# Collision points of point clouds and PLY splats, by object id, fetched
+# from the viewer once and shared by the planner and the headless engine.
+_cloud_points: dict = {}
+
+
+async def _cloud(obj_id: str):
+    """An object's collision points (local frame, float32 N x 3), fetched in
+    chunks the first time."""
+    if obj_id not in _cloud_points:
+        import numpy as np
+        parts, offset, total = [], 0, None
+        while total is None or offset < total:
+            chunk = await viewer().request(
+                {"cmd": "exportObjectPoints", "id": obj_id, "offset": offset, "count": 1_000_000},
+                "objectPoints", timeout=120.0)
+            total = chunk["total"]
+            parts.append(np.frombuffer(base64.b64decode(chunk["positions"]), dtype="<f4"))
+            if chunk["count"] == 0:
+                break
+            offset += chunk["count"]
+        _cloud_points[obj_id] = np.concatenate(parts).reshape(-1, 3) if parts else np.zeros((0, 3), "<f4")
+    return _cloud_points[obj_id]
+
+
+def _points_chunk(obj_id, offset, count):
+    """An exportObjectPoints-shaped reply served from the shared cache."""
+    pts = _cloud_points[obj_id]
+    part = pts[offset:offset + count]
+    return {"id": obj_id, "total": len(pts), "offset": offset, "count": len(part),
+            "positions": base64.b64encode(part.astype("<f4").tobytes()).decode()}
+
+
 async def _target_device(device: Optional[str]) -> tuple[int, dict]:
     """The viewer's device by name or id (default: the active one), with its
     index in the viewer's device list."""
@@ -354,21 +386,11 @@ async def _exact(waypoints, device: Optional[str], resolution_deg: float):
                               "it is likely larger than the relay server's message limit. "
                               "Restart server.py from this version (64 MB limit)")
             r = await asyncio.to_thread(engine.sync, full["scene"])
-        # Point clouds and PLY splats: their points travel apart, in chunks,
-        # once per cloud.
+        # Point clouds and PLY splats: their points travel apart, once per
+        # cloud, through the cache the planner shares.
         for cloud in r.get("needPoints", []):
-            offset, total = 0, None
-            while total is None or offset < total:
-                chunk = await viewer().request(
-                    {"cmd": "exportObjectPoints", "id": cloud["id"], "offset": offset,
-                     "count": engine.POINT_CHUNK}, "objectPoints", timeout=120.0)
-                total = chunk["total"]
-                await asyncio.to_thread(engine._one, {
-                    "cmd": "setObjectPoints", "id": cloud["id"], "offset": chunk["offset"],
-                    "total": total, "positions": chunk["positions"]}, "objectPointsStored")
-                if chunk["count"] == 0:
-                    break
-                offset += chunk["count"]
+            await _cloud(cloud["id"])
+            await asyncio.to_thread(engine.upload_points, cloud["id"], _points_chunk)
         index, _ = await _target_device(device)
         return await asyncio.to_thread(engine.check_path, index, waypoints, resolution_deg), None
     except Exception as e:
@@ -413,8 +435,11 @@ async def _planner_with_scene(step_deg: float = 5.0, device: Optional[str] = Non
         config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), dev["config"])
         p = _planner(step_deg, config_path)
         devs = (await viewer().request({"cmd": "listDevices"}, "devices", timeout=5.0))["devices"]
-        objs = await viewer().request({"cmd": "listObjects"}, "objects", timeout=5.0)
-        n = p.sync_from_viewer(devs, objs.get("objects", []), index)
+        objs = (await viewer().request({"cmd": "listObjects"}, "objects", timeout=5.0)).get("objects", [])
+        for o in objs:
+            if o.get("hasCollisionPoints") and o.get("visible", True):
+                await _cloud(o["id"])
+        n = p.sync_from_viewer(devs, objs, index, fetch_points=lambda i: _cloud_points[i])
     except Exception:
         # Viewer unreachable or too old for the fields above: plan the
         # startup config at the origin against nothing, and say so.

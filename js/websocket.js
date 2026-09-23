@@ -217,7 +217,11 @@ export function buildObjectInfo(entry, index) {
 
   return {
     index,
+    id: entry.stlId,
     name: entry.name,
+    kind: entry.isPointCloud ? 'pointCloud' : entry.isSplat ? 'splat' : 'mesh',
+    // Whether the viewer collision-checks it from points (exportObjectPoints).
+    hasCollisionPoints: !!collisionPositions(entry),
     position: [+(p.x * 1000).toFixed(4), +(p.z * 1000).toFixed(4), +(p.y * 1000).toFixed(4)],
     rotation:  [+(r.x * rad2deg).toFixed(4), +(r.z * rad2deg).toFixed(4), +(r.y * rad2deg).toFixed(4)],
     scale:    [+s.x.toFixed(4), +s.y.toFixed(4), +s.z.toFixed(4)],

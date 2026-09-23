@@ -246,6 +246,106 @@ class AttachedBox:
     name: str = ""
 
 
+# The viewer counts a point cloud as touching a mesh when a point lies
+# within this distance of the mesh surface (js/point-grid.js).
+POINT_CLOUD_CONTACT = 0.04
+
+
+class PointCloudObstacle:
+    """
+    A point cloud (a scan) in world space, tested the way the viewer tests it:
+    contact when a point lies within POINT_CLOUD_CONTACT of the body. Against
+    a capsule that encloses a link's mesh, "within r + POINT_CLOUD_CONTACT of
+    the capsule's axis" covers every point the viewer could count, so the
+    planner never passes what the viewer would reject.
+
+    The points are indexed in a uniform grid; a test visits only the cells
+    near the body, then measures the actual points (no cell-size margin).
+    """
+
+    MAX_CELLS = 20_000_000
+
+    def __init__(self, points, name="", cell=0.05, contact=POINT_CLOUD_CONTACT):
+        pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        self.name = name
+        self.contact = contact
+        self.points = pts
+        self.lo = pts.min(axis=0) if len(pts) else np.zeros(3)
+        extent = (pts.max(axis=0) - self.lo) if len(pts) else np.zeros(3)
+        while np.prod(np.floor(extent / cell) + 1) > self.MAX_CELLS:
+            cell *= 1.5
+        self.cell = cell
+        self.dims = (np.floor(extent / cell) + 1).astype(np.int64)
+        ijk = np.floor((pts - self.lo) / cell).astype(np.int64)
+        ids = (ijk[:, 0] * self.dims[1] + ijk[:, 1]) * self.dims[2] + ijk[:, 2]
+        self.order = np.argsort(ids, kind="stable")
+        counts = np.bincount(ids, minlength=int(np.prod(self.dims)))
+        self.starts = np.concatenate([[0], np.cumsum(counts)])
+        self.occupied = (counts > 0).reshape(tuple(self.dims))
+
+    def _points_near_box(self, lo, hi):
+        """Points in the cells overlapping the box [lo, hi] (a superset)."""
+        i0 = np.maximum(np.floor((lo - self.lo) / self.cell).astype(np.int64), 0)
+        i1 = np.minimum(np.floor((hi - self.lo) / self.cell).astype(np.int64), self.dims - 1)
+        if np.any(i1 < i0):
+            return None
+        sub = self.occupied[i0[0]:i1[0] + 1, i0[1]:i1[1] + 1, i0[2]:i1[2] + 1]
+        cells = np.argwhere(sub)
+        if len(cells) == 0:
+            return None
+        cells += i0
+        ids = (cells[:, 0] * self.dims[1] + cells[:, 1]) * self.dims[2] + cells[:, 2]
+        begin, end = self.starts[ids], self.starts[ids + 1]
+        n = end - begin
+        idx = np.repeat(begin - np.concatenate([[0], np.cumsum(n)[:-1]]), n) + np.arange(n.sum())
+        return self.points[self.order[idx]]
+
+    def hits_capsule(self, cap):
+        reach = cap.radius + self.contact
+        lo = np.minimum(cap.p0, cap.p1) - reach
+        hi = np.maximum(cap.p0, cap.p1) + reach
+        pts = self._points_near_box(lo, hi)
+        if pts is None:
+            return False
+        d = cap.p1 - cap.p0
+        L2 = float(d @ d)
+        t = np.clip((pts - cap.p0) @ d / L2, 0.0, 1.0) if L2 > 0 else np.zeros(len(pts))
+        dist2 = np.sum((pts - (cap.p0 + t[:, None] * d)) ** 2, axis=1)
+        return bool(np.any(dist2 <= reach * reach))
+
+    def hits_box(self, lo, hi):
+        """Any point within the contact distance of the box [lo, hi]?"""
+        pts = self._points_near_box(lo - self.contact, hi + self.contact)
+        if pts is None:
+            return False
+        over = np.maximum(0.0, np.maximum(lo - pts, pts - hi))
+        return bool(np.any(np.sum(over * over, axis=1) <= self.contact ** 2))
+
+
+# Clouds already indexed, by (object id, world pose): indexing millions of
+# points takes seconds, and a scan rarely moves between plans.
+_CLOUD_CACHE: dict = {}
+
+
+def point_cloud_obstacle(obj, local_points):
+    """A PointCloudObstacle for one listObjects entry and its local points
+    (the viewer's exportObjectPoints, in the object's frame)."""
+    key = (obj["id"], tuple(obj["worldPosition"]), tuple(obj["worldRotation"]), tuple(obj["scale"]))
+    if key not in _CLOUD_CACHE:
+        pos, q = api_pose_to_three(obj["worldPosition"], obj["worldRotation"])
+        w, x, y, z = q
+        R = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+                      [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+                      [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
+        pts = np.asarray(local_points, dtype=np.float64).reshape(-1, 3) * np.asarray(obj["scale"], float)
+        if len(_CLOUD_CACHE) >= 4:
+            _CLOUD_CACHE.pop(next(iter(_CLOUD_CACHE)))
+        _CLOUD_CACHE[key] = PointCloudObstacle(pts @ R.T + pos, obj.get("name", ""))
+    cloud = _CLOUD_CACHE[key]
+    cloud._from_viewer = True
+    return cloud
+
+
 def _aabb_overlap(lo1, hi1, lo2, hi2):
     return bool(np.all(hi1 >= lo2) and np.all(hi2 >= lo1))
 
@@ -481,7 +581,7 @@ class RobotPlanner:
             added += 1
         return added
 
-    def sync_from_viewer(self, devices, objects, device_index):
+    def sync_from_viewer(self, devices, objects, device_index, fetch_points=None):
         """
         Take the scene from the viewer's listDevices and listObjects replies,
         for planning the device at `device_index` (its place in that list):
@@ -490,7 +590,10 @@ class RobotPlanner:
           * every other visible serial device as fixed capsules, at its
             current joints and pose (its fitted capsules, so they enclose it);
           * objects parented to a link of this device as payload carried by
-            that link; every other visible object as a fixed box.
+            that link; every other visible object as a fixed box;
+          * visible point clouds (and PLY splats) as their points, when
+            `fetch_points(id)` is given: it returns the object's collision
+            points in its local frame (the viewer's exportObjectPoints).
 
         Returns the number of obstacles and carried objects taken in.
         """
@@ -516,7 +619,13 @@ class RobotPlanner:
         world_now = fk_world(self.all_joints, current)
         link_joint = {l["name"]: l["joint"] for l in self._config["links"]}
         for obj in objects:
-            if not obj.get("visible", True) or obj.get("worldBB") is None:
+            if not obj.get("visible", True):
+                continue
+            if obj.get("hasCollisionPoints"):
+                if fetch_points is not None:
+                    self.obstacles.append(point_cloud_obstacle(obj, fetch_points(obj["id"])))
+                continue
+            if obj.get("worldBB") is None:
                 continue
             lo, hi = obj["worldBB"]["min"], obj["worldBB"]["max"]
             lo = np.array([lo[0], lo[2], lo[1]], dtype=float)
@@ -686,6 +795,8 @@ class RobotPlanner:
                     hit = capsule_aabb_collide(cap, obs)
                 elif isinstance(obs, CapsuleObstacle):
                     hit = capsules_collide(cap, obs.capsule)
+                elif isinstance(obs, PointCloudObstacle):
+                    hit = obs.hits_capsule(cap)
                 else:
                     hit = capsule_sphere_collide(cap, obs.centre, obs.radius)
                 if hit:
@@ -697,6 +808,8 @@ class RobotPlanner:
                     hit = _aabb_overlap(lo, hi, obs.min, obs.max)
                 elif isinstance(obs, CapsuleObstacle):
                     hit = capsule_aabb_collide(obs.capsule, AABBObstacle(min=lo, max=hi))
+                elif isinstance(obs, PointCloudObstacle):
+                    hit = obs.hits_box(lo, hi)
                 else:
                     hit = capsule_aabb_collide(Capsule(obs.centre, obs.centre, obs.radius),
                                                AABBObstacle(min=lo, max=hi))

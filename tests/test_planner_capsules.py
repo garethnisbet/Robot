@@ -204,3 +204,35 @@ def test_carried_payload_moves_with_its_link(engine, config_path):
     engine.request({"cmd": "home"})
     assert contacts >= 15, contacts
     assert misses == 0, f"planner missed {misses} of {contacts} payload contacts"
+
+
+def test_planner_never_misses_a_point_cloud_contact(engine, config_path):
+    """A scanned sheet of points near the tool: whenever the viewer's check
+    has the arm touching it, so does the planner."""
+    import base64, copy
+    from test_headless_client import wall_points, cloud_record, scene, exporter
+    fresh(engine, "meca500_config.json")
+    ee = reply(engine.request({"cmd": "setJoints", "angles": [30, 20, 10, 0, 30, 0]}), "state")["eePosition"]
+    engine.request({"cmd": "home"})
+    pts = wall_points([ee[0] + 60, ee[1], ee[2]], size=0.4, step=0.01)
+    fetch = lambda i, off, n: {"id": i, "total": len(pts), "offset": off,
+                               "count": len(pts[off:off + n]),
+                               "positions": base64.b64encode(pts[off:off + n].tobytes()).decode()}
+    engine.sync_scene(exporter(scene(extra=[cloud_record("scan", "Scan")])), fetch)
+    engine.request({"cmd": "setFloorCollision", "enabled": False})
+    objects = reply(engine.request({"cmd": "listObjects"}), "objects")["objects"]
+    assert [o["hasCollisionPoints"] for o in objects] == [True]
+    devices = reply(engine.request({"cmd": "listDevices"}), "devices")["devices"]
+    p = RobotPlanner(config_path("meca500"))
+    p.sync_from_viewer(devices, objects, 0, fetch_points=lambda i: pts)
+    p._floor_checked = [False] * len(p._floor_checked)
+    rng = np.random.default_rng(12)
+    contacts = misses = 0
+    for _ in range(150):
+        q = random_pose(p, rng, {0: (0, 60), 1: (-10, 60), 2: (-40, 40)})
+        verdict = engine.check_path(0, [q])
+        seen = not verdict["ok"] and any("Scan" in (pp["link"], pp["object"]) for pp in verdict.get("pairs", []))
+        contacts += seen
+        misses += seen and p.diagnose(q) is None
+    assert contacts >= 15, contacts
+    assert misses == 0, f"planner missed {misses} of {contacts} scan contacts"

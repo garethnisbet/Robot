@@ -922,7 +922,9 @@ The planner takes the scene from the viewer (`RobotPlanner.sync_from_viewer`):
 - **Objects parented to one of the device's links.** Payload such as a detector on the flange is carried by that link, as its bounding box in the link's frame.
 - **Every other visible object.** Each becomes a fixed box.
 
-Point clouds and hexapods are not modelled by the planner's search yet. The exact check covers point clouds, so a path through one is rejected, but the planner does not steer around it.
+- **Visible point clouds and PLY splats.** Each is taken as its actual points, fetched once with `exportObjectPoints` and shared with the headless engine. The planner uses the viewer's contact rule: a point within 40 mm of a link. Because each capsule encloses its link, a point within the capsule's radius plus 40 mm of its axis counts, so the planner never misses a contact the viewer would report. The points are indexed in a grid, so a check costs a few milliseconds even for a scan of millions of points.
+
+Hexapods are not modelled by the planner yet.
 
 `headless/compare-live.mjs` checks the two agree. It runs the same random poses and object positions against a live viewer and the headless engine and reports any difference. It only runs on a viewer holding one serial device and no objects, and it restores the viewer afterwards. Auto-save is per origin, so use a viewer on its own port to keep your working scene out of it:
 

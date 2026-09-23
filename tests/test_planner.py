@@ -106,3 +106,29 @@ def test_fixed_joints_are_part_of_the_arm(config_path):
     # GP280's base column is a fixed joint: the shoulder sits 650 mm up.
     shoulder = RobotPlanner(config_path("gp280")).fk_frames([0] * 6)[2][0]
     assert shoulder[1] == pytest.approx(0.65, abs=1e-3)
+
+
+def test_point_cloud_contact_matches_the_viewer_rule():
+    # Contact is a point within radius + 40 mm of the capsule's axis.
+    cap = Capsule(np.zeros(3), np.array([0.5, 0, 0]), 0.05)
+    reach = 0.05 + planner.POINT_CLOUD_CONTACT
+    inside = planner.PointCloudObstacle([[0.25, reach - 1e-6, 0], [3, 3, 3]])
+    outside = planner.PointCloudObstacle([[0.25, reach + 1e-6, 0], [3, 3, 3]])
+    beyond_end = planner.PointCloudObstacle([[0.5 + reach + 1e-6, 0, 0]])
+    assert inside.hits_capsule(cap)
+    assert not outside.hits_capsule(cap)
+    assert not beyond_end.hits_capsule(cap)
+
+
+def test_point_cloud_index_finds_points_in_every_cell():
+    # Random points across many cells: the grid must agree with brute force.
+    rng = np.random.default_rng(3)
+    pts = rng.uniform(-1, 1, (20000, 3))
+    cloud = planner.PointCloudObstacle(pts, cell=0.07)
+    for _ in range(200):
+        p0, p1 = rng.uniform(-1.2, 1.2, 3), rng.uniform(-1.2, 1.2, 3)
+        cap = Capsule(p0, p1, rng.uniform(0, 0.05))
+        d = p1 - p0
+        t = np.clip((pts - p0) @ d / (d @ d), 0, 1)
+        brute = np.min(np.linalg.norm(pts - (p0 + t[:, None] * d), axis=1)) <= cap.radius + cloud.contact
+        assert cloud.hits_capsule(cap) == brute
