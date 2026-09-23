@@ -502,6 +502,7 @@ export function setActiveDevice(dev) {
 // ============================================================
 export function rebuildDeviceList() {
   const list = document.getElementById('device-list');
+  if (!list) return;   // no page (headless)
   list.innerHTML = '';
   for (const dev of State.devices) {
     const item = document.createElement('div');

@@ -252,6 +252,7 @@ export function buildDeviceInfo(dev) {
     parent: dev.parentLink || null,
     isKappa: dev.isKappaGeometry || false,
     deviceType: dev.type || 'serial',
+    visible: dev.rootGroup.visible,
     mode: dev.ikMode ? 'IK' : 'FK',
     links: Object.keys(dev.linkToJoint || {}),
     ...(dev.type === 'hexapod' ? { platformPose: [...dev.platformPose] } : {}),
@@ -907,7 +908,7 @@ export function handleCommand(data) {
     }
     if (data.name !== undefined && typeof data.name === 'string') {
       entry.name = data.name.trim();
-      entry.label.element.textContent = entry.name;
+      if (entry.label) entry.label.element.textContent = entry.name;
     }
     const idx = State.importedSTLs.indexOf(entry);
     wsSend({ type: 'object', ...buildObjectInfo(entry, idx) });

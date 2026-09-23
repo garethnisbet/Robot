@@ -343,7 +343,16 @@ async def _exact(waypoints, device: Optional[str], resolution_deg: float):
     try:
         r = await asyncio.to_thread(engine.sync, meta["scene"])
         if r.get("needBuffers"):
-            full = await viewer().request({"cmd": "exportScene"}, "scene", timeout=120.0)
+            try:
+                full = await viewer().request({"cmd": "exportScene"}, "scene", timeout=120.0)
+            except RuntimeError:
+                # The small export arrived, so the viewer is there; the one
+                # carrying geometry did not. The relay drops messages over its
+                # limit (4 MB in server.py before 2026-09-23, 64 MB since).
+                await viewer().close()
+                return None, ("the viewer's scene export (with geometry) never arrived; "
+                              "it is likely larger than the relay server's message limit. "
+                              "Restart server.py from this version (64 MB limit)")
             r = await asyncio.to_thread(engine.sync, full["scene"])
         index, _ = await _target_device(device)
         return await asyncio.to_thread(engine.check_path, index, waypoints, resolution_deg), None
@@ -380,14 +389,21 @@ def _planner(step_deg: float = 5.0, config_path: Optional[str] = None):
     return RobotPlanner(config_path or _config_path, step_deg=step_deg)
 
 
-async def _planner_with_scene(step_deg: float = 5.0, config_path: Optional[str] = None):
-    """A planner whose obstacles are the objects currently in the viewer."""
-    p = _planner(step_deg, config_path)
+async def _planner_with_scene(step_deg: float = 5.0, device: Optional[str] = None):
+    """A planner for the viewer's device (default: the active one), placed
+    where the viewer has it, with the rest of the scene as obstacles: other
+    devices, objects, and payload the device carries."""
     try:
+        index, dev = await _target_device(device)
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), dev["config"])
+        p = _planner(step_deg, config_path)
+        devs = (await viewer().request({"cmd": "listDevices"}, "devices", timeout=5.0))["devices"]
         objs = await viewer().request({"cmd": "listObjects"}, "objects", timeout=5.0)
-        n = p.sync_from_viewer_objects(objs.get("objects", []))
+        n = p.sync_from_viewer(devs, objs.get("objects", []), index)
     except Exception:
-        n = 0
+        # Viewer unreachable or too old for the fields above: plan the
+        # startup config at the origin against nothing, and say so.
+        p, n = _planner(step_deg), 0
     return p, n
 
 
@@ -404,9 +420,9 @@ def _densify(waypoints, interpolate_deg):
     return samples
 
 
-async def _capsule_verdict(waypoints, interpolate_deg, why_not_exact):
+async def _capsule_verdict(waypoints, device, interpolate_deg, why_not_exact):
     """The approximate check, used only when the exact one cannot run."""
-    p, n_obs = await _planner_with_scene()
+    p, n_obs = await _planner_with_scene(device=device)
     samples = _densify(waypoints, interpolate_deg)
     base = {"checked_by": f"capsule approximation (exact check unavailable: {why_not_exact})",
             "samples_checked": len(samples), "obstacles_considered": n_obs}
@@ -423,7 +439,7 @@ async def _verdict(waypoints, device, interpolate_deg) -> dict:
     r, why_not = await _exact(waypoints, device, interpolate_deg)
     if r is not None:
         return _exact_verdict(r)
-    return await _capsule_verdict(waypoints, interpolate_deg, why_not)
+    return await _capsule_verdict(waypoints, device, interpolate_deg, why_not)
 
 
 @mcp.tool()
@@ -485,12 +501,7 @@ async def plan_path(start: list[float], goal: list[float],
         step_deg: planner resolution in degrees. Smaller finds tighter routes, slower.
         device: device name; defaults to the active device.
     """
-    try:
-        _, dev = await _target_device(device)
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), dev["config"])
-    except Exception:
-        dev, config_path = None, None
-    p, n_obs = await _planner_with_scene(step_deg, config_path)
+    p, n_obs = await _planner_with_scene(step_deg, device)
 
     attempts = []
     for _ in range(3):

@@ -59,6 +59,24 @@ def qfrom_axis_angle(axis, angle_rad):
 # Forward kinematics  (matches Three.js Object3D hierarchy)
 # ---------------------------------------------------------------------------
 
+def api_pose_to_three(position_mm, rotation_deg):
+    """A pose as the viewer reports it (worldPosition in mm and worldRotation
+    in degrees, both in API axis order [x, z, y] of Three.js) to a Three.js
+    position (m) and quaternion [w, x, y, z]."""
+    pos = np.array([position_mm[0], position_mm[2], position_mm[1]], dtype=float) / 1000.0
+    ex, ey, ez = (math.radians(rotation_deg[0]), math.radians(rotation_deg[2]),
+                  math.radians(rotation_deg[1]))
+    # Three.js Euler 'XYZ': q = qx · qy · qz
+    q = qmul(qmul(qfrom_axis_angle(np.array([1.0, 0, 0]), ex),
+                  qfrom_axis_angle(np.array([0, 1.0, 0]), ey)),
+             qfrom_axis_angle(np.array([0, 0, 1.0]), ez))
+    return pos, q
+
+
+def qinv(q):
+    return np.array([q[0], -q[1], -q[2], -q[3]])
+
+
 def fk_world(joints_cfg, angles_deg):
     """
     World pose of every joint in the config, matching the viewer's chain
@@ -211,6 +229,27 @@ class AABBObstacle:
     _from_viewer: bool = False
 
 
+@dataclass
+class CapsuleObstacle:
+    """A fixed capsule in world space: a link of another device."""
+    capsule: Capsule
+    name: str = ""
+    _from_viewer: bool = False
+
+
+@dataclass
+class AttachedBox:
+    """A box carried by a link of the planning device (payload such as a
+    detector on the flange), in that link's joint frame."""
+    joint: int
+    corners: np.ndarray        # 8 x 3, joint frame, metres
+    name: str = ""
+
+
+def _aabb_overlap(lo1, hi1, lo2, hi2):
+    return bool(np.all(hi1 >= lo2) and np.all(hi2 >= lo1))
+
+
 def _segment_aabb_min_dist(p0, p1, aabb_min, aabb_max):
     """Minimum distance from segment p0-p1 to AABB [aabb_min, aabb_max].
 
@@ -277,6 +316,8 @@ class RobotPlanner:
     ):
         with open(config_path) as f:
             cfg = json.load(f)
+        self.config_path = config_path
+        self._config = cfg
 
         self.all_joints = cfg["joints"]
         self.joints_cfg = [j for j in self.all_joints if not j.get("fixed")]
@@ -324,7 +365,12 @@ class RobotPlanner:
             self._self_pairs = [(i, j) for i in range(self.n) for j in range(i + 2, self.n)]
             self._floor_checked = [False] * self.n
 
-        self.obstacles: list[Obstacle] = obstacles or []
+        self.obstacles: list = obstacles or []
+        # Where the device stands in the world (Three.js frame). Its capsules
+        # are computed in its own frame and carried out by this pose.
+        self.base_pos = np.zeros(3)
+        self.base_quat = np.array([1.0, 0.0, 0.0, 0.0])
+        self.attached: list[AttachedBox] = []
         self.step_deg   = step_deg
         self.max_iter   = max_iter
         self.goal_bias  = goal_bias
@@ -434,6 +480,63 @@ class RobotPlanner:
             self.obstacles.append(obs)
             added += 1
         return added
+
+    def sync_from_viewer(self, devices, objects, device_index):
+        """
+        Take the scene from the viewer's listDevices and listObjects replies,
+        for planning the device at `device_index` (its place in that list):
+
+          * the device's world pose;
+          * every other visible serial device as fixed capsules, at its
+            current joints and pose (its fitted capsules, so they enclose it);
+          * objects parented to a link of this device as payload carried by
+            that link; every other visible object as a fixed box.
+
+        Returns the number of obstacles and carried objects taken in.
+        """
+        me = devices[device_index]
+        self.set_base_pose(*api_pose_to_three(me["worldPosition"], me["worldRotation"]))
+        self.obstacles = [o for o in self.obstacles if not getattr(o, '_from_viewer', False)]
+        self.attached = []
+        here = os.path.dirname(os.path.abspath(self.config_path))
+
+        for i, d in enumerate(devices):
+            if i == device_index or not d.get("visible", True) or d.get("deviceType") != "serial":
+                continue
+            config = os.path.join(here, d["config"])
+            if not os.path.exists(config.replace("_config.json", "_capsules.json")):
+                continue        # no enclosing shapes to stand in for it
+            other = RobotPlanner(config)
+            other.set_base_pose(*api_pose_to_three(d["worldPosition"], d["worldRotation"]))
+            joints = np.asarray(d["joints"], dtype=float)
+            for (link, *_), cap in zip(other._links, other._capsules(joints)):
+                self.obstacles.append(CapsuleObstacle(cap, f"{d['name']}:{link}", _from_viewer=True))
+
+        current = np.asarray(me["joints"], dtype=float)
+        world_now = fk_world(self.all_joints, current)
+        link_joint = {l["name"]: l["joint"] for l in self._config["links"]}
+        for obj in objects:
+            if not obj.get("visible", True) or obj.get("worldBB") is None:
+                continue
+            lo, hi = obj["worldBB"]["min"], obj["worldBB"]["max"]
+            lo = np.array([lo[0], lo[2], lo[1]], dtype=float)
+            hi = np.array([hi[0], hi[2], hi[1]], dtype=float)
+            parent = obj.get("parent") or ""
+            dev_id, _, link = parent.partition(":")
+            if dev_id == me["id"] and link in link_joint:
+                # Carried: its box, fixed in the link's joint frame.
+                j = link_joint[link]
+                pos, ori = world_now[j]
+                corners = np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1])
+                                    for z in (lo[2], hi[2])])
+                to_joint = [qrot(qinv(ori), qrot(qinv(self.base_quat), c - self.base_pos) - pos)
+                            for c in corners]
+                self.attached.append(AttachedBox(j, np.array(to_joint), obj.get("name", "")))
+            else:
+                obs = AABBObstacle(min=lo, max=hi, name=obj.get("name", ""))
+                obs._from_viewer = True
+                self.obstacles.append(obs)
+        return len(self.obstacles) + len(self.attached)
 
     def fk_frames(self, angles_deg):
         """Return FK frames for given joint angles (degrees)."""
@@ -579,11 +682,26 @@ class RobotPlanner:
             if self._floor_checked[i] and min(cap.p0[1], cap.p1[1]) - cap.radius < 0:
                 return f"{names[i]} goes below the floor"
             for obs in self.obstacles:
-                hit = (capsule_aabb_collide(cap, obs)
-                       if isinstance(obs, AABBObstacle)
-                       else capsule_sphere_collide(cap, obs.centre, obs.radius))
+                if isinstance(obs, AABBObstacle):
+                    hit = capsule_aabb_collide(cap, obs)
+                elif isinstance(obs, CapsuleObstacle):
+                    hit = capsules_collide(cap, obs.capsule)
+                else:
+                    hit = capsule_sphere_collide(cap, obs.centre, obs.radius)
                 if hit:
                     return f"{names[i]} collides with {obs.name or 'obstacle'}"
+
+        for lo, hi, name in self._attached_boxes(q):
+            for obs in self.obstacles:
+                if isinstance(obs, AABBObstacle):
+                    hit = _aabb_overlap(lo, hi, obs.min, obs.max)
+                elif isinstance(obs, CapsuleObstacle):
+                    hit = capsule_aabb_collide(obs.capsule, AABBObstacle(min=lo, max=hi))
+                else:
+                    hit = capsule_aabb_collide(Capsule(obs.centre, obs.centre, obs.radius),
+                                               AABBObstacle(min=lo, max=hi))
+                if hit:
+                    return f"{name} (carried) collides with {obs.name or 'obstacle'}"
 
         return None
 
@@ -592,10 +710,32 @@ class RobotPlanner:
             return [l[0] for l in self._links]
         return [j.get("name", f"link {i}") for i, j in enumerate(self.joints_cfg)]
 
+    def set_base_pose(self, position, quaternion_wxyz):
+        """Place the device in the world (Three.js frame, metres)."""
+        self.base_pos = np.asarray(position, dtype=float)
+        self.base_quat = np.asarray(quaternion_wxyz, dtype=float)
+
+    def _to_world(self, p):
+        return self.base_pos + qrot(self.base_quat, p)
+
     def _capsules(self, q):
         if self.capsule_source == "fitted":
-            return self._link_capsules(q)
-        return self._make_capsules(fk(self.all_joints, q))
+            local = self._link_capsules(q)
+        else:
+            local = self._make_capsules(fk(self.all_joints, q))
+        return [Capsule(self._to_world(c.p0), self._to_world(c.p1), c.radius) for c in local]
+
+    def _attached_boxes(self, q):
+        """World AABBs of the attached payload at pose q."""
+        if not self.attached:
+            return []
+        world = fk_world(self.all_joints, q)
+        boxes = []
+        for box in self.attached:
+            pos, ori = world[box.joint]
+            pts = np.array([self._to_world(pos + qrot(ori, c)) for c in box.corners])
+            boxes.append((pts.min(axis=0), pts.max(axis=0), box.name))
+        return boxes
 
     def _link_capsules(self, q):
         """Each link's fitted capsule, placed by its joint's world frame."""

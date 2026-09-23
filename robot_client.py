@@ -1805,14 +1805,20 @@ class RobotClient:
                   f"got start={len(start_vals)} end={len(end_vals)}")
             return
 
-        # Fetch scene objects for collision obstacles
+        # The rest of the scene: other devices, objects, carried payload
         objects_data = self._send_and_wait({"cmd": "listObjects"}, "objects", timeout=3.0)
         obj_list = objects_data.get("objects", []) if objects_data else []
+        devices_data = self._send_and_wait({"cmd": "listDevices"}, "devices", timeout=3.0)
+        dev_list = devices_data.get("devices", []) if devices_data else []
 
         planner = RobotPlanner(self._config_path, step_deg=stepsize)
-        n_obs = planner.sync_from_viewer_objects(obj_list)
+        active = next((i for i, d in enumerate(dev_list) if d.get("active")), None)
+        if active is not None and "worldPosition" in dev_list[active]:
+            n_obs = planner.sync_from_viewer(dev_list, obj_list, active)
+        else:
+            n_obs = planner.sync_from_viewer_objects(obj_list)
         if n_obs:
-            print(f"  {_dim(f'Using {n_obs} scene object(s) as collision obstacles')}")
+            print(f"  {_dim(f'Using {n_obs} scene item(s) as obstacles or carried payload')}")
 
         msg = f'Planning... (step size {stepsize}\u00b0)'
         print(f"  {_dim(msg)}")
@@ -1878,7 +1884,10 @@ class RobotClient:
                 msg["buffers"] = False
             reply = self._send_and_wait(msg, "scene", timeout=60.0)
             if reply is None:
-                raise RuntimeError("the viewer did not answer exportScene; reload the page")
+                raise RuntimeError(
+                    "the viewer's scene export never arrived: reload a page older than "
+                    "exportScene, or restart server.py if the scene is larger than its "
+                    "message limit (4 MB before 2026-09-23, 64 MB since)")
             return reply["scene"]
 
         try:
