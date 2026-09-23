@@ -908,7 +908,7 @@ await engine.handle({ cmd: 'setJoints', angles: [0, 60, 60, 0, 60, 0] });
 const [reply] = await engine.handle({ cmd: 'getCollisions' });   // reply.pairs
 ```
 
-It also accepts `{ cmd: 'loadScene', scene }` with a scene saved by the viewer. Not yet supported headless: hexapods, point clouds and splats (a loaded scene lists them in `skipped`), and commands that need the page (camera, capture, labels).
+It also accepts `{ cmd: 'loadScene', scene }` with a scene saved by the viewer. Point clouds and PLY splats are collision-checked like the viewer's, from the same points. Those points travel separately from the scene (`exportObjectPoints`, in chunks), once per cloud. Not yet supported headless: hexapods (listed in `skipped`), and commands that need the page (camera, capture, labels).
 
 ### Planning against it
 
@@ -922,7 +922,7 @@ The planner takes the scene from the viewer (`RobotPlanner.sync_from_viewer`):
 - **Objects parented to one of the device's links.** Payload such as a detector on the flange is carried by that link, as its bounding box in the link's frame.
 - **Every other visible object.** Each becomes a fixed box.
 
-Point clouds, splats and hexapods are not modelled yet.
+Point clouds and hexapods are not modelled by the planner's search yet. The exact check covers point clouds, so a path through one is rejected, but the planner does not steer around it.
 
 `headless/compare-live.mjs` checks the two agree. It runs the same random poses and object positions against a live viewer and the headless engine and reports any difference. It only runs on a viewer holding one serial device and no objects, and it restores the viewer afterwards. Auto-save is per origin, so use a viewer on its own port to keep your working scene out of it:
 

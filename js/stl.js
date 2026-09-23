@@ -653,6 +653,7 @@ export const DEFAULT_POINT_SIZE = 0.003;
 const _pointTextures = {};
 function _getPointTexture(shape) {
   if (shape !== 'round' && shape !== 'soft') return null;
+  if (typeof document.createElement !== 'function') return null;   // no page (headless)
   if (!_pointTextures[shape]) {
     const c = document.createElement('canvas');
     c.width = c.height = 64;
@@ -704,7 +705,10 @@ export function applyPointCloudSettings(entry) {
 // paths pass explicit transforms, which already include this rotation.
 const ZUP_TO_YUP_X = -Math.PI / 2;
 
-export function _addPointsToScene(geometry, buffer, name, color, stlId, transforms, fileName = null, zUp = false) {
+// A point cloud with no page attached: Points, transforms, and its entry in
+// State.importedSTLs (parented if the transforms say so). Shared by the
+// viewer and the headless engine.
+export function createPointsEntry(geometry, buffer, name, color, stlId, transforms, fileName = null, zUp = false) {
   const hasVertexColors = geometry.hasAttribute('color');
   const matColor = hasVertexColors ? 0xffffff : color;
   const material = new THREE.PointsMaterial({
@@ -724,6 +728,20 @@ export function _addPointsToScene(geometry, buffer, name, color, stlId, transfor
   }
 
   State.scene.add(points);
+  const entry = { mesh: points, label: null, name, color: matColor, opacity: material.opacity, stlId, _buffer: buffer, fileType: 'ply', isPointCloud: true, pointSize: DEFAULT_POINT_SIZE, pointShape: 'square', parentLink: null, importScale: points.scale.clone(), _fileName: fileName || null };
+  State.importedSTLs.push(entry);
+  State.setStlColorIdx(Math.max(State.stlColorIdx, stlColors.indexOf(color) + 1));
+
+  if (transforms && transforms.parentLink) {
+    setSTLParent(entry, transforms.parentLink, true);
+  }
+  return entry;
+}
+
+export function _addPointsToScene(geometry, buffer, name, color, stlId, transforms, fileName = null, zUp = false) {
+  const entry = createPointsEntry(geometry, buffer, name, color, stlId, transforms, fileName, zUp);
+  const points = entry.mesh;
+
   const box = new THREE.Box3().setFromObject(points);
   const div = document.createElement('div');
   div.className = 'mesh-label';
@@ -734,17 +752,20 @@ export function _addPointsToScene(geometry, buffer, name, color, stlId, transfor
   points.worldToLocal(center);
   label.position.copy(center);
   points.add(label);
+  entry.label = label;
 
-  const entry = { mesh: points, label, name, color: matColor, opacity: material.opacity, stlId, _buffer: buffer, fileType: 'ply', isPointCloud: true, pointSize: DEFAULT_POINT_SIZE, pointShape: 'square', parentLink: null, importScale: points.scale.clone(), _fileName: fileName || null };
-  State.importedSTLs.push(entry);
-  State.setStlColorIdx(Math.max(State.stlColorIdx, stlColors.indexOf(color) + 1));
   addSTLListItem(entry);
-
-  if (transforms && transforms.parentLink) {
-    setSTLParent(entry, transforms.parentLink, true);
-  }
   State.requestRender();
   return entry;
+}
+
+// The positions an object's collision check uses, in its local frame: a
+// point cloud's own points, or the points extracted from a PLY splat. Null
+// for anything else (meshes, and splats the viewer does not check).
+export function collisionPositions(entry) {
+  const pts = entry.isPointCloud ? entry.mesh : entry.isSplat ? entry._collisionPoints : null;
+  const pos = pts && pts.geometry.getAttribute('position');
+  return pos ? pos.array : null;
 }
 
 // The object itself, with no page attached: mesh, BVH, transforms, and its

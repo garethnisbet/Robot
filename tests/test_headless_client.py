@@ -137,3 +137,71 @@ def test_wrong_joint_count_is_refused(engine):
     engine.sync_scene(exporter(scene()))
     r = engine.check_path("Meca500", [[0, 0, 0]])
     assert not r["ok"] and "6 joints" in r["reason"]
+
+
+# ── Point clouds and PLY splats ─────────────────────────────────────────────
+
+def wall_points(centre_mm, size=0.12, step=0.004):
+    """A square sheet of points (a scanned wall), facing the arm, centred on
+    an API position; float32 positions in the object's local frame (metres)."""
+    import numpy as np
+    c = np.array(api_to_three(centre_mm))
+    u = np.arange(-size / 2, size / 2 + 1e-9, step)
+    pts = [(c[0], c[1] + a, c[2] + b) for a in u for b in u]
+    return np.array(pts, dtype="<f4")
+
+
+def cloud_record(obj_id, name, visible=True, splat=False):
+    rec = {"id": obj_id, "name": name, "fileType": "ply", "sourceFile": f"{name}.ply",
+           "position": [0, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1],
+           "visible": visible, "parentLink": None}
+    rec["isSplat" if splat else "isPointCloud"] = True
+    return rec
+
+
+def point_server(clouds):
+    """Stand-in for the viewer's exportObjectPoints, recording each call."""
+    calls = []
+    def fetch(obj_id, offset, count):
+        pts = clouds[obj_id]
+        chunk = pts[offset:offset + count]
+        calls.append((obj_id, offset, len(chunk)))
+        return {"id": obj_id, "total": len(pts), "offset": offset, "count": len(chunk),
+                "positions": base64.b64encode(chunk.tobytes()).decode()}
+    return fetch, calls
+
+
+@pytest.mark.parametrize("splat", [False, True], ids=["point cloud", "PLY splat"])
+def test_a_scanned_wall_blocks_the_sweep(engine, splat):
+    target = ee_at(engine, [45, 0, 0, 0, 0, 0])
+    oid = f"wall-{'s' if splat else 'p'}"
+    pts = wall_points(target)
+    fetch, calls = point_server({oid: pts})
+    engine.POINT_CHUNK = 1000                       # several chunks
+    try:
+        r = engine.sync_scene(exporter(scene(extra=[cloud_record(oid, "Wall", splat=splat)])), fetch)
+    finally:
+        engine.POINT_CHUNK = HeadlessEngine.POINT_CHUNK
+    assert len(calls) == -(-len(pts) // 1000) and r.get("needPoints") == []
+    sweep = engine.check_path("Meca500", [[0] * 6, [90, 0, 0, 0, 0, 0]])
+    assert not sweep["ok"] and any(p["object"] == "Wall" for p in sweep["pairs"]), sweep
+    assert sweep["unchecked"] == []
+    # Fetched once: a second sync moves things without asking again.
+    engine.sync_scene(exporter(scene(extra=[cloud_record(oid, "Wall", splat=splat)])), fetch)
+    assert len(calls) == -(-len(pts) // 1000)
+
+
+def test_a_hidden_cloud_is_not_fetched_and_does_not_block(engine):
+    target = ee_at(engine, [45, 0, 0, 0, 0, 0])
+    fetch, calls = point_server({"wall-h": wall_points(target)})
+    engine.sync_scene(exporter(scene(extra=[cloud_record("wall-h", "Wall", visible=False)])), fetch)
+    assert calls == []
+    assert engine.check_path("Meca500", [[0] * 6, [90, 0, 0, 0, 0, 0]])["ok"]
+
+
+def test_splats_the_viewer_does_not_check_are_not_reported(engine):
+    rec = cloud_record("sp", "Scan", splat=True)
+    rec["fileType"] = "splat"                       # not PLY: the viewer has no points for it
+    fetch, calls = point_server({})
+    engine.sync_scene(exporter(scene(extra=[rec])), fetch)
+    assert calls == [] and engine.check_path("Meca500", [[0] * 6])["unchecked"] == []

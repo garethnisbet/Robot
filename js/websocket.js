@@ -19,6 +19,7 @@ import {
   setSTLParent, addPrimitive, duplicateSTL, deselectSTL,
   exportSceneState, syncSTLVisibility,
   buildScenePayload, buildSceneMetadataForDB, sceneBufferSignature,
+  collisionPositions,
 } from './stl.js';
 import {
   clearCollisionHighlights, setCollisionHeadless, isCollisionHeadless, updateCollisionLoop,
@@ -1187,6 +1188,29 @@ export function handleCommand(data) {
     const scene = data.buffers === false ? buildSceneMetadataForDB() : buildScenePayload();
     wsSend({ type: 'scene', scene, signature: sceneBufferSignature(), _reqId: data._reqId });
 
+  } else if (cmd === 'exportObjectPoints') {
+    // The points an object's collision check uses (a point cloud's, or a
+    // PLY splat's), for a headless copy. Clouds run to millions of points,
+    // so they are fetched apart from exportScene and in chunks:
+    // { id, offset, count } in points; positions are little-endian float32,
+    // base64, in the object's local frame.
+    const entry = State.importedSTLs.find(e => e.stlId === data.id);
+    const all = entry && collisionPositions(entry);
+    if (!all) {
+      wsSend({ type: 'error', error: `No collision points for object ${data.id}`, _reqId: data._reqId });
+      return;
+    }
+    const total = all.length / 3;
+    const offset = Math.max(0, Math.min(total, data.offset | 0));
+    const count = Math.max(0, Math.min(total - offset, data.count ?? total));
+    const slice = new Float32Array(all.buffer, all.byteOffset + offset * 12, count * 3);
+    const bytes = new Uint8Array(slice.buffer, slice.byteOffset, slice.byteLength);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    wsSend({ type: 'objectPoints', id: data.id, total, offset, count, positions: btoa(binary), _reqId: data._reqId });
+
   } else if (cmd === 'captureImage') {
     // Render one frame and return it as a base64 PNG, so a remote client
     // (an MCP agent, a script) can see the scene without a human at the tab.
@@ -1287,6 +1311,7 @@ export function handleCommand(data) {
         // Scene
         getSceneState:    { params: '', description: 'Get full scene state (devices, objects, camera)' },
         exportScene:      { params: 'buffers?', description: 'Scene as Save Scene writes it (buffers: false for transforms only)' },
+        exportObjectPoints: { params: 'id, offset?, count?', description: "An object's collision points, in chunks (base64 float32)" },
         getStats:         { params: 'frames?, device?, transparency?', description: 'Benchmark frame time (blocks the viewer while it runs)' },
         saveScene:        { params: '', description: 'Trigger scene file download in viewer' },
         help:             { params: '', description: 'List all available commands' },

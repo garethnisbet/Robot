@@ -354,6 +354,21 @@ async def _exact(waypoints, device: Optional[str], resolution_deg: float):
                               "it is likely larger than the relay server's message limit. "
                               "Restart server.py from this version (64 MB limit)")
             r = await asyncio.to_thread(engine.sync, full["scene"])
+        # Point clouds and PLY splats: their points travel apart, in chunks,
+        # once per cloud.
+        for cloud in r.get("needPoints", []):
+            offset, total = 0, None
+            while total is None or offset < total:
+                chunk = await viewer().request(
+                    {"cmd": "exportObjectPoints", "id": cloud["id"], "offset": offset,
+                     "count": engine.POINT_CHUNK}, "objectPoints", timeout=120.0)
+                total = chunk["total"]
+                await asyncio.to_thread(engine._one, {
+                    "cmd": "setObjectPoints", "id": cloud["id"], "offset": chunk["offset"],
+                    "total": total, "positions": chunk["positions"]}, "objectPointsStored")
+                if chunk["count"] == 0:
+                    break
+                offset += chunk["count"]
         index, _ = await _target_device(device)
         return await asyncio.to_thread(engine.check_path, index, waypoints, resolution_deg), None
     except Exception as e:

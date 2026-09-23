@@ -95,14 +95,37 @@ class HeadlessEngine:
         the payload carries no geometry."""
         return self._one({"cmd": "syncScene", "scene": payload}, "sceneSynced")
 
-    def sync_scene(self, export):
+    # Points per exportObjectPoints chunk: 12 MB of float32, 16 MB as
+    # base64, well inside the relay's 64 MB message limit.
+    POINT_CHUNK = 1_000_000
+
+    def sync_scene(self, export, fetch_points=None):
         """Mirror a viewer's scene. `export(buffers)` returns the viewer's
         exportScene payload; geometry is fetched only when the scene's
-        structure changed since the last sync."""
+        structure changed since the last sync. `fetch_points(id, offset,
+        count)` returns the viewer's exportObjectPoints reply; it is called
+        for visible point clouds and splats the engine has no points for yet
+        (each is fetched once and kept). Without it, those stay unchecked."""
         r = self.sync(export(False))
         if r.get("needBuffers"):
             r = self.sync(export(True))
+        if fetch_points and r.get("needPoints"):
+            for cloud in r["needPoints"]:
+                self.upload_points(cloud["id"], fetch_points)
+            r = self.sync(export(False))
         return r
+
+    def upload_points(self, obj_id, fetch_points):
+        """Copy one object's collision points from the viewer, in chunks."""
+        offset, total = 0, None
+        while total is None or offset < total:
+            chunk = fetch_points(obj_id, offset, self.POINT_CHUNK)
+            total = chunk["total"]
+            self._one({"cmd": "setObjectPoints", "id": obj_id, "offset": chunk["offset"],
+                       "total": total, "positions": chunk["positions"]}, "objectPointsStored")
+            if chunk["count"] == 0:
+                break
+            offset += chunk["count"]
 
     def check_path(self, device, waypoints, resolution_deg=1.0):
         """Exact verdict for a joint-space path (API degrees). `device` is a

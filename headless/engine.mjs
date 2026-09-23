@@ -6,7 +6,8 @@
 // viewer's own modules: chain.js and model.js build devices, stl.js builds
 // objects, websocket.js answers commands, collision.js finds collisions.
 // Only the page (rendering, panels, labels) is left out, so a verdict here
-// is the verdict the viewer reaches for the same scene.
+// is the verdict the viewer reaches for the same scene. Point clouds and
+// PLY splats are checked from the viewer's own points (setObjectPoints).
 //
 // Needs the import-map hook: node --import ./headless/register.mjs …
 //
@@ -38,7 +39,8 @@ const { assembleDevice } = await import('../js/model.js');
 const { clampJoints } = await import('../js/kinematics.js');
 const { setDeviceParent } = await import('../js/panel.js');
 const {
-  createMeshEntry, parseMeshGeometry, primitiveSTLBuffer, applySavedObjectState, setSTLParent,
+  createMeshEntry, createPointsEntry, parseMeshGeometry, primitiveSTLBuffer, applySavedObjectState,
+  setSTLParent,
 } = await import('../js/stl.js');
 const { checkCollisionsNow } = await import('../js/collision.js');
 const {
@@ -154,9 +156,72 @@ export async function createEngine({ root = REPO_ROOT } = {}) {
     updateFK(dev);
   }
 
+  // Collision points of point clouds and PLY splats, by object id. They are
+  // fetched apart from the scene (exportObjectPoints, in chunks) and kept
+  // across rebuilds: a cloud does not change while its id stays the same.
+  const pointStore = new Map();      // id -> { total, data: Float32Array, filled }
+  let cloudRecs = new Map();         // id -> the cloud's latest scene record
+
+  // Does this record carry points the viewer collides? A point cloud does;
+  // a splat only when it came from a PLY (the viewer extracts points from
+  // those alone and does not check other splat formats).
+  const hasCollisionPoints = (rec) => rec.isPointCloud || (rec.isSplat && (rec.fileType || '') === 'ply');
+
+  // Build a cloud from its stored points, as the viewer holds it: a Points
+  // object for a point cloud; for a splat, its collision Points inside a
+  // wrapper group that carries the splat's transform.
+  function buildCloud(rec) {
+    const stored = pointStore.get(rec.id);
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(stored.data, 3));
+    geometry.computeBoundingBox();
+    let entry;
+    if (rec.isPointCloud) {
+      entry = createPointsEntry(geometry, null, rec.name, 0x44aaff, rec.id, null, rec.sourceFile || null);
+    } else {
+      const wrapper = new THREE.Group();
+      const points = new THREE.Points(geometry, new THREE.PointsMaterial({ size: 0.001, visible: false }));
+      points.visible = false;
+      wrapper.add(points);
+      State.scene.add(wrapper);
+      entry = { mesh: wrapper, name: rec.name, stlId: rec.id, fileType: rec.fileType, isSplat: true,
+                isPointCloud: false, parentLink: null, opacity: 1, _collisionPoints: points,
+                importScale: wrapper.scale.clone() };
+      State.importedSTLs.push(entry);
+    }
+    applySavedObjectState(entry, { ...rec, parentLink: remapParent(rec.parentLink, deviceIndexMap) });
+    skipped = skipped.filter(s => s.id !== rec.id);
+    return entry;
+  }
+
+  // One chunk of an object's collision points; builds the cloud once all
+  // have arrived.
+  function setObjectPoints({ id, offset, total, positions }) {
+    let stored = pointStore.get(id);
+    if (!stored || stored.total !== total) {
+      stored = { total, data: new Float32Array(total * 3), filled: 0 };
+      pointStore.set(id, stored);
+    }
+    const bytes = Buffer.from(positions, 'base64');
+    const chunk = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
+    stored.data.set(chunk, offset * 3);
+    stored.filled += chunk.length;
+    const complete = stored.filled >= total * 3;
+    const rec = cloudRecs.get(id);
+    if (complete && rec && !State.importedSTLs.some(e => e.stlId === id)) {
+      buildCloud(rec);
+      checkCollisionsNow();
+    }
+    return { id, complete };
+  }
+
+  // Clouds the check needs but has no points for: the visible ones.
+  const needPoints = () => skipped.filter(s => s.needPoints && s.visible).map(s => ({ id: s.id, name: s.name }));
+
   // Load a scene saved by the viewer (Save Scene, its auto-save format, or
-  // exportScene). Hexapods, point clouds and splats are not built; they are
-  // listed in `skipped`, since a check without them is not the viewer's.
+  // exportScene). Hexapods are not built, nor are clouds whose points have
+  // not been supplied yet; both are listed in `skipped`, since a check
+  // without them is not the viewer's.
   async function loadScene(payload) {
     reset();
     const indexMap = new Map();
@@ -180,9 +245,18 @@ export async function createEngine({ root = REPO_ROOT } = {}) {
     });
     State.scene.updateMatrixWorld(true);
 
+    cloudRecs = new Map();
     for (const rec of payload.stls || []) {
       if (rec.isPointCloud || rec.isSplat) {
-        skipped.push({ name: rec.name, kind: rec.isSplat ? 'splat' : 'point cloud', visible: rec.visible !== false });
+        if (!hasCollisionPoints(rec)) continue;          // the viewer does not check it either
+        cloudRecs.set(rec.id, rec);
+        const stored = pointStore.get(rec.id);
+        if (stored && stored.filled >= stored.total * 3) {
+          buildCloud(rec);
+        } else {
+          skipped.push({ id: rec.id, name: rec.name, kind: rec.isSplat ? 'splat' : 'point cloud',
+                         visible: rec.visible !== false, needPoints: true });
+        }
         continue;
       }
       if (!rec.buffer) throw new Error(`object '${rec.name}' has no geometry in the scene payload`);
@@ -195,12 +269,14 @@ export async function createEngine({ root = REPO_ROOT } = {}) {
     }
     loadedKey = structureKey(payload);
     checkCollisionsNow();
-    return { rebuilt: true, devices: State.devices.length, objects: State.importedSTLs.length, skipped };
+    return { rebuilt: true, devices: State.devices.length, objects: State.importedSTLs.length,
+             skipped, needPoints: needPoints() };
   }
 
   // Bring the scene in line with a viewer's: moves only while the structure
   // is unchanged, rebuilds otherwise. A payload without geometry can only
-  // move things; if a rebuild is needed it answers needBuffers.
+  // move things; if a rebuild is needed it answers needBuffers. Clouds whose
+  // points are still wanted are listed in needPoints.
   async function syncScene(payload) {
     if (structureKey(payload) !== loadedKey) {
       const meshes = (payload.stls || []).filter(r => !r.isPointCloud && !r.isSplat);
@@ -223,20 +299,25 @@ export async function createEngine({ root = REPO_ROOT } = {}) {
       setDeviceParent(dev, ref ? State.devices[idx].id + ':' + link : null, true);
     });
     State.scene.updateMatrixWorld(true);
-    const meshRecs = (payload.stls || []).filter(r => !r.isPointCloud && !r.isSplat);
-    meshRecs.forEach((rec, i) => {
-      const entry = State.importedSTLs[i];
+    // Objects are matched by id; a cloud still waiting for its points has
+    // no entry yet and only its record is updated.
+    const byId = new Map(State.importedSTLs.map(e => [e.stlId, e]));
+    for (const rec of payload.stls || []) {
+      if (cloudRecs.has(rec.id)) cloudRecs.set(rec.id, rec);
+      const entry = byId.get(rec.id);
+      if (!entry) continue;
       const parentLink = remapParent(rec.parentLink, indexMap);
       // A restore only ever adds a parent; a sync must also take one away.
       if (!parentLink && entry.parentLink) setSTLParent(entry, null, true);
       applySavedObjectState(entry, { ...rec, parentLink });
-    });
+    }
     for (const s of skipped) {
-      const rec = (payload.stls || []).find(r => r.name === s.name);
+      const rec = (payload.stls || []).find(r => (s.id !== undefined ? r.id === s.id : r.name === s.name));
       if (rec) s.visible = rec.visible !== false;
     }
     checkCollisionsNow();
-    return { rebuilt: false, devices: State.devices.length, objects: State.importedSTLs.length, skipped };
+    return { rebuilt: false, devices: State.devices.length, objects: State.importedSTLs.length,
+             skipped, needPoints: needPoints() };
   }
 
   // Is obj part of dev: its links, its static structure, and anything
@@ -364,6 +445,8 @@ export async function createEngine({ root = REPO_ROOT } = {}) {
       replies.push({ type: 'sceneLoaded', ...(await loadScene(msg.scene)) });
     } else if (cmd === 'syncScene') {
       replies.push({ type: 'sceneSynced', ...(await syncScene(msg.scene)) });
+    } else if (cmd === 'setObjectPoints') {
+      replies.push({ type: 'objectPointsStored', ...setObjectPoints(msg) });
     } else if (cmd === 'checkPath') {
       replies.push({ type: 'pathCheck', ...checkPath(msg) });
     } else {

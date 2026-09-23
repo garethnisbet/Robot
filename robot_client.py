@@ -1890,8 +1890,16 @@ class RobotClient:
                     "message limit (4 MB before 2026-09-23, 64 MB since)")
             return reply["scene"]
 
+        def fetch_points(obj_id, offset, count):
+            reply = self._send_and_wait({"cmd": "exportObjectPoints", "id": obj_id,
+                                         "offset": offset, "count": count},
+                                        "objectPoints", timeout=120.0)
+            if reply is None:
+                raise RuntimeError(f"the viewer did not send the points of object {obj_id}")
+            return reply
+
         try:
-            self._headless.sync_scene(export)
+            self._headless.sync_scene(export, fetch_points)
             devices = self._send_and_wait({"cmd": "listDevices"}, "devices", timeout=5.0)
             index = next((i for i, d in enumerate(devices["devices"]) if d.get("active")), 0)
             return self._headless.check_path(index, waypoints, resolution_deg), None
