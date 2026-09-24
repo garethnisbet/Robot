@@ -613,6 +613,13 @@ def _lowest(shape):
     return min(shape.p0[1], shape.p1[1]) - shape.radius
 
 
+def _meets_capsule(shape, cap):
+    """Does a Capsule or OrientedBox meet the capsule `cap`?"""
+    if isinstance(shape, OrientedBox):
+        return shape.meets_capsule(cap)
+    return capsules_collide(shape, cap)
+
+
 def _obstacle_hit(shape, obs):
     """What a Capsule or OrientedBox meets in `obs`: the obstacle's name (a
     device's part, for another device), or None."""
@@ -731,6 +738,9 @@ class RobotPlanner:
         # joint frame), and whether each shape is kept off the floor.
         self.carried: list = []
         self._carried_floor: list = []
+        # Which carried shapes are checked against which of the arm's own
+        # link parts: (carried index, part index), chosen at sync time.
+        self._payload_pairs: list = []
         self.step_deg   = step_deg
         self.max_iter   = max_iter
         self.goal_bias  = goal_bias
@@ -867,6 +877,7 @@ class RobotPlanner:
         self.obstacles = [o for o in self.obstacles if not getattr(o, '_from_viewer', False)]
         self.carried = []
         self._carried_floor = []
+        self._payload_pairs = []
         here = os.path.dirname(os.path.abspath(self.config_path))
 
         for i, d in enumerate(devices):
@@ -931,7 +942,20 @@ class RobotPlanner:
                 obs = AABBObstacle(min=lo, max=hi, name=obj.get("name", ""))
                 obs._from_viewer = True
                 self.obstacles.append(obs)
+        self._payload_pairs = self._clear_payload_pairs(current)
         return len(self.obstacles) + n_carried
+
+    def _clear_payload_pairs(self, q):
+        """Pairs of carried shape and the arm's own link part (the fitted
+        parts, whose union encloses each link) to check: those apart at pose
+        q, the pose the plan starts from. A pair already touching there (the
+        payload against the link that holds it, say) is left out, as a base
+        on the floor is: checked, it would reject every pose."""
+        if self.capsule_source != "fitted" or not self.carried:
+            return []
+        parts = self.part_capsules(q)
+        return [(k, i) for k, (_, shape) in enumerate(self._carried_shapes(q))
+                for i, (_, cap) in enumerate(parts) if not _meets_capsule(shape, cap)]
 
     def fk_frames(self, angles_deg):
         """Return FK frames for given joint angles (degrees)."""
@@ -1087,6 +1111,15 @@ class RobotPlanner:
                 hit = _obstacle_hit(shape, obs)
                 if hit:
                     return f"{name} collides with {hit}"
+
+        # Payload against the arm that carries it. (The arm against itself is
+        # left to the exact check: see __init__.)
+        if self._payload_pairs:
+            parts = self.part_capsules(q)
+            for k, i in self._payload_pairs:
+                name, shape = carried[k]
+                if _meets_capsule(shape, parts[i][1]):
+                    return f"{name} (carried) collides with {parts[i][0]}"
 
         return None
 

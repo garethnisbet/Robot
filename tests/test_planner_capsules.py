@@ -249,6 +249,34 @@ def test_carried_payload_is_fitted_to_its_mesh(engine, config_path):
     assert false_alarms[0] < false_alarms[1], false_alarms
 
 
+def test_carried_payload_is_checked_against_its_own_arm(engine, config_path):
+    """The payload swung into the arm that carries it: every contact the
+    viewer sees with one of the arm's links is caught, bar pairs already
+    touching at the start pose (left out, as a base on the floor is)."""
+    carrying_scene(engine)
+    engine.request({"cmd": "setObject", "index": 1, "position": [5000, 5000, 5000]})   # block out of reach
+    engine.request({"cmd": "setObject", "index": 0, "scale": [6, 1, 1]})   # a 300 mm rod, to reach the arm
+    p = scene_planner(engine, config_path, vertices=True)
+    links = [name for name, _ in p.part_capsules(np.zeros(p.n))]
+    skipped = {links[i] for i in range(len(links))} - {links[i] for _, i in p._payload_pairs}
+    assert p._payload_pairs and "L1" not in skipped
+    rng = np.random.default_rng(13)
+    contacts = misses = 0
+    for _ in range(300):
+        q = random_pose(p, rng)
+        engine.request({"cmd": "setJoints", "angles": q})
+        hit = [pp for pp in reply(engine.request({"cmd": "getCollisions"}), "collisions")["pairs"]
+               if "Payload" in (pp["link"], pp["object"])]
+        own = [pp["link"] if pp["object"] == "Payload" else pp["object"] for pp in hit]
+        own = [name.split(":")[-1] for name in own if name.split(":")[-1] not in skipped]
+        seen = bool(own)
+        contacts += seen
+        misses += seen and p.diagnose(q) is None
+    engine.request({"cmd": "home"})
+    assert contacts >= 15, contacts
+    assert misses == 0, f"planner missed {misses} of {contacts} payload–arm contacts (skipped: {skipped})"
+
+
 def planner_module():
     import planner
     return planner
