@@ -768,6 +768,22 @@ export function collisionPositions(entry) {
   return pos ? pos.array : null;
 }
 
+// A mesh object's vertices (float32, x y z, in its local frame), or null for
+// a point cloud or splat.
+export function meshVertexPositions(entry) {
+  if (entry.isPointCloud || entry.isSplat || !entry.mesh.isMesh) return null;
+  const pos = entry.mesh.geometry.getAttribute('position');
+  if (!pos) return null;
+  if (!pos.isInterleavedBufferAttribute && pos.itemSize === 3 && pos.array instanceof Float32Array) {
+    return pos.array;
+  }
+  const out = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    out[3 * i] = pos.getX(i); out[3 * i + 1] = pos.getY(i); out[3 * i + 2] = pos.getZ(i);
+  }
+  return out;
+}
+
 // The object itself, with no page attached: mesh, BVH, transforms, and its
 // entry in State.importedSTLs (parented if the transforms say so). Shared
 // by the viewer and the headless engine.

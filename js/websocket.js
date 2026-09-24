@@ -19,7 +19,7 @@ import {
   setSTLParent, addPrimitive, duplicateSTL, deselectSTL,
   exportSceneState, syncSTLVisibility,
   buildScenePayload, buildSceneMetadataForDB, sceneBufferSignature,
-  collisionPositions,
+  collisionPositions, meshVertexPositions,
 } from './stl.js';
 import {
   clearCollisionHighlights, setCollisionHeadless, isCollisionHeadless, updateCollisionLoop,
@@ -230,6 +230,10 @@ export function buildObjectInfo(entry, index) {
     worldPosition: [+(_objWorldPos.x * 1000).toFixed(4), +(_objWorldPos.z * 1000).toFixed(4), +(_objWorldPos.y * 1000).toFixed(4)],
     worldRotation: [+(we.x * rad2deg).toFixed(4), +(we.z * rad2deg).toFixed(4), +(we.y * rad2deg).toFixed(4)],
     worldBB,
+    // Local frame to world, unrounded: Three.js Y-up, metres, column-major.
+    // The rounded pose and scale above are for people; this is for the
+    // planner, which carries a mesh's vertices out by it.
+    matrixWorld: m.matrixWorld.toArray(),
   };
 }
 
@@ -1198,10 +1202,13 @@ export function handleCommand(data) {
     // so they are fetched apart from exportScene and in chunks:
     // { id, offset, count } in points; positions are little-endian float32,
     // base64, in the object's local frame.
+    // With vertices: true it sends a mesh's vertices instead, which the
+    // planner fits capsules to when the mesh is carried by a link.
     const entry = State.importedSTLs.find(e => e.stlId === data.id);
-    const all = entry && collisionPositions(entry);
+    const all = entry && (data.vertices ? meshVertexPositions(entry) : collisionPositions(entry));
     if (!all) {
-      wsSend({ type: 'error', error: `No collision points for object ${data.id}`, _reqId: data._reqId });
+      const what = data.vertices ? 'mesh vertices' : 'collision points';
+      wsSend({ type: 'error', error: `No ${what} for object ${data.id}`, _reqId: data._reqId });
       return;
     }
     const total = all.length / 3;
@@ -1315,7 +1322,7 @@ export function handleCommand(data) {
         // Scene
         getSceneState:    { params: '', description: 'Get full scene state (devices, objects, camera)' },
         exportScene:      { params: 'buffers?', description: 'Scene as Save Scene writes it (buffers: false for transforms only)' },
-        exportObjectPoints: { params: 'id, offset?, count?', description: "An object's collision points, in chunks (base64 float32)" },
+        exportObjectPoints: { params: 'id, offset?, count?, vertices?', description: "An object's collision points (or, with vertices: true, a mesh's vertices), in chunks (base64 float32)" },
         getStats:         { params: 'frames?, device?, transparency?', description: 'Benchmark frame time (blocks the viewer while it runs)' },
         saveScene:        { params: '', description: 'Trigger scene file download in viewer' },
         help:             { params: '', description: 'List all available commands' },

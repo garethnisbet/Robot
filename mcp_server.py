@@ -321,23 +321,26 @@ def _headless():
 _cloud_points: dict = {}
 
 
-async def _cloud(obj_id: str):
+async def _cloud(obj_id: str, vertices: bool = False):
     """An object's collision points (local frame, float32 N x 3), fetched in
-    chunks the first time."""
-    if obj_id not in _cloud_points:
+    chunks the first time. With vertices=True, a mesh's vertices instead,
+    kept under ("vertices", id): the planner fits capsules to carried meshes."""
+    key = ("vertices", obj_id) if vertices else obj_id
+    if key not in _cloud_points:
         import numpy as np
         parts, offset, total = [], 0, None
         while total is None or offset < total:
-            chunk = await viewer().request(
-                {"cmd": "exportObjectPoints", "id": obj_id, "offset": offset, "count": 1_000_000},
-                "objectPoints", timeout=120.0)
+            msg = {"cmd": "exportObjectPoints", "id": obj_id, "offset": offset, "count": 1_000_000}
+            if vertices:
+                msg["vertices"] = True
+            chunk = await viewer().request(msg, "objectPoints", timeout=120.0)
             total = chunk["total"]
             parts.append(np.frombuffer(base64.b64decode(chunk["positions"]), dtype="<f4"))
             if chunk["count"] == 0:
                 break
             offset += chunk["count"]
-        _cloud_points[obj_id] = np.concatenate(parts).reshape(-1, 3) if parts else np.zeros((0, 3), "<f4")
-    return _cloud_points[obj_id]
+        _cloud_points[key] = np.concatenate(parts).reshape(-1, 3) if parts else np.zeros((0, 3), "<f4")
+    return _cloud_points[key]
 
 
 def _points_chunk(obj_id, offset, count):
@@ -437,9 +440,19 @@ async def _planner_with_scene(step_deg: float = 5.0, device: Optional[str] = Non
         devs = (await viewer().request({"cmd": "listDevices"}, "devices", timeout=5.0))["devices"]
         objs = (await viewer().request({"cmd": "listObjects"}, "objects", timeout=5.0)).get("objects", [])
         for o in objs:
-            if o.get("hasCollisionPoints") and o.get("visible", True):
+            if not o.get("visible", True):
+                continue
+            if o.get("hasCollisionPoints"):
                 await _cloud(o["id"])
-        n = p.sync_from_viewer(devs, objs, index, fetch_points=lambda i: _cloud_points[i])
+            elif o.get("matrixWorld") and (o.get("parent") or "").startswith(f"{dev['id']}:"):
+                # Payload this device carries; its mesh is fitted with
+                # capsules. Without its vertices the planner uses its box.
+                try:
+                    await _cloud(o["id"], vertices=True)
+                except Exception:
+                    pass
+        n = p.sync_from_viewer(devs, objs, index, fetch_points=lambda i: _cloud_points[i],
+                               fetch_vertices=lambda i: _cloud_points.get(("vertices", i)))
     except Exception:
         # Viewer unreachable or too old for the fields above: plan the
         # startup config at the origin against nothing, and say so.

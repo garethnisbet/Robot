@@ -50,6 +50,14 @@ def qrot(q, v):
     r = qmul(qmul(q, vq), qc)
     return r[1:]
 
+def qmat(q):
+    """Rotation matrix of unit quaternion q [w,x,y,z]."""
+    w, x, y, z = q
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+                     [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+                     [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
+
+
 def qfrom_axis_angle(axis, angle_rad):
     """Quaternion [w,x,y,z] for rotation of angle_rad around unit axis."""
     s = math.sin(angle_rad / 2)
@@ -204,6 +212,95 @@ def capsule_sphere_collide(c: Capsule, centre: np.ndarray, radius: float) -> boo
 
 
 # ---------------------------------------------------------------------------
+# Capsule fitting  (headless/fit-capsules.mjs, for payload the viewer carries)
+# ---------------------------------------------------------------------------
+
+def _segment_distances(pts, a, b):
+    """Distance from each of pts (N x 3) to segment a-b."""
+    ab = b - a
+    len2 = float(ab @ ab)
+    t = np.clip((pts - a) @ ab / len2, 0.0, 1.0) if len2 > 0 else np.zeros(len(pts))
+    return np.linalg.norm(pts - (a + t[:, None] * ab), axis=1)
+
+
+def _capsule_volume(r, length):
+    return math.pi * r * r * length + 4.0 / 3.0 * math.pi * r ** 3
+
+
+def _capsule_along(pts, centre, axis):
+    """The smallest-volume enclosing capsule along one axis: the segment spans
+    the projections, pulled in from both ends by s; the radius is then the
+    farthest point from the segment. s is scanned."""
+    d = pts - centre
+    t = d @ axis
+    perp2 = np.sum((d - t[:, None] * axis) ** 2, axis=1)
+    tmin, tmax = float(t.min()), float(t.max())
+    half = (tmax - tmin) / 2
+    best = None
+    for k in range(41):
+        s = half * k / 40
+        a, b = tmin + s, tmax - s
+        over = np.maximum(a - t, 0.0) + np.maximum(t - b, 0.0)
+        r = math.sqrt(float(np.max(perp2 + over * over)))
+        volume = _capsule_volume(r, b - a)
+        if best is None or volume < best[0]:
+            best = (volume, centre + a * axis, centre + b * axis)
+    return best
+
+
+def fit_capsule(pts):
+    """One capsule enclosing every point: (p0, p1, radius), rounded outward
+    (endpoints to 0.1 mm, radius up to the next 0.1 mm after re-measuring)."""
+    centre = pts.mean(axis=0)
+    _, vecs = np.linalg.eigh((pts - centre).T @ (pts - centre))
+    _, p0, p1 = min((_capsule_along(pts, centre, vecs[:, i]) for i in range(3)),
+                    key=lambda c: c[0])
+    p0, p1 = np.round(p0, 4), np.round(p1, 4)
+    r = float(_segment_distances(pts, p0, p1).max())
+    return p0, p1, math.ceil((r + 1e-6) * 1e4) / 1e4
+
+
+def fit_parts(pts, max_parts=12, enough=1.10, min_points=32):
+    """Several capsules whose union encloses the points, as fitParts in
+    headless/fit-capsules.mjs: the largest part is split at the median along
+    whichever principal axis leaves the smaller total, up to max_parts; then
+    the fewest parts whose total volume is within `enough` of the best seen
+    are kept. Every point stays inside the capsule fitted to its own part."""
+    pts = np.unique(np.asarray(pts, dtype=np.float64).reshape(-1, 3), axis=0)
+
+    def part(p):
+        cap = fit_capsule(p)
+        return {"pts": p, "cap": cap, "volume": _capsule_volume(cap[2], np.linalg.norm(cap[1] - cap[0]))}
+
+    parts = [part(pts)]
+    history = [parts]
+    while len(parts) < max_parts:
+        open_ = [p for p in parts if len(p["pts"]) >= 2 * min_points]
+        if not open_:
+            break
+        big = max(open_, key=lambda p: p["volume"])
+        centre = big["pts"].mean(axis=0)
+        _, vecs = np.linalg.eigh((big["pts"] - centre).T @ (big["pts"] - centre))
+        best = None
+        for i in range(3):
+            t = (big["pts"] - centre) @ vecs[:, i]
+            below = t < np.sort(t)[len(t) >> 1]
+            if below.sum() < min_points or (~below).sum() < min_points:
+                continue
+            halves = [part(big["pts"][below]), part(big["pts"][~below])]
+            volume = halves[0]["volume"] + halves[1]["volume"]
+            if best is None or volume < best[0]:
+                best = (volume, halves)
+        if best is None:
+            break
+        parts = [p for p in parts if p is not big] + best[1]
+        history.append(parts)
+    total = lambda ps: sum(p["volume"] for p in ps)
+    least = min(total(ps) for ps in history)
+    return [p["cap"] for p in next(ps for ps in history if total(ps) <= enough * least)]
+
+
+# ---------------------------------------------------------------------------
 # Robot planner
 # ---------------------------------------------------------------------------
 
@@ -254,21 +351,80 @@ class CapsuleSetObstacle:
                 return self.names[k]
         return None
 
-    def hit_by_box(self, lo, hi):
-        box = AABBObstacle(min=lo, max=hi)
-        for k in self._near(lo, hi):
-            if capsule_aabb_collide(self.capsules[k], box):
+    def hit_by_box(self, box):
+        """Name of the first capsule the OrientedBox `box` meets, or None."""
+        for k in self._near(box.lo, box.hi):
+            if box.meets_capsule(self.capsules[k]):
                 return self.names[k]
         return None
 
 
+class OrientedBox:
+    """A box in world space (metres): centre, unit axes (the columns of
+    `axes`) and half-extents along them, with its world AABB precomputed."""
+
+    def __init__(self, centre, axes, half):
+        self.centre = np.asarray(centre, dtype=float)
+        self.axes = np.asarray(axes, dtype=float)
+        self.half = np.asarray(half, dtype=float)
+        reach = np.abs(self.axes) @ self.half
+        self.lo, self.hi = self.centre - reach, self.centre + reach
+
+    def to_local(self, pts):
+        """Points (N x 3 or 3) in the box's frame, where it spans [-half, half]."""
+        return (np.asarray(pts, dtype=float) - self.centre) @ self.axes
+
+    def overlaps_aabb(self, lo, hi):
+        """Separating-axis test against an axis-aligned box (touching counts)."""
+        ha, t = (hi - lo) / 2, self.centre - (lo + hi) / 2
+        R, hb = self.axes, self.half        # R[i, j]: world axis i · box axis j
+        A = np.abs(R) + 1e-12
+        if np.any(np.abs(t) > ha + A @ hb):
+            return False
+        if np.any(np.abs(t @ R) > ha @ A + hb):
+            return False
+        for i in range(3):                  # world axis i × box axis j
+            i1, i2 = (i + 1) % 3, (i + 2) % 3
+            for j in range(3):
+                j1, j2 = (j + 1) % 3, (j + 2) % 3
+                ra = ha[i1] * A[i2, j] + ha[i2] * A[i1, j]
+                rb = hb[j1] * A[i, j2] + hb[j2] * A[i, j1]
+                if abs(t[i2] * R[i1, j] - t[i1] * R[i2, j]) > ra + rb:
+                    return False
+        return True
+
+    def meets_capsule(self, cap):
+        if not _aabb_overlap(self.lo, self.hi, np.minimum(cap.p0, cap.p1) - cap.radius,
+                             np.maximum(cap.p0, cap.p1) + cap.radius):
+            return False
+        p0, p1 = self.to_local([cap.p0, cap.p1])
+        return _segment_aabb_min_dist(p0, p1, -self.half, self.half) < cap.radius
+
+    def meets_sphere(self, centre, radius):
+        over = np.maximum(0.0, np.abs(self.to_local(centre)) - self.half)
+        return float(over @ over) < radius * radius
+
+
 @dataclass
-class AttachedBox:
-    """A box carried by a link of the planning device (payload such as a
-    detector on the flange), in that link's joint frame."""
+class CarriedCapsule:
+    """A capsule around payload carried by a link of the planning device (a
+    detector on the flange, say), in that link's joint frame."""
+    name: str
     joint: int
-    corners: np.ndarray        # 8 x 3, joint frame, metres
-    name: str = ""
+    p0: np.ndarray
+    p1: np.ndarray
+    radius: float
+
+
+@dataclass
+class CarriedBox:
+    """A box around carried payload, in its link's joint frame: centre, unit
+    axes (columns) and half-extents."""
+    name: str
+    joint: int
+    centre: np.ndarray
+    axes: np.ndarray
+    half: np.ndarray
 
 
 # The viewer counts a point cloud as touching a mesh when a point lies
@@ -338,12 +494,12 @@ class PointCloudObstacle:
         dist2 = np.sum((pts - (cap.p0 + t[:, None] * d)) ** 2, axis=1)
         return bool(np.any(dist2 <= reach * reach))
 
-    def hits_box(self, lo, hi):
-        """Any point within the contact distance of the box [lo, hi]?"""
-        pts = self._points_near_box(lo - self.contact, hi + self.contact)
+    def hits_box(self, box):
+        """Any point within the contact distance of the OrientedBox `box`?"""
+        pts = self._points_near_box(box.lo - self.contact, box.hi + self.contact)
         if pts is None:
             return False
-        over = np.maximum(0.0, np.maximum(lo - pts, pts - hi))
+        over = np.maximum(0.0, np.abs(box.to_local(pts)) - box.half)
         return bool(np.any(np.sum(over * over, axis=1) <= self.contact ** 2))
 
 
@@ -358,10 +514,7 @@ def point_cloud_obstacle(obj, local_points):
     key = (obj["id"], tuple(obj["worldPosition"]), tuple(obj["worldRotation"]), tuple(obj["scale"]))
     if key not in _CLOUD_CACHE:
         pos, q = api_pose_to_three(obj["worldPosition"], obj["worldRotation"])
-        w, x, y, z = q
-        R = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
-                      [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
-                      [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
+        R = qmat(q)
         pts = np.asarray(local_points, dtype=np.float64).reshape(-1, 3) * np.asarray(obj["scale"], float)
         if len(_CLOUD_CACHE) >= 4:
             _CLOUD_CACHE.pop(next(iter(_CLOUD_CACHE)))
@@ -369,6 +522,50 @@ def point_cloud_obstacle(obj, local_points):
     cloud = _CLOUD_CACHE[key]
     cloud._from_viewer = True
     return cloud
+
+
+# Shapes fitted to carried meshes, by (object id, vertex count, the
+# object's scale): fitting takes a second or so for a detailed mesh, and
+# depends only on the shape, not on where the arm has taken it.
+_PAYLOAD_FIT_CACHE: dict = {}
+
+
+def payload_shapes(obj, local_vertices):
+    """World shapes (Three.js frame, metres) whose union encloses a carried
+    mesh: its box in its own axes, or capsules fitted to it, whichever
+    encloses less volume. A box suits a detector; capsules a long or round
+    tool. `obj` is its listObjects entry, which must carry matrixWorld;
+    `local_vertices` are its vertices (the viewer's exportObjectPoints with
+    vertices: true).
+
+    matrixWorld = R·S plus a translation (polar decomposition). The fit is
+    made on the vertices scaled by S and carried out by R and the
+    translation, so it is reused for any pose of the same object."""
+    M = np.asarray(obj["matrixWorld"], dtype=float).reshape(4, 4).T
+    U, sigma, Vt = np.linalg.svd(M[:3, :3])
+    R, S = U @ Vt, Vt.T @ np.diag(sigma) @ Vt
+    verts = np.asarray(local_vertices, dtype=np.float64).reshape(-1, 3)
+    key = (obj["id"], len(verts), tuple(np.round(S, 9).ravel()))
+    if key not in _PAYLOAD_FIT_CACHE:
+        if len(_PAYLOAD_FIT_CACHE) >= 16:
+            _PAYLOAD_FIT_CACHE.pop(next(iter(_PAYLOAD_FIT_CACHE)))
+        scaled = verts @ S.T
+        caps = fit_parts(scaled)
+        cap_volume = sum(_capsule_volume(r, np.linalg.norm(p1 - p0)) for p0, p1, r in caps)
+        # The box is taken around the scaled vertices, in the mesh's own axes
+        # (S keeps them, bar a shear from a stretched parent, which leaves
+        # the box enclosing but less snug). Out by a micrometre: float32
+        # vertices, float64 here.
+        lo, hi = scaled.min(axis=0), scaled.max(axis=0)
+        half = (hi - lo) / 2 + 1e-6
+        box = ((lo + hi) / 2, half) if 8 * np.prod(half) < cap_volume else None
+        _PAYLOAD_FIT_CACHE[key] = ("box", box) if box else ("capsules", caps)
+    kind, fit = _PAYLOAD_FIT_CACHE[key]
+    t = M[:3, 3]
+    if kind == "box":
+        centre, half = fit
+        return [OrientedBox(R @ centre + t, R, half)]
+    return [Capsule(R @ p0 + t, R @ p1 + t, r) for p0, p1, r in fit]
 
 
 def _aabb_overlap(lo1, hi1, lo2, hi2):
@@ -407,6 +604,35 @@ def capsule_aabb_collide(c: Capsule, aabb: AABBObstacle) -> bool:
     if np.any(hi < aabb.min) or np.any(lo > aabb.max):
         return False
     return _segment_aabb_min_dist(c.p0, c.p1, aabb.min, aabb.max) < c.radius
+
+
+def _lowest(shape):
+    """Lowest height (world Y) of a Capsule or OrientedBox."""
+    if isinstance(shape, OrientedBox):
+        return shape.lo[1]
+    return min(shape.p0[1], shape.p1[1]) - shape.radius
+
+
+def _obstacle_hit(shape, obs):
+    """What a Capsule or OrientedBox meets in `obs`: the obstacle's name (a
+    device's part, for another device), or None."""
+    name = obs.name or "obstacle"
+    if isinstance(obs, CapsuleSetObstacle):
+        return obs.hit_by_box(shape) if isinstance(shape, OrientedBox) else obs.hit_by_capsule(shape)
+    if isinstance(shape, OrientedBox):
+        if isinstance(obs, AABBObstacle):
+            hit = shape.overlaps_aabb(obs.min, obs.max)
+        elif isinstance(obs, PointCloudObstacle):
+            hit = obs.hits_box(shape)
+        else:
+            hit = shape.meets_sphere(obs.centre, obs.radius)
+    elif isinstance(obs, AABBObstacle):
+        hit = capsule_aabb_collide(shape, obs)
+    elif isinstance(obs, PointCloudObstacle):
+        hit = obs.hits_capsule(shape)
+    else:
+        hit = capsule_sphere_collide(shape, obs.centre, obs.radius)
+    return name if hit else None
 
 
 class RobotPlanner:
@@ -501,7 +727,10 @@ class RobotPlanner:
         # are computed in its own frame and carried out by this pose.
         self.base_pos = np.zeros(3)
         self.base_quat = np.array([1.0, 0.0, 0.0, 0.0])
-        self.attached: list[AttachedBox] = []
+        # Payload carried by its links (CarriedCapsule / CarriedBox, in the
+        # joint frame), and whether each shape is kept off the floor.
+        self.carried: list = []
+        self._carried_floor: list = []
         self.step_deg   = step_deg
         self.max_iter   = max_iter
         self.goal_bias  = goal_bias
@@ -612,7 +841,8 @@ class RobotPlanner:
             added += 1
         return added
 
-    def sync_from_viewer(self, devices, objects, device_index, fetch_points=None):
+    def sync_from_viewer(self, devices, objects, device_index, fetch_points=None,
+                         fetch_vertices=None):
         """
         Take the scene from the viewer's listDevices and listObjects replies,
         for planning the device at `device_index` (its place in that list):
@@ -621,7 +851,11 @@ class RobotPlanner:
           * every other visible serial device as fixed capsules, at its
             current joints and pose (its fitted parts, whose union encloses it);
           * objects parented to a link of this device as payload carried by
-            that link; every other visible object as a fixed box;
+            that link: a box or capsules fitted to its mesh when
+            `fetch_vertices(id)` is given (it returns the mesh's vertices in
+            its local frame, the viewer's exportObjectPoints with
+            vertices: true), else its world box as it is now;
+          * every other visible object as a fixed box;
           * visible point clouds (and PLY splats) as their points, when
             `fetch_points(id)` is given: it returns the object's collision
             points in its local frame (the viewer's exportObjectPoints).
@@ -631,7 +865,8 @@ class RobotPlanner:
         me = devices[device_index]
         self.set_base_pose(*api_pose_to_three(me["worldPosition"], me["worldRotation"]))
         self.obstacles = [o for o in self.obstacles if not getattr(o, '_from_viewer', False)]
-        self.attached = []
+        self.carried = []
+        self._carried_floor = []
         here = os.path.dirname(os.path.abspath(self.config_path))
 
         for i, d in enumerate(devices):
@@ -651,6 +886,7 @@ class RobotPlanner:
         current = np.asarray(me["joints"], dtype=float)
         world_now = fk_world(self.all_joints, current)
         link_joint = {l["name"]: l["joint"] for l in self._config["links"]}
+        n_carried = 0
         for obj in objects:
             if not obj.get("visible", True):
                 continue
@@ -666,19 +902,36 @@ class RobotPlanner:
             parent = obj.get("parent") or ""
             dev_id, _, link = parent.partition(":")
             if dev_id == me["id"] and link in link_joint:
-                # Carried: its box, fixed in the link's joint frame.
                 j = link_joint[link]
                 pos, ori = world_now[j]
-                corners = np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1])
-                                    for z in (lo[2], hi[2])])
-                to_joint = [qrot(qinv(ori), qrot(qinv(self.base_quat), c - self.base_pos) - pos)
-                            for c in corners]
-                self.attached.append(AttachedBox(j, np.array(to_joint), obj.get("name", "")))
+                R_joint = qmat(qinv(ori)) @ qmat(qinv(self.base_quat))
+                to_joint = lambda w: qrot(qinv(ori), qrot(qinv(self.base_quat), w - self.base_pos) - pos)
+                # Carried: shapes fitted to its mesh (see payload_shapes),
+                # fixed in the link's joint frame. They enclose every vertex,
+                # so, as for the links, this check is stricter than the
+                # viewer's. Without its vertices, its world box as it is now.
+                shapes = None
+                if fetch_vertices is not None and obj.get("matrixWorld"):
+                    try:
+                        shapes = payload_shapes(obj, fetch_vertices(obj["id"]))
+                    except Exception:
+                        shapes = None     # no vertices to be had; use its box
+                if not shapes:
+                    shapes = [OrientedBox((lo + hi) / 2, np.eye(3), (hi - lo) / 2)]
+                n_carried += 1
+                name = obj.get("name", "")
+                for s in shapes:
+                    if isinstance(s, OrientedBox):
+                        self.carried.append(CarriedBox(name, j, to_joint(s.centre), R_joint @ s.axes, s.half))
+                    else:
+                        self.carried.append(CarriedCapsule(name, j, to_joint(s.p0), to_joint(s.p1), s.radius))
+                    # Kept off the floor unless it already reaches it.
+                    self._carried_floor.append(_lowest(s) >= 0)
             else:
                 obs = AABBObstacle(min=lo, max=hi, name=obj.get("name", ""))
                 obs._from_viewer = True
                 self.obstacles.append(obs)
-        return len(self.obstacles) + len(self.attached)
+        return len(self.obstacles) + n_carried
 
     def fk_frames(self, angles_deg):
         """Return FK frames for given joint angles (degrees)."""
@@ -820,40 +1073,20 @@ class RobotPlanner:
             if capsules_collide(capsules[i], capsules[j]):
                 return f"self-collision between {names[i]} and {names[j]}"
 
-        for i, cap in enumerate(capsules):
-            if self._floor_checked[i] and min(cap.p0[1], cap.p1[1]) - cap.radius < 0:
-                return f"{names[i]} goes below the floor"
+        # The links, then any payload they carry, against the floor and the
+        # obstacles. (Payload against the arm is left to the exact check,
+        # like the arm against itself.)
+        carried = self._carried_shapes(q)
+        bodies = zip(capsules + [s for _, s in carried],
+                     names + [f"{name} (carried)" for name, _ in carried],
+                     list(self._floor_checked) + self._carried_floor)
+        for shape, name, floor_checked in bodies:
+            if floor_checked and _lowest(shape) < 0:
+                return f"{name} goes below the floor"
             for obs in self.obstacles:
-                if isinstance(obs, AABBObstacle):
-                    hit = capsule_aabb_collide(cap, obs)
-                elif isinstance(obs, CapsuleSetObstacle):
-                    part = obs.hit_by_capsule(cap)
-                    if part:
-                        return f"{names[i]} collides with {part}"
-                    hit = False
-                elif isinstance(obs, PointCloudObstacle):
-                    hit = obs.hits_capsule(cap)
-                else:
-                    hit = capsule_sphere_collide(cap, obs.centre, obs.radius)
+                hit = _obstacle_hit(shape, obs)
                 if hit:
-                    return f"{names[i]} collides with {obs.name or 'obstacle'}"
-
-        for lo, hi, name in self._attached_boxes(q):
-            for obs in self.obstacles:
-                if isinstance(obs, AABBObstacle):
-                    hit = _aabb_overlap(lo, hi, obs.min, obs.max)
-                elif isinstance(obs, CapsuleSetObstacle):
-                    part = obs.hit_by_box(lo, hi)
-                    if part:
-                        return f"{name} (carried) collides with {part}"
-                    hit = False
-                elif isinstance(obs, PointCloudObstacle):
-                    hit = obs.hits_box(lo, hi)
-                else:
-                    hit = capsule_aabb_collide(Capsule(obs.centre, obs.centre, obs.radius),
-                                               AABBObstacle(min=lo, max=hi))
-                if hit:
-                    return f"{name} (carried) collides with {obs.name or 'obstacle'}"
+                    return f"{name} collides with {hit}"
 
         return None
 
@@ -877,17 +1110,23 @@ class RobotPlanner:
             local = self._make_capsules(fk(self.all_joints, q))
         return [Capsule(self._to_world(c.p0), self._to_world(c.p1), c.radius) for c in local]
 
-    def _attached_boxes(self, q):
-        """World AABBs of the attached payload at pose q."""
-        if not self.attached:
+    def _carried_shapes(self, q):
+        """(name, world Capsule or OrientedBox) for the carried payload at pose q."""
+        if not self.carried:
             return []
         world = fk_world(self.all_joints, q)
-        boxes = []
-        for box in self.attached:
-            pos, ori = world[box.joint]
-            pts = np.array([self._to_world(pos + qrot(ori, c)) for c in box.corners])
-            boxes.append((pts.min(axis=0), pts.max(axis=0), box.name))
-        return boxes
+        R_base = qmat(self.base_quat)
+        out = []
+        for c in self.carried:
+            pos, ori = world[c.joint]
+            if isinstance(c, CarriedBox):
+                shape = OrientedBox(self._to_world(pos + qrot(ori, c.centre)),
+                                    R_base @ qmat(ori) @ c.axes, c.half)
+            else:
+                shape = Capsule(self._to_world(pos + qrot(ori, c.p0)),
+                                self._to_world(pos + qrot(ori, c.p1)), c.radius)
+            out.append((c.name, shape))
+        return out
 
     def part_capsules(self, q):
         """(name, world capsule) for every fitted part of every link at pose q,

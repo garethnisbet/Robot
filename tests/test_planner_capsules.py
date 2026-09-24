@@ -94,16 +94,26 @@ def test_planned_paths_round_a_cube_pass_the_exact_check(engine, config_path):
 
 # ── The scene around the planning device, from the viewer's replies ──────────
 
-def scene_planner(engine, config_path, name="meca500", index=0):
+def scene_planner(engine, config_path, name="meca500", index=0, vertices=False):
     """A planner for device `index` built from the engine's listDevices and
-    listObjects, as the MCP server builds it from the viewer's. The floor is
-    left out so the only contacts are with the scene."""
+    listObjects, as the MCP server builds it from the viewer's (with carried
+    meshes' vertices when `vertices`). The floor is left out so the only
+    contacts are with the scene."""
     devices = reply(engine.request({"cmd": "listDevices"}), "devices")["devices"]
     objects = reply(engine.request({"cmd": "listObjects"}), "objects")["objects"]
     p = RobotPlanner(config_path(name))
-    p.sync_from_viewer(devices, objects, index)
+    p.sync_from_viewer(devices, objects, index,
+                       fetch_vertices=(lambda i: mesh_vertices(engine, i)) if vertices else None)
     p._floor_checked = [False] * len(p._floor_checked)
+    p._carried_floor = [False] * len(p._carried_floor)
     return p
+
+
+def mesh_vertices(engine, obj_id):
+    """A mesh's vertices in its local frame, as the viewer sends them."""
+    import base64
+    r = reply(engine.request({"cmd": "exportObjectPoints", "id": obj_id, "vertices": True}), "objectPoints")
+    return np.frombuffer(base64.b64decode(r["positions"]), dtype="<f4").reshape(-1, 3)
 
 
 def scene_contact(engine):
@@ -171,39 +181,77 @@ def test_another_device_is_an_obstacle(engine, config_path):
     assert misses == 0, f"planner missed {misses} of {contacts}"
 
 
-def test_carried_payload_moves_with_its_link(engine, config_path):
+def carrying_scene(engine):
+    """Meca500 carrying a turned, stretched block ('Payload', cube 0) just
+    past its flange, and a block fixed in the world ('Block', cube 1)."""
     fresh(engine, "meca500_config.json")                 # cube 0: the payload
     engine.request({"cmd": "addPrimitive", "type": "cube"})  # cube 1: fixed in the world
-    engine.request({"cmd": "setObject", "index": 0, "name": "Payload", "scale": [1.5, 1.5, 1.5]})
+    engine.request({"cmd": "setObject", "index": 0, "name": "Payload", "scale": [2.5, 0.6, 1.2],
+                    "rotation": [35, 20, 50]})
     engine.request({"cmd": "setObject", "index": 1, "name": "Block", "scale": [2, 2, 2]})
     dev = reply(engine.request({"cmd": "listDevices"}), "devices")["devices"][0]
-    # Payload just past the flange, carried by the last link.
     ee = reply(engine.request({"cmd": "home"}), "state")["eePosition"]
-    engine.request({"cmd": "setObject", "index": 0, "position": [ee[0] + 45, ee[1], ee[2]],
+    engine.request({"cmd": "setObject", "index": 0, "position": [ee[0] + 60, ee[1], ee[2]],
                     "parent": f"{dev['id']}:L5"})
-    rng = np.random.default_rng(10)
-    p = scene_planner(engine, config_path)
-    assert [b.name for b in p.attached] == ["Payload"]
-    contacts = misses = 0
-    for _ in range(150):
-        q = random_pose(p, rng)
-        state = reply(engine.request({"cmd": "setJoints", "angles": q}), "state")
+
+
+def payload_contacts(engine, planners, rng, n=150):
+    """Move the arm and the block at random around the payload; count the
+    viewer's payload–block contacts, and per planner (built once, at home,
+    so it must follow the payload itself) the contacts it lets through and
+    the poses it blocks although the viewer sees no contact at all."""
+    contacts, misses, false_alarms = 0, [0] * len(planners), [0] * len(planners)
+    for _ in range(n):
+        q = random_pose(planners[0], rng)
+        engine.request({"cmd": "setJoints", "angles": q})
         payload = reply(engine.request({"cmd": "getObject", "index": 0}), "object")["worldPosition"]
         d = rng.normal(size=3)
         pos = [payload[i] + d[i] / np.linalg.norm(d) * rng.uniform(0, 150) for i in range(3)]
         engine.request({"cmd": "setObject", "index": 1, "position": pos})
-        # The planner is built once, at home, and must follow the payload itself.
         objects = reply(engine.request({"cmd": "listObjects"}), "objects")["objects"]
-        block = [o for o in objects if o["name"] == "Block"]
-        p.obstacles = []
-        p.sync_from_viewer_objects(block)
+        pairs = scene_contact(engine)
         seen = any("Payload" in (pp["link"], pp["object"]) and "Block" in (pp["link"], pp["object"])
-                   for pp in scene_contact(engine))
+                   for pp in pairs)
         contacts += seen
-        misses += seen and p.diagnose(q) is None
+        for k, p in enumerate(planners):
+            p.obstacles = []
+            p.sync_from_viewer_objects([o for o in objects if o["name"] == "Block"])
+            blocked = p.diagnose(q) is not None
+            misses[k] += seen and not blocked
+            false_alarms[k] += blocked and not pairs
     engine.request({"cmd": "home"})
+    return contacts, misses, false_alarms
+
+
+def test_carried_payload_moves_with_its_link(engine, config_path):
+    """Without its vertices (an older viewer page), the payload is its
+    world box at sync time, carried by the link as an oriented box."""
+    carrying_scene(engine)
+    p = scene_planner(engine, config_path)
+    assert [(c.name, type(c).__name__) for c in p.carried] == [("Payload", "CarriedBox")]
+    contacts, [misses], _ = payload_contacts(engine, [p], np.random.default_rng(10))
     assert contacts >= 15, contacts
     assert misses == 0, f"planner missed {misses} of {contacts} payload contacts"
+
+
+def test_carried_payload_is_fitted_to_its_mesh(engine, config_path):
+    """With its vertices, the payload is the box in its own axes: never
+    misses a contact, and blocks fewer free poses than its world box."""
+    carrying_scene(engine)
+    fitted = scene_planner(engine, config_path, vertices=True)
+    boxed = scene_planner(engine, config_path)
+    [c] = fitted.carried
+    assert isinstance(c, planner_module().CarriedBox)
+    assert np.prod(c.half) < 0.5 * np.prod(boxed.carried[0].half)
+    contacts, misses, false_alarms = payload_contacts(engine, [fitted, boxed], np.random.default_rng(11))
+    assert contacts >= 15, contacts
+    assert misses == [0, 0], f"missed {misses} of {contacts} payload contacts (fitted, boxed)"
+    assert false_alarms[0] < false_alarms[1], false_alarms
+
+
+def planner_module():
+    import planner
+    return planner
 
 
 def test_planner_never_misses_a_point_cloud_contact(engine, config_path):

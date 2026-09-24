@@ -1815,7 +1815,8 @@ class RobotClient:
         planner = RobotPlanner(self._config_path, step_deg=stepsize)
         active = next((i for i, d in enumerate(dev_list) if d.get("active")), None)
         if active is not None and "worldPosition" in dev_list[active]:
-            n_obs = planner.sync_from_viewer(dev_list, obj_list, active, fetch_points=self._cloud)
+            n_obs = planner.sync_from_viewer(dev_list, obj_list, active, fetch_points=self._cloud,
+                                             fetch_vertices=lambda i: self._cloud(i, vertices=True))
         else:
             n_obs = planner.sync_from_viewer_objects(obj_list)
         if n_obs:
@@ -1862,16 +1863,19 @@ class RobotClient:
         else:
             print(f"  {_bgreen('Done.')}")
 
-    def _cloud(self, obj_id):
+    def _cloud(self, obj_id, vertices=False):
         """An object's collision points (local frame, float32 N x 3), fetched
-        from the viewer in chunks the first time and kept."""
-        if obj_id not in self._cloud_points:
+        from the viewer in chunks the first time and kept. With vertices=True,
+        a mesh's vertices instead (for fitting capsules to carried payload)."""
+        key = ("vertices", obj_id) if vertices else obj_id
+        if key not in self._cloud_points:
             import base64
             parts, offset, total = [], 0, None
             while total is None or offset < total:
-                reply = self._send_and_wait({"cmd": "exportObjectPoints", "id": obj_id,
-                                             "offset": offset, "count": 1_000_000},
-                                            "objectPoints", timeout=120.0)
+                msg = {"cmd": "exportObjectPoints", "id": obj_id, "offset": offset, "count": 1_000_000}
+                if vertices:
+                    msg["vertices"] = True
+                reply = self._send_and_wait(msg, "objectPoints", timeout=120.0)
                 if reply is None:
                     raise RuntimeError(f"the viewer did not send the points of object {obj_id}")
                 total = reply["total"]
@@ -1879,9 +1883,9 @@ class RobotClient:
                 if reply["count"] == 0:
                     break
                 offset += reply["count"]
-            self._cloud_points[obj_id] = (np.concatenate(parts).reshape(-1, 3) if parts
-                                          else np.zeros((0, 3), "<f4"))
-        return self._cloud_points[obj_id]
+            self._cloud_points[key] = (np.concatenate(parts).reshape(-1, 3) if parts
+                                       else np.zeros((0, 3), "<f4"))
+        return self._cloud_points[key]
 
     def _exact_check(self, waypoints, resolution_deg=1.0):
         """Check a path for the active device with the viewer's own collision

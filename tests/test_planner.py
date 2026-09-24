@@ -132,3 +132,98 @@ def test_point_cloud_index_finds_points_in_every_cell():
         t = np.clip((pts - p0) @ d / (d @ d), 0, 1)
         brute = np.min(np.linalg.norm(pts - (p0 + t[:, None] * d), axis=1)) <= cap.radius + cloud.contact
         assert cloud.hits_capsule(cap) == brute
+
+
+# ── Carried payload: fitted capsules or its own box ──────────────────────────
+
+def detector_vertices(rng):
+    """A flat box with a cable stub: the shape of a detector on a flange."""
+    box = rng.uniform([-0.15, -0.05, -0.12], [0.15, 0.05, 0.12], size=(3000, 3))
+    stub = rng.uniform([-0.02, 0.05, -0.02], [0.02, 0.20, 0.02], size=(500, 3))
+    return np.vstack([box, stub])
+
+
+def tool_vertices(rng):
+    """Two thin rods at a right angle: a bent sample stick."""
+    t = rng.uniform(0, 1, size=(2000, 1))
+    a = t * [0.3, 0, 0] + rng.normal(scale=0.004, size=(2000, 3))
+    b = [0.3, 0, 0] + t * [0, 0.2, 0.1] + rng.normal(scale=0.004, size=(2000, 3))
+    return np.vstack([a, b])
+
+
+def inside_union(pts, shapes):
+    """Is every point inside at least one Capsule or OrientedBox? (Slack for
+    float32 vertices.) Also returns the worst excess."""
+    def excess(s):
+        if isinstance(s, planner.OrientedBox):
+            return np.linalg.norm(np.maximum(0, np.abs(s.to_local(pts)) - s.half), axis=1)
+        return planner._segment_distances(pts, s.p0, s.p1) - s.radius
+    d = np.min([excess(s) for s in shapes], axis=0)
+    return bool(np.all(d <= 1e-7)), float(d.max())
+
+
+def random_rotation(rng):
+    q = rng.normal(size=4)
+    return planner.qmat(q / np.linalg.norm(q))
+
+
+def test_fitted_parts_enclose_every_point_and_beat_one_capsule_on_a_bent_tool():
+    for pts in (tool_vertices(np.random.default_rng(1)), detector_vertices(np.random.default_rng(1))):
+        parts = planner.fit_parts(pts)
+        ok, worst = inside_union(pts, [planner.Capsule(np.asarray(a), np.asarray(b), r) for a, b, r in parts])
+        assert ok, f"a point lies {worst * 1000:.3f} mm outside the parts"
+    pts = tool_vertices(np.random.default_rng(1))
+    one = planner.fit_capsule(pts)
+    parts = planner.fit_parts(pts)
+    volume = lambda caps: sum(planner._capsule_volume(r, np.linalg.norm(np.subtract(b, a))) for a, b, r in caps)
+    assert len(parts) > 1 and volume(parts) < 0.3 * volume([one])
+
+
+@pytest.mark.parametrize("shape,kind", [("detector", planner.OrientedBox), ("tool", planner.Capsule)])
+def test_payload_is_fitted_in_its_own_frame_and_follows_any_pose(shape, kind):
+    """A detector gets its box, a bent tool capsules. Fitted once in the
+    object's scaled frame, then carried by its pose: any rotation,
+    translation and non-uniform scale still encloses it."""
+    rng = np.random.default_rng(2)
+    local = ((detector_vertices if shape == "detector" else tool_vertices)(rng) * 1000).astype("<f4")
+    planner._PAYLOAD_FIT_CACHE.clear()
+    for k in range(4):
+        M = np.eye(4)
+        M[:3, :3] = random_rotation(rng) @ np.diag([0.001, 0.0015, 0.00254])
+        M[:3, 3] = rng.uniform(-1, 1, 3)
+        obj = {"id": "p", "matrixWorld": list(M.T.ravel())}      # column-major, as Three.js
+        shapes = planner.payload_shapes(obj, local)
+        assert all(isinstance(s, kind) for s in shapes)
+        ok, worst = inside_union(local.astype(float) @ M[:3, :3].T + M[:3, 3], shapes)
+        assert ok, f"pose {k}: a vertex lies {worst * 1000:.3f} mm outside"
+    assert len(planner._PAYLOAD_FIT_CACHE) == 1      # one shape, one fit
+
+
+def test_oriented_box_tests_are_exact():
+    rng = np.random.default_rng(3)
+    # 45° about Z: the box's world AABB reaches a corner block the box misses.
+    s = np.sqrt(0.5)
+    box = planner.OrientedBox([0, 0, 0], [[s, -s, 0], [s, s, 0], [0, 0, 1]], [0.1, 0.1, 0.1])
+    corner = (np.array([0.09, 0.09, -0.05]), np.array([0.2, 0.2, 0.05]))
+    assert planner._aabb_overlap(box.lo, box.hi, *corner) and not box.overlaps_aabb(*corner)
+    assert box.overlaps_aabb(np.array([0.13, -0.01, -0.01]), np.array([0.3, 0.01, 0.01]))
+    # (0.15, 0.15) lies 0.2121 along the diagonal, which is the normal of a
+    # face 0.1 out: 0.1121 from the box.
+    cap = planner.Capsule(np.array([0.15, 0.15, -1.0]), np.array([0.15, 0.15, 1.0]), 0.11)
+    assert not box.meets_capsule(cap)
+    cap.radius = 0.1125
+    assert box.meets_capsule(cap)
+    assert not box.meets_sphere(np.array([0.15, 0.15, 0]), 0.11)
+    assert box.meets_sphere(np.array([0.15, 0.15, 0]), 0.1125)
+    # Random boxes: a sampled point of the box inside the AABB means overlap
+    # (the test never misses), and the SAT never reports a gap as contact
+    # when the world AABBs are apart.
+    for _ in range(300):
+        box = planner.OrientedBox(rng.uniform(-0.3, 0.3, 3), random_rotation(rng), rng.uniform(0.02, 0.2, 3))
+        c, h = rng.uniform(-0.3, 0.3, 3), rng.uniform(0.02, 0.2, 3)
+        lo, hi = c - h, c + h
+        pts = box.centre + (rng.uniform(-1, 1, (4000, 3)) * box.half) @ box.axes.T
+        if np.any(np.all((pts >= lo) & (pts <= hi), axis=1)):
+            assert box.overlaps_aabb(lo, hi)
+        if not planner._aabb_overlap(box.lo, box.hi, lo, hi):
+            assert not box.overlaps_aabb(lo, hi)
