@@ -295,6 +295,11 @@ class RobotClient:
 
     def connect(self):
         """Connect to the WebSocket server."""
+        # A second socket would have two listeners each deliver every reply,
+        # and a request could take the stale copy of the one before it.
+        if self._ws is not None and self._listener_task is not None and not self._listener_task.done():
+            print(f"  {_dim('Already connected.')}")
+            return
         if self._loop is None:
             self._start_loop()
 
