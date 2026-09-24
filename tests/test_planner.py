@@ -151,6 +151,13 @@ def tool_vertices(rng):
     return np.vstack([a, b])
 
 
+def rod_vertices(rng):
+    """A thin rod lying diagonally in its own frame (a sample stick modelled
+    askew), which no set of boxes in that frame follows well."""
+    t = rng.uniform(0, 1, size=(3000, 1))
+    return t * [0.3, 0.25, 0.2] + rng.normal(scale=0.004, size=(3000, 3))
+
+
 def inside_union(pts, shapes):
     """Is every point inside at least one Capsule or OrientedBox? (Slack for
     float32 vertices.) Also returns the worst excess."""
@@ -179,13 +186,13 @@ def test_fitted_parts_enclose_every_point_and_beat_one_capsule_on_a_bent_tool():
     assert len(parts) > 1 and volume(parts) < 0.3 * volume([one])
 
 
-@pytest.mark.parametrize("shape,kind", [("detector", planner.OrientedBox), ("tool", planner.Capsule)])
+@pytest.mark.parametrize("shape,kind", [("detector", planner.OrientedBox), ("rod", planner.Capsule)])
 def test_payload_is_fitted_in_its_own_frame_and_follows_any_pose(shape, kind):
-    """A detector gets its box, a bent tool capsules. Fitted once in the
+    """A detector gets boxes, an askew rod capsules. Fitted once in the
     object's scaled frame, then carried by its pose: any rotation,
     translation and non-uniform scale still encloses it."""
     rng = np.random.default_rng(2)
-    local = ((detector_vertices if shape == "detector" else tool_vertices)(rng) * 1000).astype("<f4")
+    local = ((detector_vertices if shape == "detector" else rod_vertices)(rng) * 1000).astype("<f4")
     planner._PAYLOAD_FIT_CACHE.clear()
     for k in range(4):
         M = np.eye(4)
@@ -197,6 +204,66 @@ def test_payload_is_fitted_in_its_own_frame_and_follows_any_pose(shape, kind):
         ok, worst = inside_union(local.astype(float) @ M[:3, :3].T + M[:3, 3], shapes)
         assert ok, f"pose {k}: a vertex lies {worst * 1000:.3f} mm outside"
     assert len(planner._PAYLOAD_FIT_CACHE) == 1      # one shape, one fit
+
+
+def cube_tris(lo, hi):
+    """The 12 triangles of a box's surface."""
+    c = np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
+    quads = [(0, 1, 3, 2), (4, 5, 7, 6), (0, 1, 5, 4), (2, 3, 7, 6), (0, 2, 6, 4), (1, 3, 7, 5)]
+    return np.array([t for a, b, cc, d in quads for t in ([c[a], c[b], c[cc]], [c[a], c[cc], c[d]])])
+
+
+def frame_tris():
+    """An open cage: the twelve edges of a 0.4 m cube as 20 mm bars, and a
+    back panel of two large triangles, the kind a cut through vertices
+    alone would leave uncovered."""
+    s, w = 0.4, 0.02
+    bars = []
+    for axis in range(3):
+        for u in (0, s - w):
+            for v in (0, s - w):
+                lo = np.zeros(3); hi = np.zeros(3)
+                lo[axis], hi[axis] = 0, s
+                others = [a for a in range(3) if a != axis]
+                lo[others[0]], hi[others[0]] = u, u + w
+                lo[others[1]], hi[others[1]] = v, v + w
+                bars.append(cube_tris(lo, hi))
+    panel = np.array([[[0, 0, s], [s, 0, s], [s, s, s]], [[0, 0, s], [s, s, s], [0, s, s]]], float)
+    return np.vstack(bars + [panel])
+
+
+def triangle_samples(tris, n=40, seed=0):
+    """Points spread over every triangle (corners, edges and inside)."""
+    rng = np.random.default_rng(seed)
+    w = rng.dirichlet([1, 1, 1], size=n)
+    w = np.vstack([np.eye(3), [[.5, .5, 0], [0, .5, .5], [.5, 0, .5]], w])
+    return np.einsum("kj,tjd->tkd", w, tris).reshape(-1, 3)
+
+
+def test_box_fit_encloses_whole_triangles_and_opens_up_a_frame():
+    tris = frame_tris()
+    boxes = planner.fit_boxes(tris)
+    shapes = [planner.OrientedBox(c, np.eye(3), h) for c, h in boxes]
+    ok, worst = inside_union(triangle_samples(tris), shapes)
+    assert ok, f"a point of a triangle lies {worst * 1000:.3f} mm outside the boxes"
+    volume = sum(8 * np.prod(h) for _, h in boxes)
+    assert volume < 0.5 * 0.4 ** 3, f"{volume:.4f} m3: the frame's inside was not opened up"
+    # A closed box's surface is a solid box, not six slabs.
+    [(c, h)] = planner.fit_boxes(cube_tris([0, 0, 0], [0.1, 0.2, 0.3]))
+    assert np.allclose(c, [0.05, 0.1, 0.15]) and np.allclose(h, [0.05, 0.1, 0.15])
+
+
+def test_capsule_parts_keep_triangles_whole():
+    """Big triangles of a bent tool: the capsules must enclose every point
+    of each, not just its corners."""
+    rng = np.random.default_rng(4)
+    spine = np.vstack([np.linspace([0, 0, 0], [0.3, 0, 0], 40), np.linspace([0.3, 0, 0], [0.3, 0.2, 0.1], 30)])
+    tris = np.array([[p, p + rng.normal(scale=0.01, size=3), spine[(i + 7) % len(spine)]]
+                     for i, p in enumerate(spine)])
+    caps = [planner.Capsule(np.asarray(a), np.asarray(b), r) for a, b, r in planner.fit_parts(tris, min_points=8)]
+    assert len(caps) > 1
+    ok, worst = inside_union(triangle_samples(tris), caps)
+    assert ok, f"a point of a triangle lies {worst * 1000:.3f} mm outside the capsules"
 
 
 def test_oriented_box_tests_are_exact():

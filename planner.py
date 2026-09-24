@@ -260,34 +260,49 @@ def fit_capsule(pts):
     return p0, p1, math.ceil((r + 1e-6) * 1e4) / 1e4
 
 
-def fit_parts(pts, max_parts=12, enough=1.10, min_points=32):
-    """Several capsules whose union encloses the points, as fitParts in
-    headless/fit-capsules.mjs: the largest part is split at the median along
-    whichever principal axis leaves the smaller total, up to max_parts; then
-    the fewest parts whose total volume is within `enough` of the best seen
-    are kept. Every point stays inside the capsule fitted to its own part."""
-    pts = np.unique(np.asarray(pts, dtype=np.float64).reshape(-1, 3), axis=0)
+def _as_groups(pts):
+    """Triangles (T x 3 x 3) as they are; bare points (N x 3) as one-point
+    groups. The fitters below split a mesh by whole groups, so every
+    triangle lies in one part's shape: enclosing its three vertices, a
+    convex shape encloses the triangle, which the viewer's check tests."""
+    g = np.asarray(pts, dtype=np.float64)
+    return g.reshape(-1, 1, 3) if g.ndim == 2 else g
 
-    def part(p):
-        cap = fit_capsule(p)
-        return {"pts": p, "cap": cap, "volume": _capsule_volume(cap[2], np.linalg.norm(cap[1] - cap[0]))}
 
-    parts = [part(pts)]
+def fit_parts(tris, max_parts=12, enough=1.10, min_points=32):
+    """Several capsules whose union encloses the triangles (or points), as
+    fitParts in headless/fit-capsules.mjs: the largest part is split at the
+    median along whichever principal axis leaves the smaller total, up to
+    max_parts; then the fewest parts whose total volume is within `enough`
+    of the best seen are kept. Triangles are kept whole, by centroid."""
+    groups = _as_groups(tris)
+    # Shared vertices once, and each triangle as indices into them: a mesh
+    # sent as triangles repeats every vertex about six times.
+    verts, inverse = np.unique(groups.reshape(-1, 3), axis=0, return_inverse=True)
+    index = inverse.reshape(len(groups), -1)
+
+    def part(rows):
+        cap = fit_capsule(verts[np.unique(index[rows])])
+        return {"rows": rows, "g": groups[rows], "cap": cap,
+                "volume": _capsule_volume(cap[2], np.linalg.norm(cap[1] - cap[0]))}
+
+    parts = [part(np.arange(len(groups)))]
     history = [parts]
     while len(parts) < max_parts:
-        open_ = [p for p in parts if len(p["pts"]) >= 2 * min_points]
+        open_ = [p for p in parts if len(p["g"]) >= 2 * min_points]
         if not open_:
             break
         big = max(open_, key=lambda p: p["volume"])
-        centre = big["pts"].mean(axis=0)
-        _, vecs = np.linalg.eigh((big["pts"] - centre).T @ (big["pts"] - centre))
+        cent = big["g"].mean(axis=1)
+        centre = cent.mean(axis=0)
+        _, vecs = np.linalg.eigh((cent - centre).T @ (cent - centre))
         best = None
         for i in range(3):
-            t = (big["pts"] - centre) @ vecs[:, i]
+            t = (cent - centre) @ vecs[:, i]
             below = t < np.sort(t)[len(t) >> 1]
             if below.sum() < min_points or (~below).sum() < min_points:
                 continue
-            halves = [part(big["pts"][below]), part(big["pts"][~below])]
+            halves = [part(big["rows"][below]), part(big["rows"][~below])]
             volume = halves[0]["volume"] + halves[1]["volume"]
             if best is None or volume < best[0]:
                 best = (volume, halves)
@@ -298,6 +313,129 @@ def fit_parts(pts, max_parts=12, enough=1.10, min_points=32):
     total = lambda ps: sum(p["volume"] for p in ps)
     least = min(total(ps) for ps in history)
     return [p["cap"] for p in next(ps for ps in history if total(ps) <= enough * least)]
+
+
+def _occupied_cells(lo, hi, origin, cell, dims):
+    """Grid cells touched by any of the boxes [lo, hi] (a triangle's box
+    encloses the triangle, so these cells cover the mesh)."""
+    occ = np.zeros(dims, dtype=bool)
+    i0 = np.clip(np.floor((lo - origin) / cell).astype(np.int64), 0, dims - 1)
+    i1 = np.clip(np.floor((hi - origin) / cell).astype(np.int64), 0, dims - 1)
+    small = np.all(i1 - i0 <= 1, axis=1)
+    for dx in (0, 1):                       # most triangles span ≤ 2 cells a side
+        for dy in (0, 1):
+            for dz in (0, 1):
+                ijk = np.minimum(i0[small] + [dx, dy, dz], i1[small])
+                occ[ijk[:, 0], ijk[:, 1], ijk[:, 2]] = True
+    for a, b in zip(i0[~small], i1[~small]):
+        occ[a[0]:b[0] + 1, a[1]:b[1] + 1, a[2]:b[2] + 1] = True
+    return occ
+
+
+def _fill_enclosed(occ):
+    """Occupied cells plus the empty ones no path of empty cells joins to
+    the outside of the grid: the inside of a closed body. An open frame's
+    inside joins the outside and stays empty."""
+    pad = np.pad(occ, 1)
+    outside = np.zeros_like(pad)
+    outside[0, :, :] = outside[-1, :, :] = True
+    outside[:, 0, :] = outside[:, -1, :] = True
+    outside[:, :, 0] = outside[:, :, -1] = True
+    outside &= ~pad
+    while True:
+        grown = outside.copy()
+        grown[1:] |= outside[:-1]
+        grown[:-1] |= outside[1:]
+        grown[:, 1:] |= outside[:, :-1]
+        grown[:, :-1] |= outside[:, 1:]
+        grown[:, :, 1:] |= outside[:, :, :-1]
+        grown[:, :, :-1] |= outside[:, :, 1:]
+        grown &= ~pad
+        if np.array_equal(grown, outside):
+            break
+        outside = grown
+    return ~outside[1:-1, 1:-1, 1:-1]
+
+
+def _cell_boxes(occ):
+    """Cover the occupied cells with boxes [(i0, i1)] (inclusive cell
+    ranges): from each cell not yet covered, grow along x, then y, then z
+    while the cells stay occupied (covered or not; boxes may overlap)."""
+    covered = np.zeros_like(occ)
+    boxes = []
+    for i, j, k in np.argwhere(occ):
+        if covered[i, j, k]:
+            continue
+        i1 = i
+        while i1 + 1 < occ.shape[0] and occ[i1 + 1, j, k]:
+            i1 += 1
+        j1 = j
+        while j1 + 1 < occ.shape[1] and occ[i:i1 + 1, j1 + 1, k].all():
+            j1 += 1
+        k1 = k
+        while k1 + 1 < occ.shape[2] and occ[i:i1 + 1, j:j1 + 1, k1 + 1].all():
+            k1 += 1
+        covered[i:i1 + 1, j:j1 + 1, k:k1 + 1] = True
+        boxes.append((np.array([i, j, k]), np.array([i1, j1, k1])))
+    return boxes
+
+
+def fit_boxes(tris, max_parts=16, cells=48):
+    """Axis-aligned boxes (in the triangles' frame) whose union encloses the
+    triangles: [(centre, half)].
+
+    The mesh is voxelised conservatively (every cell a triangle's box
+    touches), with the inside of a closed body filled (_fill_enclosed: a
+    solid detector is a solid block, not six slabs something could slip
+    between between samples), the occupied cells are covered with boxes,
+    and boxes are
+    merged, the pair whose joint box adds least volume first, down to
+    max_parts. Each box is then shrunk to the triangle material inside it.
+    Every triangle lies in its occupied cells and every such cell in some
+    box, so the union encloses the mesh. An open frame (a detector's cage)
+    comes out as boxes along its bars, which cutting the mesh in two, one
+    cut at a time, does not find: no single cut of a hollow box saves much."""
+    groups = _as_groups(tris)
+    lo_t, hi_t = groups.min(axis=1), groups.max(axis=1)
+    lo, hi = lo_t.min(axis=0), hi_t.max(axis=0)
+    # A ragged mesh (or a scatter of points) breaks into many small cell
+    # boxes, and merging costs the cube of their number; the grid is
+    # coarsened until there are few enough.
+    while True:
+        cell = max(float((hi - lo).max()) / cells, 1e-6)
+        dims = np.maximum(np.ceil((hi - lo) / cell).astype(np.int64), 1)
+        occ = _fill_enclosed(_occupied_cells(lo_t, hi_t, lo, cell, dims))
+        found = _cell_boxes(occ)
+        if len(found) <= 256 or cells <= 4:
+            break
+        cells = max(4, int(cells / 1.5))
+    boxes = [(lo + a * cell, lo + (b + 1) * cell) for a, b in found]
+
+    vol = lambda b: float(np.prod(b[1] - b[0]))
+    while len(boxes) > max_parts:
+        L = np.array([b[0] for b in boxes])
+        H = np.array([b[1] for b in boxes])
+        V = np.prod(H - L, axis=1)
+        jl = np.minimum(L[:, None], L[None])
+        jh = np.maximum(H[:, None], H[None])
+        cost = np.prod(jh - jl, axis=2) - V[:, None] - V[None]
+        np.fill_diagonal(cost, np.inf)
+        a, b = np.unravel_index(np.argmin(cost), cost.shape)
+        merged = (jl[a, b], jh[a, b])
+        boxes = [x for k, x in enumerate(boxes) if k not in (a, b)] + [merged]
+
+    # Shrink each box to what the triangles put in it: the union of each
+    # triangle's box clipped to it. A triangle point inside a box lies in
+    # that clipped part, so nothing is lost.
+    out = []
+    for blo, bhi in boxes:
+        inside = np.all(hi_t >= blo, axis=1) & np.all(lo_t <= bhi, axis=1)
+        if not inside.any():
+            continue
+        clo = np.maximum(lo_t[inside], blo).min(axis=0)
+        chi = np.minimum(hi_t[inside], bhi).max(axis=0)
+        out.append(((clo + chi) / 2, (chi - clo) / 2))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -532,15 +670,17 @@ _PAYLOAD_FIT_CACHE: dict = {}
 
 def payload_shapes(obj, local_vertices):
     """World shapes (Three.js frame, metres) whose union encloses a carried
-    mesh: its box in its own axes, or capsules fitted to it, whichever
-    encloses less volume. A box suits a detector; capsules a long or round
-    tool. `obj` is its listObjects entry, which must carry matrixWorld;
-    `local_vertices` are its vertices (the viewer's exportObjectPoints with
-    vertices: true).
+    mesh: boxes in its own axes (fit_boxes), or capsules (fit_parts),
+    whichever encloses less volume. Boxes suit a detector and its cage;
+    capsules a long or bent tool. `obj` is its listObjects entry, which must
+    carry matrixWorld; `local_vertices` are its triangles, three vertices
+    each (the viewer's exportObjectPoints with vertices: true).
 
     matrixWorld = R·S plus a translation (polar decomposition). The fit is
-    made on the vertices scaled by S and carried out by R and the
-    translation, so it is reused for any pose of the same object."""
+    made on the triangles scaled by S and carried out by R and the
+    translation, so it is reused for any pose of the same object. S keeps
+    the mesh's own axes, bar a shear from a stretched parent, which leaves
+    the boxes enclosing but less snug."""
     M = np.asarray(obj["matrixWorld"], dtype=float).reshape(4, 4).T
     U, sigma, Vt = np.linalg.svd(M[:3, :3])
     R, S = U @ Vt, Vt.T @ np.diag(sigma) @ Vt
@@ -550,21 +690,17 @@ def payload_shapes(obj, local_vertices):
         if len(_PAYLOAD_FIT_CACHE) >= 16:
             _PAYLOAD_FIT_CACHE.pop(next(iter(_PAYLOAD_FIT_CACHE)))
         scaled = verts @ S.T
-        caps = fit_parts(scaled)
+        tris = scaled.reshape(-1, 3, 3) if len(scaled) % 3 == 0 else scaled
+        # Out by a micrometre: float32 vertices, float64 here.
+        boxes = [(c, h + 1e-6) for c, h in fit_boxes(tris)]
+        box_volume = sum(8 * np.prod(h) for _, h in boxes)
+        caps = fit_parts(tris)
         cap_volume = sum(_capsule_volume(r, np.linalg.norm(p1 - p0)) for p0, p1, r in caps)
-        # The box is taken around the scaled vertices, in the mesh's own axes
-        # (S keeps them, bar a shear from a stretched parent, which leaves
-        # the box enclosing but less snug). Out by a micrometre: float32
-        # vertices, float64 here.
-        lo, hi = scaled.min(axis=0), scaled.max(axis=0)
-        half = (hi - lo) / 2 + 1e-6
-        box = ((lo + hi) / 2, half) if 8 * np.prod(half) < cap_volume else None
-        _PAYLOAD_FIT_CACHE[key] = ("box", box) if box else ("capsules", caps)
+        _PAYLOAD_FIT_CACHE[key] = ("boxes", boxes) if box_volume <= cap_volume else ("capsules", caps)
     kind, fit = _PAYLOAD_FIT_CACHE[key]
     t = M[:3, 3]
-    if kind == "box":
-        centre, half = fit
-        return [OrientedBox(R @ centre + t, R, half)]
+    if kind == "boxes":
+        return [OrientedBox(R @ c + t, R, h) for c, h in fit]
     return [Capsule(R @ p0 + t, R @ p1 + t, r) for p0, p1, r in fit]
 
 

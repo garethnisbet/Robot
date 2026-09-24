@@ -1202,8 +1202,9 @@ export function handleCommand(data) {
     // so they are fetched apart from exportScene and in chunks:
     // { id, offset, count } in points; positions are little-endian float32,
     // base64, in the object's local frame.
-    // With vertices: true it sends a mesh's vertices instead, which the
-    // planner fits capsules to when the mesh is carried by a link.
+    // With vertices: true it sends a mesh's triangles instead, three
+    // vertices each, which the planner fits boxes or capsules to when the
+    // mesh is carried by a link.
     const entry = State.importedSTLs.find(e => e.stlId === data.id);
     const all = entry && (data.vertices ? meshVertexPositions(entry) : collisionPositions(entry));
     if (!all) {
@@ -1322,7 +1323,7 @@ export function handleCommand(data) {
         // Scene
         getSceneState:    { params: '', description: 'Get full scene state (devices, objects, camera)' },
         exportScene:      { params: 'buffers?', description: 'Scene as Save Scene writes it (buffers: false for transforms only)' },
-        exportObjectPoints: { params: 'id, offset?, count?, vertices?', description: "An object's collision points (or, with vertices: true, a mesh's vertices), in chunks (base64 float32)" },
+        exportObjectPoints: { params: 'id, offset?, count?, vertices?', description: "An object's collision points (or, with vertices: true, a mesh's triangles, three vertices each), in chunks (base64 float32)" },
         getStats:         { params: 'frames?, device?, transparency?', description: 'Benchmark frame time (blocks the viewer while it runs)' },
         saveScene:        { params: '', description: 'Trigger scene file download in viewer' },
         help:             { params: '', description: 'List all available commands' },
