@@ -1127,6 +1127,14 @@ export function updateSplatClip() {
 // volume, so the interior of a scan can be inspected. PointsMaterial has
 // no shader source to edit directly, so the discard is injected with
 // onBeforeCompile after <project_vertex> (which defines mvPosition).
+//
+// The same patch fixes point size under the ortho camera: three.js only
+// attenuates for perspective and otherwise treats `size` as pixels, so a
+// size in metres became sub-pixel. In ortho the size is scaled by
+// projectionMatrix[1][1] (zoom) times tan(fov/2) of the perspective camera,
+// which gives the same on-screen size as perspective at the orbit target.
+const _pointOrthoSizeUniform = { value: 1.0 };
+
 function _patchPointCloudClipMaterial(material) {
   if (!material || material.userData._fgClipUniform) return;
 
@@ -1134,12 +1142,13 @@ function _patchPointCloudClipMaterial(material) {
   material.userData._fgClipUniform = clipUniform;
   material.onBeforeCompile = (shader) => {
     shader.uniforms.foregroundClipDist = clipUniform;
+    shader.uniforms.uOrthoSizeScale = _pointOrthoSizeUniform;
     shader.uniforms.uBoxClipEnabled = _boxClipUniforms.uBoxClipEnabled;
     shader.uniforms.uBoxClipInv     = _boxClipUniforms.uBoxClipInv;
     shader.uniforms.uBoxClipMode    = _boxClipUniforms.uBoxClipMode;
     shader.vertexShader = shader.vertexShader
       .replace('void main',
-        'uniform float foregroundClipDist;\n' +
+        'uniform float foregroundClipDist;\nuniform float uOrthoSizeScale;\n' +
         'uniform bool uBoxClipEnabled;\nuniform mat4 uBoxClipInv;\nuniform float uBoxClipMode;\n' +
         'void main')
       .replace(
@@ -1153,6 +1162,11 @@ function _patchPointCloudClipMaterial(material) {
         '\tif (foregroundClipDist > 0.0 && -mvPosition.z < foregroundClipDist) {\n' +
         '\t\tgl_Position = vec4(0.0, 0.0, 2.0, 1.0);\n' +
         '\t}'
+      )
+      .replace(
+        'if ( isPerspective ) gl_PointSize *= ( scale / - mvPosition.z );',
+        'if ( isPerspective ) gl_PointSize *= ( scale / - mvPosition.z );\n' +
+        '\t\telse gl_PointSize *= scale * projectionMatrix[1][1] * uOrthoSizeScale;'
       );
   };
   // All point clouds share this exact patch, so give them a common program
@@ -1172,6 +1186,8 @@ export function updatePointCloudClip() {
   if (row) row.style.display = clouds.length > 0 ? 'flex' : 'none';
 
   if (clouds.length === 0) return;
+
+  _pointOrthoSizeUniform.value = Math.tan(State.camera.fov * Math.PI / 360);
 
   let dist = 0;
   if (State.pointCloudClipFraction > 0) {
