@@ -57,7 +57,7 @@ import {
 } from './collision.js';
 import { initVR, updateVR } from './vr.js';
 import {
-  wsConnect, initWsInfoPanel, registerSetActiveDevice, registerAvailableConfigs,
+  wsConnect, initWsInfoPanel, registerSetActiveDevice, registerAvailableConfigs, registerSetOrtho,
   setApiEnabled, isApiEnabled,
 } from './websocket.js';
 
@@ -66,6 +66,7 @@ import {
 import { configFiles } from './panel.js';
 registerSetActiveDevice(setActiveDevice);
 registerAvailableConfigs(configFiles);
+registerSetOrtho(setOrtho);
 
 // Start collision Web Worker (falls back to main thread if unavailable)
 initCollisionWorker();

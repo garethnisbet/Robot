@@ -1,0 +1,314 @@
+"""The planner's fitted capsules against the viewer's exact check.
+
+The capsules enclose each link's mesh (test/js/capsules.test.mjs), so the
+planner may call a pose blocked when the viewer would not, but never the
+reverse. These tests hold that end to end, through the headless engine.
+"""
+import random
+
+import numpy as np
+import pytest
+
+from headless_client import HeadlessEngine
+from planner import RobotPlanner
+
+pytestmark = pytest.mark.skipif(not HeadlessEngine.available(),
+                                reason="needs node and node_modules (npm ci)")
+
+
+@pytest.fixture(scope="module")
+def engine():
+    with HeadlessEngine() as e:
+        yield e
+
+
+def reply(replies, kind):
+    return next(r for r in replies if r["type"] == kind)
+
+
+def fresh(engine, config):
+    engine.request({"cmd": "loadScene", "scene": {"version": 1, "devices": [], "stls": []}})
+    engine.request({"cmd": "addDevice", "config": config})
+    engine.request({"cmd": "addPrimitive", "type": "cube"})
+    engine.request({"cmd": "setFloorCollision", "enabled": False})
+
+
+def cube_blocks(planner, q):
+    """Does any of the arm's capsules meet the cube's box? (Only the cube:
+    diagnose stops at the first problem, which may be the floor.)"""
+    from planner import capsule_aabb_collide
+    return any(capsule_aabb_collide(c, o) for c in planner._capsules(np.asarray(q, float))
+               for o in planner.obstacles)
+
+
+def test_fitted_capsules_are_used_when_present(config_path):
+    assert RobotPlanner(config_path("meca500")).capsule_source == "fitted"
+    assert RobotPlanner(config_path("meca500"), capsule_radii=0.018).capsule_source == "joint-to-joint"
+
+
+@pytest.mark.parametrize("name,scale", [("meca500", 1), ("gp280", 6)])
+def test_planner_never_misses_a_contact_the_viewer_sees(engine, config_path, name, scale):
+    fresh(engine, f"{name}_config.json")
+    engine.request({"cmd": "setObject", "index": 0, "scale": [scale] * 3})
+    p = RobotPlanner(config_path(name))
+    rng = np.random.default_rng(5)
+    contacts = misses = stricter = 0
+    for _ in range(120):
+        q = [round(float(v), 3) for v in p.limits[:, 0] + rng.uniform(0, 1, p.n) * (p.limits[:, 1] - p.limits[:, 0])]
+        ee = reply(engine.request({"cmd": "setJoints", "angles": q}), "state")["eePosition"]
+        # Near the end effector, where a few mm decide contact.
+        d = rng.normal(size=3)
+        pos = [ee[i] + d[i] / np.linalg.norm(d) * rng.uniform(0, 120) * scale for i in range(3)]
+        engine.request({"cmd": "setObject", "index": 0, "position": pos})
+        pairs = reply(engine.request({"cmd": "getCollisions"}), "collisions")["pairs"]
+        viewer_hit = any("Cube" in (pp["link"], pp["object"]) for pp in pairs)
+        p.obstacles = []
+        p.sync_from_viewer_objects(reply(engine.request({"cmd": "listObjects"}), "objects")["objects"])
+        planner_hit = cube_blocks(p, q)
+        contacts += viewer_hit
+        misses += viewer_hit and not planner_hit
+        stricter += planner_hit and not viewer_hit
+    assert contacts >= 20, f"only {contacts} contacts sampled"
+    assert misses == 0, f"planner missed {misses} of {contacts} contacts the viewer saw"
+    assert stricter > 0 or contacts == 120   # it does err on the safe side
+
+
+def test_planned_paths_round_a_cube_pass_the_exact_check(engine, config_path):
+    fresh(engine, "meca500_config.json")
+    engine.request({"cmd": "setFloorCollision", "enabled": True})
+    at45 = reply(engine.request({"cmd": "setJoints", "angles": [45, 0, 0, 0, 0, 0]}), "state")["eePosition"]
+    engine.request({"cmd": "home"})
+    engine.request({"cmd": "setObject", "index": 0, "position": at45})
+    objects = reply(engine.request({"cmd": "listObjects"}), "objects")["objects"]
+    assert not engine.check_path(0, [[0] * 6, [90, 0, 0, 0, 0, 0]])["ok"], "the straight sweep must hit the cube"
+    for seed in range(5):
+        random.seed(seed)
+        np.random.seed(seed)
+        p = RobotPlanner(config_path("meca500"))
+        p.sync_from_viewer_objects(objects)
+        path = p.plan([0] * 6, [90, 0, 0, 0, 0, 0], verbose=False)
+        assert path is not None
+        verdict = engine.check_path(0, path, 1.0)
+        assert verdict["ok"], f"seed {seed}: {verdict['reason']}"
+
+
+# ── The scene around the planning device, from the viewer's replies ──────────
+
+def scene_planner(engine, config_path, name="meca500", index=0, vertices=False):
+    """A planner for device `index` built from the engine's listDevices and
+    listObjects, as the MCP server builds it from the viewer's (with carried
+    meshes' vertices when `vertices`). The floor is left out so the only
+    contacts are with the scene."""
+    devices = reply(engine.request({"cmd": "listDevices"}), "devices")["devices"]
+    objects = reply(engine.request({"cmd": "listObjects"}), "objects")["objects"]
+    p = RobotPlanner(config_path(name))
+    p.sync_from_viewer(devices, objects, index,
+                       fetch_vertices=(lambda i: mesh_vertices(engine, i)) if vertices else None)
+    p._floor_checked = [False] * len(p._floor_checked)
+    p._carried_floor = [False] * len(p._carried_floor)
+    return p
+
+
+def mesh_vertices(engine, obj_id):
+    """A mesh's vertices in its local frame, as the viewer sends them."""
+    import base64
+    r = reply(engine.request({"cmd": "exportObjectPoints", "id": obj_id, "vertices": True}), "objectPoints")
+    return np.frombuffer(base64.b64decode(r["positions"]), dtype="<f4").reshape(-1, 3)
+
+
+def scene_contact(engine):
+    """Any contact the viewer sees other than a device touching itself."""
+    pairs = reply(engine.request({"cmd": "getCollisions"}), "collisions")["pairs"]
+    def device(side):
+        return side.split(":")[0] if ":" in side else None
+    return [pp for pp in pairs
+            if not (device(pp["link"]) and device(pp["link"]) == device(pp["object"]))]
+
+
+def random_pose(p, rng, bands=None):
+    """Random joints within limits; `bands` narrows some joints {index: (lo, hi)}."""
+    lo, hi = p.limits[:, 0].copy(), p.limits[:, 1].copy()
+    for i, (a, b) in (bands or {}).items():
+        lo[i], hi[i] = max(lo[i], a), min(hi[i], b)
+    return [round(float(v), 3) for v in lo + rng.uniform(0, 1, p.n) * (hi - lo)]
+
+
+# Meca500 poses leaning forward (+X of its base), towards an arm it faces.
+REACHING = {0: (-35, 35), 1: (10, 90), 2: (-60, 30)}
+
+
+def test_a_moved_device_is_planned_where_it_stands(engine, config_path):
+    fresh(engine, "meca500_config.json")
+    engine.request({"cmd": "setDeviceOrigin", "position": [300, 200, 50], "rotation": [0, 0, 70]})
+    rng = np.random.default_rng(8)
+    contacts = misses = 0
+    for _ in range(100):
+        p = scene_planner(engine, config_path)
+        q = random_pose(p, rng)
+        ee = reply(engine.request({"cmd": "setJoints", "angles": q}), "state")["eePosition"]
+        d = rng.normal(size=3)
+        pos = [ee[i] + d[i] / np.linalg.norm(d) * rng.uniform(0, 120) for i in range(3)]
+        engine.request({"cmd": "setObject", "index": 0, "position": pos})
+        p = scene_planner(engine, config_path)
+        seen = bool(scene_contact(engine))
+        contacts += seen
+        misses += seen and p.diagnose(q) is None
+    assert contacts >= 20, contacts
+    assert misses == 0, f"planner missed {misses} of {contacts}"
+
+
+def test_another_device_is_an_obstacle(engine, config_path):
+    engine.request({"cmd": "loadScene", "scene": {"version": 1, "devices": [], "stls": []}})
+    engine.request({"cmd": "setFloorCollision", "enabled": False})
+    engine.request({"cmd": "addDevice", "config": "meca500_config.json"})
+    [b] = [r for r in engine.request({"cmd": "addDevice", "config": "meca500_config.json"})
+           if r["type"] == "deviceAdded"]
+    engine.request({"cmd": "setDeviceOrigin", "device": b["id"], "position": [380, 0, 0], "rotation": [0, 0, 180]})
+    # Distinct names, so a contact between the two is not read as one arm touching itself.
+    engine.request({"cmd": "renameDevice", "device": b["id"], "name": "Other"})
+    rng = np.random.default_rng(9)
+    contacts = misses = 0
+    for _ in range(150):
+        p = scene_planner(engine, config_path)
+        qa, qb = random_pose(p, rng, REACHING), random_pose(p, rng, REACHING)
+        engine.request({"cmd": "setJoints", "device": "dev_0", "angles": qa})
+        engine.request({"cmd": "setJoints", "device": b["id"], "angles": qb})
+        p = scene_planner(engine, config_path)
+        seen = bool(scene_contact(engine))
+        contacts += seen
+        misses += seen and p.diagnose(qa) is None
+    assert contacts >= 20, contacts
+    assert misses == 0, f"planner missed {misses} of {contacts}"
+
+
+def carrying_scene(engine):
+    """Meca500 carrying a turned, stretched block ('Payload', cube 0) just
+    past its flange, and a block fixed in the world ('Block', cube 1)."""
+    fresh(engine, "meca500_config.json")                 # cube 0: the payload
+    engine.request({"cmd": "addPrimitive", "type": "cube"})  # cube 1: fixed in the world
+    engine.request({"cmd": "setObject", "index": 0, "name": "Payload", "scale": [2.5, 0.6, 1.2],
+                    "rotation": [35, 20, 50]})
+    engine.request({"cmd": "setObject", "index": 1, "name": "Block", "scale": [2, 2, 2]})
+    dev = reply(engine.request({"cmd": "listDevices"}), "devices")["devices"][0]
+    ee = reply(engine.request({"cmd": "home"}), "state")["eePosition"]
+    engine.request({"cmd": "setObject", "index": 0, "position": [ee[0] + 60, ee[1], ee[2]],
+                    "parent": f"{dev['id']}:L5"})
+
+
+def payload_contacts(engine, planners, rng, n=150):
+    """Move the arm and the block at random around the payload; count the
+    viewer's payload–block contacts, and per planner (built once, at home,
+    so it must follow the payload itself) the contacts it lets through and
+    the poses it blocks although the viewer sees no contact at all."""
+    contacts, misses, false_alarms = 0, [0] * len(planners), [0] * len(planners)
+    for _ in range(n):
+        q = random_pose(planners[0], rng)
+        engine.request({"cmd": "setJoints", "angles": q})
+        payload = reply(engine.request({"cmd": "getObject", "index": 0}), "object")["worldPosition"]
+        d = rng.normal(size=3)
+        pos = [payload[i] + d[i] / np.linalg.norm(d) * rng.uniform(0, 150) for i in range(3)]
+        engine.request({"cmd": "setObject", "index": 1, "position": pos})
+        objects = reply(engine.request({"cmd": "listObjects"}), "objects")["objects"]
+        pairs = scene_contact(engine)
+        seen = any("Payload" in (pp["link"], pp["object"]) and "Block" in (pp["link"], pp["object"])
+                   for pp in pairs)
+        contacts += seen
+        for k, p in enumerate(planners):
+            p.obstacles = []
+            p.sync_from_viewer_objects([o for o in objects if o["name"] == "Block"])
+            blocked = p.diagnose(q) is not None
+            misses[k] += seen and not blocked
+            false_alarms[k] += blocked and not pairs
+    engine.request({"cmd": "home"})
+    return contacts, misses, false_alarms
+
+
+def test_carried_payload_moves_with_its_link(engine, config_path):
+    """Without its vertices (an older viewer page), the payload is its
+    world box at sync time, carried by the link as an oriented box."""
+    carrying_scene(engine)
+    p = scene_planner(engine, config_path)
+    assert [(c.name, type(c).__name__) for c in p.carried] == [("Payload", "CarriedBox")]
+    contacts, [misses], _ = payload_contacts(engine, [p], np.random.default_rng(10))
+    assert contacts >= 15, contacts
+    assert misses == 0, f"planner missed {misses} of {contacts} payload contacts"
+
+
+def test_carried_payload_is_fitted_to_its_mesh(engine, config_path):
+    """With its vertices, the payload is the box in its own axes: never
+    misses a contact, and blocks fewer free poses than its world box."""
+    carrying_scene(engine)
+    fitted = scene_planner(engine, config_path, vertices=True)
+    boxed = scene_planner(engine, config_path)
+    [c] = fitted.carried
+    assert isinstance(c, planner_module().CarriedBox)
+    assert np.prod(c.half) < 0.5 * np.prod(boxed.carried[0].half)
+    contacts, misses, false_alarms = payload_contacts(engine, [fitted, boxed], np.random.default_rng(11))
+    assert contacts >= 15, contacts
+    assert misses == [0, 0], f"missed {misses} of {contacts} payload contacts (fitted, boxed)"
+    assert false_alarms[0] < false_alarms[1], false_alarms
+
+
+def test_carried_payload_is_checked_against_its_own_arm(engine, config_path):
+    """The payload swung into the arm that carries it: every contact the
+    viewer sees with one of the arm's links is caught, bar pairs already
+    touching at the start pose (left out, as a base on the floor is)."""
+    carrying_scene(engine)
+    engine.request({"cmd": "setObject", "index": 1, "position": [5000, 5000, 5000]})   # block out of reach
+    engine.request({"cmd": "setObject", "index": 0, "scale": [6, 1, 1]})   # a 300 mm rod, to reach the arm
+    p = scene_planner(engine, config_path, vertices=True)
+    links = [name for name, _ in p.part_capsules(np.zeros(p.n))]
+    skipped = {links[i] for i in range(len(links))} - {links[i] for _, i in p._payload_pairs}
+    assert p._payload_pairs and "L1" not in skipped
+    rng = np.random.default_rng(13)
+    contacts = misses = 0
+    for _ in range(300):
+        q = random_pose(p, rng)
+        engine.request({"cmd": "setJoints", "angles": q})
+        hit = [pp for pp in reply(engine.request({"cmd": "getCollisions"}), "collisions")["pairs"]
+               if "Payload" in (pp["link"], pp["object"])]
+        own = [pp["link"] if pp["object"] == "Payload" else pp["object"] for pp in hit]
+        own = [name.split(":")[-1] for name in own if name.split(":")[-1] not in skipped]
+        seen = bool(own)
+        contacts += seen
+        misses += seen and p.diagnose(q) is None
+    engine.request({"cmd": "home"})
+    assert contacts >= 15, contacts
+    assert misses == 0, f"planner missed {misses} of {contacts} payload–arm contacts (skipped: {skipped})"
+
+
+def planner_module():
+    import planner
+    return planner
+
+
+def test_planner_never_misses_a_point_cloud_contact(engine, config_path):
+    """A scanned sheet of points near the tool: whenever the viewer's check
+    has the arm touching it, so does the planner."""
+    import base64, copy
+    from test_headless_client import wall_points, cloud_record, scene, exporter
+    fresh(engine, "meca500_config.json")
+    ee = reply(engine.request({"cmd": "setJoints", "angles": [30, 20, 10, 0, 30, 0]}), "state")["eePosition"]
+    engine.request({"cmd": "home"})
+    pts = wall_points([ee[0] + 60, ee[1], ee[2]], size=0.4, step=0.01)
+    fetch = lambda i, off, n: {"id": i, "total": len(pts), "offset": off,
+                               "count": len(pts[off:off + n]),
+                               "positions": base64.b64encode(pts[off:off + n].tobytes()).decode()}
+    engine.sync_scene(exporter(scene(extra=[cloud_record("scan", "Scan")])), fetch)
+    engine.request({"cmd": "setFloorCollision", "enabled": False})
+    objects = reply(engine.request({"cmd": "listObjects"}), "objects")["objects"]
+    assert [o["hasCollisionPoints"] for o in objects] == [True]
+    devices = reply(engine.request({"cmd": "listDevices"}), "devices")["devices"]
+    p = RobotPlanner(config_path("meca500"))
+    p.sync_from_viewer(devices, objects, 0, fetch_points=lambda i: pts)
+    p._floor_checked = [False] * len(p._floor_checked)
+    rng = np.random.default_rng(12)
+    contacts = misses = 0
+    for _ in range(150):
+        q = random_pose(p, rng, {0: (0, 60), 1: (-10, 60), 2: (-40, 40)})
+        verdict = engine.check_path(0, [q])
+        seen = not verdict["ok"] and any("Scan" in (pp["link"], pp["object"]) for pp in verdict.get("pairs", []))
+        contacts += seen
+        misses += seen and p.diagnose(q) is None
+    assert contacts >= 15, contacts
+    assert misses == 0, f"planner missed {misses} of {contacts} scan contacts"

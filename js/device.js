@@ -5,57 +5,20 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
-import { MeshBVH } from 'three-mesh-bvh';
 
 import * as State from './state.js';
 import {
   updateFK, getEEWorldPosition, getEEWorldQuaternion,
-  getJointWorldAxis, clampJoints,
-  kappaToEuler, eulerToKappa, getCompensation, updateVirtualAngles,
+  clampJoints,
+  eulerToKappa, getCompensation, updateVirtualAngles,
   pyEulerFromRelQuat,
 } from './kinematics.js';
 import { loadHexapod } from './hexapod.js';
+import { assembleDevice, attachModel, HIDDEN_NODE_NAMES } from './model.js';
+export { buildAdjacencyPairs } from './model.js';
 
 const deg2rad = Math.PI / 180;
 const rad2deg = 180 / Math.PI;
-
-// ============================================================
-// buildAdjacencyPairs
-// ============================================================
-export function buildAdjacencyPairs(config) {
-  const adjPairs = new Set();
-  function movableAncestor(jointIdx) {
-    let idx = config.joints[jointIdx].parent;
-    while (idx >= 0) {
-      if (!config.joints[idx].fixed) return idx;
-      idx = config.joints[idx].parent;
-    }
-    return -1;
-  }
-  const linksByJoint = {};
-  for (const link of config.links) {
-    if (!linksByJoint[link.joint]) linksByJoint[link.joint] = [];
-    linksByJoint[link.joint].push(link.name);
-  }
-  for (const names of Object.values(linksByJoint)) {
-    for (let a = 0; a < names.length; a++)
-      for (let b = a + 1; b < names.length; b++)
-        adjPairs.add([names[a], names[b]].sort().join('|'));
-  }
-  for (const linkA of config.links) {
-    const ancA = movableAncestor(linkA.joint);
-    for (const linkB of config.links) {
-      if (linkA.name >= linkB.name) continue;
-      const ancB = movableAncestor(linkB.joint);
-      const jA = config.joints[linkA.joint].fixed ? movableAncestor(linkA.joint) : linkA.joint;
-      const jB = config.joints[linkB.joint].fixed ? movableAncestor(linkB.joint) : linkB.joint;
-      if (jA === jB || jA === ancB || jB === ancA) {
-        adjPairs.add([linkA.name, linkB.name].sort().join('|'));
-      }
-    }
-  }
-  return adjPairs;
-}
 
 // ============================================================
 // loadDevice
@@ -66,59 +29,14 @@ export async function loadDevice(configFile) {
 
   const config = peek;
   const id = State.incrementDeviceId();
-  const numJoints = config.joints.length;
 
-  // Root group for the entire device (movable origin)
-  const rootGroup = new THREE.Group();
-  rootGroup.name = config.name + '_root';
+  // Chain, link bookkeeping and API state come from model.js, shared with
+  // the headless engine; everything below adds only what the page shows.
+  const dev = assembleDevice(config, { id, configFile });
+  const { numJoints, rootGroup, eeMarker, isKappaGeometry } = dev;
   State.scene.add(rootGroup);
 
-  // Build joint limits, axes, FK chain
-  const jointLimits = config.joints.map(j => [j.limits[0] * deg2rad, j.limits[1] * deg2rad]);
-  const jointFixed = config.joints.map(j => !!j.fixed);
-  const apiSign = config.joints.map(j => (j.apiSign !== undefined) ? j.apiSign : 1);
-
-  const linkToJoint = {};
-  for (const link of config.links) linkToJoint[link.name] = link.joint;
-
-  const jointRestGroups = [];
-  const jointRotGroups = [];
-  const jointAxes = [];
-
-  const isBranching = config.joints.some((j, i) => {
-    const p = j.parent !== undefined ? j.parent : i - 1;
-    return i > 0 && p === -1;
-  });
-
-  for (let i = 0; i < numJoints; i++) {
-    const d = config.joints[i];
-    const parentIdx = d.parent !== undefined ? d.parent : i - 1;
-    const parentGroup = parentIdx < 0 ? rootGroup : jointRotGroups[parentIdx];
-
-    const restGrp = new THREE.Group();
-    restGrp.name = `J${i+1}_rest`;
-    restGrp.position.set(d.restPos[0], d.restPos[1], d.restPos[2]);
-    restGrp.quaternion.set(d.restQuat[1], d.restQuat[2], d.restQuat[3], d.restQuat[0]);
-    parentGroup.add(restGrp);
-    jointRestGroups.push(restGrp);
-
-    const rotGrp = new THREE.Group();
-    rotGrp.name = `J${i+1}_rot`;
-    restGrp.add(rotGrp);
-    jointRotGroups.push(rotGrp);
-
-    if (d.name && d.name.startsWith('virtual_axis')) {
-      rotGrp.add(new THREE.AxesHelper(0.1));
-    }
-
-    jointAxes.push(new THREE.Vector3(d.axis[0], d.axis[1], d.axis[2]).normalize());
-  }
-
-  // End-effector marker
-  const eeMarker = new THREE.Group();
-  const eeParentGroup = isBranching ? jointRotGroups[jointRotGroups.length - 1] : jointRotGroups[numJoints - 1];
-  eeParentGroup.add(eeMarker);
-  if (config.eeOffset) eeMarker.position.set(...config.eeOffset);
+  // End-effector axes
   const axLen = 0.03;
   function makeAxis(dir, color) {
     const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), dir.clone().multiplyScalar(axLen)]);
@@ -165,9 +83,6 @@ export async function loadDevice(configFile) {
   ikTarget.visible = false;
   State.scene.add(ikTarget);
 
-  const ikTargetQuat = new THREE.Quaternion();
-  const ikTargetEuler = new THREE.Euler(0, 0, 0, 'YZX');
-
   const lineGeo = new THREE.BufferGeometry().setFromPoints([
     new THREE.Vector3(), new THREE.Vector3()
   ]);
@@ -175,29 +90,6 @@ export async function loadDevice(configFile) {
   const ikLine = new THREE.Line(lineGeo, lineMat);
   ikLine.visible = false;
   State.scene.add(ikLine);
-
-  // Slider mapping (skip fixed joints)
-  const sliderJointMap = [];
-  const kappaSliderNames = {};
-  {
-    const ki = config.joints.findIndex(j => j.name === 'kappa');
-    const ti = config.joints.findIndex(j => j.name === 'theta');
-    const pi = config.joints.findIndex(j => j.name === 'phi');
-    if (ki >= 0 && ti >= 0 && pi >= 0) {
-      kappaSliderNames[ti] = 'ktheta';
-      kappaSliderNames[pi] = 'kphi';
-    }
-  }
-  for (let i = 0; i < numJoints; i++) {
-    if (config.joints[i].fixed) continue;
-    sliderJointMap.push(i);
-  }
-
-  // Kappa geometry detection
-  const kappaJointIdx = config.joints.findIndex(j => j.name === 'kappa');
-  const thetaJointIdx = config.joints.findIndex(j => j.name === 'theta');
-  const phiJointIdx   = config.joints.findIndex(j => j.name === 'phi');
-  const isKappaGeometry = kappaJointIdx >= 0 && thetaJointIdx >= 0 && phiJointIdx >= 0;
 
   // Origin helper — axis gizmo + coordinate label at device base
   const originHelpers = [];
@@ -221,32 +113,7 @@ export async function loadDevice(configFile) {
     originLabels.push(lbl);
   }
 
-  // Build adjacency for collision detection
-  const adjPairs = buildAdjacencyPairs(config);
-
-  const dev = {
-    id,
-    config,
-    configFile,
-    name: config.name,
-    numJoints,
-    rootGroup,
-    jointLimits,
-    jointFixed,
-    jointAngles: Array(numJoints).fill(0),
-    jointRestGroups,
-    jointRotGroups,
-    jointAxes,
-    apiSign,
-    linkToJoint,
-    sliderJointMap,
-    kappaSliderNames,
-    isBranching,
-    eeMarker,
-    meshLabels: [],
-    robotLinkMeshes: [],
-    staticMeshes: [],
-    opacity: 1,
+  Object.assign(dev, {
     originHelpers,
     originLabels,
     chainVisible: false,
@@ -254,103 +121,33 @@ export async function loadDevice(configFile) {
     chainSpheres,
     chainLineGeo,
     chainPts,
-    ikMode: false,
     ikTarget,
-    ikTargetQuat,
-    ikTargetEuler,
     ikLine,
-    adjPairs,
-    isKappaGeometry,
-    kappaAlpha: 0,
-    kappaJointIdx,
-    thetaJointIdx,
-    phiJointIdx,
-    kappaSignPositive: true,
-    kappaPhiSign: 1,
-    kappaThetaSign: 1,
-    parentLink: null,
-    loaded: false,
-  };
-
-  // Compute kappa geometry parameters after FK chain is ready
-  if (isKappaGeometry) {
-    State.scene.updateMatrixWorld(true);
-    const thetaWorldAxis = getJointWorldAxis(dev, thetaJointIdx);
-    const kappaWorldAxis = getJointWorldAxis(dev, kappaJointIdx);
-    const phiWorldAxis   = getJointWorldAxis(dev, phiJointIdx);
-    dev.kappaAlpha      = Math.acos(Math.min(1, Math.abs(thetaWorldAxis.dot(kappaWorldAxis))));
-    dev.kappaPhiSign    = thetaWorldAxis.dot(phiWorldAxis) >= 0 ? 1 : -1;
-    dev.kappaThetaSign  = thetaWorldAxis.dot(kappaWorldAxis) >= 0 ? 1 : -1;
-  }
+  });
 
   // Load GLB model
   await new Promise((resolve, reject) => {
     const loader = new GLTFLoader();
     loader.load(config.model, (gltf) => {
       const model = gltf.scene;
-      const allNodes = {};
       model.traverse((child) => {
-        if (child.name) allNodes[child.name] = child;
         if (child.isMesh) {
           child.castShadow = true;
           child.receiveShadow = true;
         }
       });
+
+      const allNodes = attachModel(dev, model);
       console.log(`[${config.name}] glTF nodes:`, Object.keys(allNodes));
 
-      const reparented = new Set();
-      for (const [linkName, jointIdx] of Object.entries(linkToJoint)) {
-        const node = allNodes[linkName];
-        if (!node) {
-          console.warn(`${linkName} not found in glTF`);
-          continue;
-        }
-        node.updateWorldMatrix(true, false);
-        const worldMat = node.matrixWorld.clone();
-        node.removeFromParent();
-
-        const target = jointRotGroups[jointIdx];
-        target.updateWorldMatrix(true, false);
-        const localMat = target.matrixWorld.clone().invert().multiply(worldMat);
-
-        node.matrix.copy(localMat);
-        node.matrix.decompose(node.position, node.quaternion, node.scale);
-        target.add(node);
-
-        reparented.add(linkName);
-        node.traverse((c) => { if (c.name) reparented.add(c.name); });
-      }
-
       // Remove hidden objects
-      const hideNames = ['Icosphere', 'Cross'];
       State.scene.traverse((child) => {
-        if (child.name && hideNames.includes(child.name)) {
+        if (child.name && HIDDEN_NODE_NAMES.includes(child.name)) {
           child.removeFromParent();
         }
       });
-      const hiddenNodes = new Set();
-      model.traverse((child) => {
-        if (child.name && hideNames.includes(child.name)) {
-          child.traverse((c) => hiddenNodes.add(c));
-        }
-      });
-      const statics = [];
-      model.traverse((child) => {
-        if (child.isMesh && !reparented.has(child.name) && !hiddenNodes.has(child)) {
-          statics.push(child);
-        }
-      });
-      for (const mesh of statics) {
-        mesh.updateWorldMatrix(true, false);
-        const wm = mesh.matrixWorld.clone();
-        mesh.removeFromParent();
-        rootGroup.add(mesh);
-        mesh.matrix.copy(wm);
-        mesh.matrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
-        dev.staticMeshes.push(mesh);
-      }
 
-      // Create labels and build collision data
+      // Labels
       function createLabel(name, parentObj) {
         const div = document.createElement('div');
         div.className = 'mesh-label';
@@ -365,44 +162,20 @@ export async function loadDevice(configFile) {
         dev.meshLabels.push(label);
       }
 
-      for (const [linkName, jointIdx] of Object.entries(linkToJoint)) {
-        const node = allNodes[linkName];
-        if (node) {
-          createLabel(linkName, node);
-          const meshes = [];
-          node.traverse((c) => {
-            if (c.isMesh) {
-              meshes.push(c);
-              c.geometry.boundsTree = new MeshBVH(c.geometry);
-              c.userData.deviceId = dev.id;
-            }
-          });
-          if (meshes.length > 0) dev.robotLinkMeshes.push({ name: linkName, meshes, jointIdx });
-        }
+      for (const linkName of Object.keys(dev.linkToJoint)) {
+        if (allNodes[linkName]) createLabel(linkName, allNodes[linkName]);
       }
-      for (const mesh of statics) {
+      for (const mesh of dev.staticMeshes) {
         if (mesh.name) createLabel(mesh.name, mesh);
-        mesh.userData.deviceId = dev.id;
       }
 
-      // Kappa chi slider limits
       if (isKappaGeometry) {
-        const kappaLimits = [jointLimits[kappaJointIdx][0] * rad2deg, jointLimits[kappaJointIdx][1] * rad2deg];
-        const chiAtMin = -kappaToEuler(dev, kappaLimits[0]).chi;
-        const chiAtMax = -kappaToEuler(dev, kappaLimits[1]).chi;
-        dev._chiLimits = [Math.min(chiAtMin, chiAtMax), Math.max(chiAtMin, chiAtMax)];
-
         const test90 = eulerToKappa(dev, 90);
         if (test90) {
           const comp90 = getCompensation(dev, test90.kappa);
           console.log(`Kappa geometry (analytical): alpha=${(dev.kappaAlpha * rad2deg).toFixed(1)} deg, phiSign=${dev.kappaPhiSign}, chi=90 deg -> kappa=${test90.kappa.toFixed(1)} deg, comp_theta=${comp90.theta.toFixed(1)} deg, comp_phi=${comp90.phi.toFixed(1)} deg`);
         }
       }
-
-      // Capture home EE quaternion (all joints at 0)
-      State.scene.updateMatrixWorld(true);
-      dev.homeQuaternion = getEEWorldQuaternion(dev);
-      dev.homeQuaternionInv = dev.homeQuaternion.clone().invert();
 
       dev.loaded = true;
       resolve();

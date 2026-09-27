@@ -85,7 +85,9 @@ def _controller_count() -> int:
 
 
 async def ws_handler(request):
-    ws = web.WebSocketResponse()
+    # Scene exports carry mesh geometry (a detector model is several MB);
+    # aiohttp's default 4 MB cap would drop them.
+    ws = web.WebSocketResponse(max_msg_size=64 * 1024 * 1024)
     await ws.prepare(request)
 
     role = request.query.get("role", "controller")

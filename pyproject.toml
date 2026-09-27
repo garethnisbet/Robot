@@ -9,7 +9,12 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = [
-    "mcp>=1.2",
+    "mcp>=1.2,<2",   # 2.x renames FastMCP (MCPServer); mcp_server.py is written for 1.x
+    "websockets>=12",
+    "numpy>=1.24",
+]
+test = [
+    "pytest>=8",
     "websockets>=12",
     "numpy>=1.24",
 ]
@@ -32,5 +37,9 @@ include = [
     "viewer.css",
     "js/**",
     "*_config.json",
+    "*_capsules.json",
     "*_scene.glb",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

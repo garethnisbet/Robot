@@ -24,7 +24,7 @@ Design notes, since they are load-bearing:
     can. A hardware path belongs behind its own server and its own approval.
 
 Usage:
-    pip install "mcp>=1.2" websockets
+    pip install "mcp>=1.2,<2" websockets
     python mcp_server.py [--url ws://localhost:8000/ws] [--config meca500_config.json]
 
 Register with Claude Code:
@@ -73,7 +73,7 @@ class Viewer:
                 return
             except Exception:
                 self._ws = None
-        self._ws = await websockets.connect(self.url, max_size=32 * 1024 * 1024)
+        self._ws = await websockets.connect(self.url, max_size=64 * 1024 * 1024)
 
     async def send(self, msg: dict):
         """Fire-and-forget — used for the steps of a swept trajectory."""
@@ -290,99 +290,261 @@ async def home(device: Optional[str] = None) -> str:
 #  Validation — the reason this server exists
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _planner(step_deg: float = 5.0):
-    from planner import RobotPlanner
-    return RobotPlanner(_config_path, step_deg=step_deg)
+# Verdicts come from the viewer's own collision check, run headless
+# (headless/engine.mjs via headless_client.py) on a copy of the viewer's
+# scene: the exact meshes the viewer tests, with the viewer's pair rules.
+# The planner's capsules only steer the search; a path is not called clear
+# until the exact check agrees. If the exact check cannot run (no Node, or a
+# viewer page too old for exportScene), the capsule check answers and the
+# verdict says so in checked_by.
+
+EXACT = "viewer collision engine (exact meshes, run headless)"
+
+_engine = None
+_engine_error: Optional[str] = None
 
 
-async def _planner_with_scene(step_deg: float = 5.0):
-    """A planner whose obstacles are the objects currently in the viewer."""
-    p = _planner(step_deg)
+def _headless():
+    """The headless engine, started on first use. None if it cannot run."""
+    global _engine, _engine_error
+    if _engine is None and _engine_error is None:
+        try:
+            from headless_client import HeadlessEngine
+            _engine = HeadlessEngine()
+        except Exception as e:           # no node, no node_modules, failed start
+            _engine_error = str(e)
+    return _engine
+
+
+# Collision points of point clouds and PLY splats, by object id, fetched
+# from the viewer once and shared by the planner and the headless engine.
+_cloud_points: dict = {}
+
+
+async def _cloud(obj_id: str, vertices: bool = False):
+    """An object's collision points (local frame, float32 N x 3), fetched in
+    chunks the first time. With vertices=True, a mesh's vertices instead,
+    kept under ("vertices", id): the planner fits capsules to carried meshes."""
+    key = ("vertices", obj_id) if vertices else obj_id
+    if key not in _cloud_points:
+        import numpy as np
+        parts, offset, total = [], 0, None
+        while total is None or offset < total:
+            msg = {"cmd": "exportObjectPoints", "id": obj_id, "offset": offset, "count": 1_000_000}
+            if vertices:
+                msg["vertices"] = True
+            chunk = await viewer().request(msg, "objectPoints", timeout=120.0)
+            total = chunk["total"]
+            parts.append(np.frombuffer(base64.b64decode(chunk["positions"]), dtype="<f4"))
+            if chunk["count"] == 0:
+                break
+            offset += chunk["count"]
+        _cloud_points[key] = np.concatenate(parts).reshape(-1, 3) if parts else np.zeros((0, 3), "<f4")
+    return _cloud_points[key]
+
+
+def _points_chunk(obj_id, offset, count):
+    """An exportObjectPoints-shaped reply served from the shared cache."""
+    pts = _cloud_points[obj_id]
+    part = pts[offset:offset + count]
+    return {"id": obj_id, "total": len(pts), "offset": offset, "count": len(part),
+            "positions": base64.b64encode(part.astype("<f4").tobytes()).decode()}
+
+
+async def _target_device(device: Optional[str]) -> tuple[int, dict]:
+    """The viewer's device by name or id (default: the active one), with its
+    index in the viewer's device list."""
+    devs = (await viewer().request({"cmd": "listDevices"}, "devices"))["devices"]
+    for i, d in enumerate(devs):
+        if (device and device in (d["name"], d["id"])) or (not device and d.get("active")):
+            return i, d
+    if not device and devs:
+        return 0, devs[0]
+    raise ValueError(f"device '{device}' not found in the viewer")
+
+
+async def _exact(waypoints, device: Optional[str], resolution_deg: float):
+    """Exact verdict from the headless engine, or (None, why not)."""
+    global _engine
+    engine = _headless()
+    if engine is None:
+        return None, _engine_error
     try:
-        objs = await viewer().request({"cmd": "listObjects"}, "objects", timeout=5.0)
-        n = p.sync_from_viewer_objects(objs.get("objects", []))
+        meta = await viewer().request({"cmd": "exportScene", "buffers": False}, "scene", timeout=30.0)
+    except RuntimeError as e:
+        if "Unknown command" in str(e):
+            return None, "the viewer page predates exportScene; reload it"
+        raise
+    try:
+        r = await asyncio.to_thread(engine.sync, meta["scene"])
+        if r.get("needBuffers"):
+            try:
+                full = await viewer().request({"cmd": "exportScene"}, "scene", timeout=120.0)
+            except RuntimeError:
+                # The small export arrived, so the viewer is there; the one
+                # carrying geometry did not. The relay drops messages over its
+                # limit (4 MB in server.py before 2026-09-23, 64 MB since).
+                await viewer().close()
+                return None, ("the viewer's scene export (with geometry) never arrived; "
+                              "it is likely larger than the relay server's message limit. "
+                              "Restart server.py from this version (64 MB limit)")
+            r = await asyncio.to_thread(engine.sync, full["scene"])
+        # Point clouds and PLY splats: their points travel apart, once per
+        # cloud, through the cache the planner shares.
+        for cloud in r.get("needPoints", []):
+            await _cloud(cloud["id"])
+            await asyncio.to_thread(engine.upload_points, cloud["id"], _points_chunk)
+        index, _ = await _target_device(device)
+        return await asyncio.to_thread(engine.check_path, index, waypoints, resolution_deg), None
+    except Exception as e:
+        # A dead engine is restarted on the next call rather than kept.
+        from headless_client import HeadlessEngineError
+        if isinstance(e, HeadlessEngineError) and "exited" in str(e):
+            _engine = None
+        raise
+
+
+def _exact_verdict(r: dict) -> dict:
+    out: dict[str, Any] = {"ok": r["ok"], "checked_by": EXACT}
+    if not r["ok"]:
+        out["reason"] = r["reason"]
+        if r.get("pairs"):
+            out["collisions"] = r["pairs"]
+        if "segment" in r:
+            out["failed_between_waypoints"] = r["segment"]
+            out["failed_at"] = r["angles"]
+    if r.get("samples") is not None:
+        out["samples_checked"] = r["samples"]
+    if r.get("background"):
+        out["other_collisions_in_scene"] = r["background"]
+    if r.get("unchecked"):
+        out["not_checked_against"] = r["unchecked"]
+        out["note"] = ("visible objects the headless check cannot see yet; "
+                       "clearance from them is not established")
+    return out
+
+
+def _planner(step_deg: float = 5.0, config_path: Optional[str] = None):
+    from planner import RobotPlanner
+    return RobotPlanner(config_path or _config_path, step_deg=step_deg)
+
+
+async def _planner_with_scene(step_deg: float = 5.0, device: Optional[str] = None):
+    """A planner for the viewer's device (default: the active one), placed
+    where the viewer has it, with the rest of the scene as obstacles: other
+    devices, objects, and payload the device carries."""
+    try:
+        index, dev = await _target_device(device)
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), dev["config"])
+        p = _planner(step_deg, config_path)
+        devs = (await viewer().request({"cmd": "listDevices"}, "devices", timeout=5.0))["devices"]
+        objs = (await viewer().request({"cmd": "listObjects"}, "objects", timeout=5.0)).get("objects", [])
+        for o in objs:
+            if not o.get("visible", True):
+                continue
+            if o.get("hasCollisionPoints"):
+                await _cloud(o["id"])
+            elif o.get("matrixWorld") and (o.get("parent") or "").startswith(f"{dev['id']}:"):
+                # Payload this device carries; its mesh is fitted with
+                # capsules. Without its vertices the planner uses its box.
+                try:
+                    await _cloud(o["id"], vertices=True)
+                except Exception:
+                    pass
+        n = p.sync_from_viewer(devs, objs, index, fetch_points=lambda i: _cloud_points[i],
+                               fetch_vertices=lambda i: _cloud_points.get(("vertices", i)))
     except Exception:
-        n = 0
+        # Viewer unreachable or too old for the fields above: plan the
+        # startup config at the origin against nothing, and say so.
+        p, n = _planner(step_deg), 0
     return p, n
 
 
-@mcp.tool()
-async def check_pose(angles: list[float]) -> str:
-    """Check whether one joint configuration is legal and collision-free.
-
-    Checks joint limits, self-collision, and collision with the objects
-    currently in the viewer scene. Returns a verdict with the offending pair
-    named, not raw geometry.
-
-    Args:
-        angles: joint angles in degrees, one per movable joint.
-    """
-    p, n_obs = await _planner_with_scene()
-    reason = p.diagnose(angles)
-    return json.dumps({
-        "ok": reason is None,
-        "reason": reason,
-        "obstacles_considered": n_obs,
-    }, indent=2)
-
-
-@mcp.tool()
-async def check_trajectory(waypoints: list[list[float]],
-                           interpolate_deg: float = 2.0) -> str:
-    """Check a whole trajectory for limit violations and collisions.
-
-    Densifies between waypoints so a sweep cannot tunnel through an obstacle
-    between two legal endpoints, then reports the FIRST failure with the step
-    index and the offending pair. Run this before committing any trajectory to
-    hardware.
-
-    Args:
-        waypoints: list of joint-angle vectors (degrees).
-        interpolate_deg: max joint-space spacing between checked samples.
-                         Smaller is safer and slower.
-    """
-    if not waypoints:
-        return json.dumps({"ok": False, "reason": "no waypoints given"})
-
-    p, n_obs = await _planner_with_scene()
-
-    # Densify: check the path, not just its corners.
+def _densify(waypoints, interpolate_deg):
     samples: list[tuple[int, list[float]]] = []
     for i in range(len(waypoints) - 1):
         a, b = waypoints[i], waypoints[i + 1]
         span = max(abs(y - x) for x, y in zip(a, b)) if a and b else 0.0
         steps = max(1, int(span / max(0.1, interpolate_deg)))
-        for s in range(steps):
-            t = s / steps
+        for k in range(steps):
+            t = k / steps
             samples.append((i, [x + (y - x) * t for x, y in zip(a, b)]))
     samples.append((len(waypoints) - 1, list(waypoints[-1])))
+    return samples
 
+
+async def _capsule_verdict(waypoints, device, interpolate_deg, why_not_exact):
+    """The approximate check, used only when the exact one cannot run."""
+    p, n_obs = await _planner_with_scene(device=device)
+    samples = _densify(waypoints, interpolate_deg)
+    base = {"checked_by": f"capsule approximation (exact check unavailable: {why_not_exact})",
+            "samples_checked": len(samples), "obstacles_considered": n_obs}
     for idx, q in samples:
         reason = p.diagnose(q)
         if reason is not None:
-            return json.dumps({
-                "ok": False,
-                "reason": reason,
-                "failed_between_waypoints": [idx, min(idx + 1, len(waypoints) - 1)],
-                "failed_at": [round(v, 3) for v in q],
-                "samples_checked": len(samples),
-                "obstacles_considered": n_obs,
-            }, indent=2)
+            return {"ok": False, "reason": reason,
+                    "failed_between_waypoints": [idx, min(idx + 1, len(waypoints) - 1)],
+                    "failed_at": [round(v, 3) for v in q], **base}
+    return {"ok": True, **base}
 
-    return json.dumps({
-        "ok": True,
-        "waypoints": len(waypoints),
-        "samples_checked": len(samples),
-        "obstacles_considered": n_obs,
-    }, indent=2)
+
+async def _verdict(waypoints, device, interpolate_deg) -> dict:
+    r, why_not = await _exact(waypoints, device, interpolate_deg)
+    if r is not None:
+        return _exact_verdict(r)
+    return await _capsule_verdict(waypoints, device, interpolate_deg, why_not)
+
+
+@mcp.tool()
+async def check_pose(angles: list[float], device: Optional[str] = None) -> str:
+    """Check whether one joint configuration is legal and collision-free.
+
+    Checks joint limits, self-collision, and collision with everything in the
+    viewer scene (objects, other devices, the floor), using the viewer's own
+    collision check. Returns a verdict with the offending pair named, not raw
+    geometry.
+
+    Args:
+        angles: joint angles in degrees, one per movable joint.
+        device: device name; defaults to the active device.
+    """
+    if not angles:
+        return json.dumps({"ok": False, "reason": "no angles given"})
+    return json.dumps(await _verdict([list(angles)], device, 1.0), indent=2)
+
+
+@mcp.tool()
+async def check_trajectory(waypoints: list[list[float]],
+                           interpolate_deg: float = 1.0,
+                           device: Optional[str] = None) -> str:
+    """Check a whole trajectory for limit violations and collisions.
+
+    Densifies between waypoints so a sweep cannot tunnel through an obstacle
+    between two legal endpoints, then reports the FIRST failure with the
+    waypoints it lies between and the offending pair. Uses the viewer's own
+    collision check. Run this before committing any trajectory to hardware.
+
+    Args:
+        waypoints: list of joint-angle vectors (degrees).
+        interpolate_deg: max joint-space spacing between checked samples.
+                         Smaller is safer and slower.
+        device: device name; defaults to the active device.
+    """
+    if not waypoints:
+        return json.dumps({"ok": False, "reason": "no waypoints given"})
+    verdict = await _verdict([list(w) for w in waypoints], device, interpolate_deg)
+    verdict["waypoints"] = len(waypoints)
+    return json.dumps(verdict, indent=2)
 
 
 @mcp.tool()
 async def plan_path(start: list[float], goal: list[float],
-                    step_deg: float = 5.0) -> str:
+                    step_deg: float = 5.0, device: Optional[str] = None) -> str:
     """Plan a collision-free joint-space path between two configurations.
 
-    Runs RRT-Connect against the current scene. Returns the waypoints WITHOUT
+    Runs RRT-Connect against the current scene, then checks the result with
+    the viewer's own collision check; a path is only returned as found once
+    that check passes (a few attempts are made). Returns the waypoints WITHOUT
     executing them — call execute_path to watch it in the twin, or hand the
     waypoints to the beamline control system yourself.
 
@@ -390,21 +552,37 @@ async def plan_path(start: list[float], goal: list[float],
         start: starting joint angles (degrees).
         goal: target joint angles (degrees).
         step_deg: planner resolution in degrees. Smaller finds tighter routes, slower.
+        device: device name; defaults to the active device.
     """
-    p, n_obs = await _planner_with_scene(step_deg)
-    path = await asyncio.to_thread(p.plan, list(start), list(goal), False)
-    if path is None:
-        return json.dumps({
-            "found": False,
-            "reason": "no collision-free path found; check start and goal with "
-                      "check_pose, or reduce step_deg",
-            "obstacles_considered": n_obs,
-        }, indent=2)
+    p, n_obs = await _planner_with_scene(step_deg, device)
+
+    attempts = []
+    for _ in range(3):
+        path = await asyncio.to_thread(p.plan, list(start), list(goal), False)
+        if path is None:
+            break
+        waypoints = [[round(float(v), 4) for v in q] for q in path]
+        verdict = await _verdict(waypoints, device, 1.0)
+        if verdict["ok"]:
+            return json.dumps({
+                "found": True,
+                "waypoints": waypoints,
+                "count": len(waypoints),
+                "validated": verdict,
+                "obstacles_considered_by_planner": n_obs,
+            }, indent=2)
+        attempts.append(verdict)
+        if verdict.get("checked_by") != EXACT:
+            break          # the capsule check refused its own plan: retrying won't help
+
     return json.dumps({
-        "found": True,
-        "waypoints": [[round(float(v), 4) for v in q] for q in path],
-        "count": len(path),
-        "obstacles_considered": n_obs,
+        "found": False,
+        "reason": ("no collision-free path found; check start and goal with "
+                   "check_pose, or reduce step_deg") if not attempts else
+                  ("the planner's paths all failed the exact check; its capsule model "
+                   "is coarser than the viewer's meshes here"),
+        "rejected_paths": attempts,
+        "obstacles_considered_by_planner": n_obs,
     }, indent=2)
 
 
@@ -421,7 +599,7 @@ async def execute_path(waypoints: list[list[float]], step_ms: int = 80,
         step_ms: delay between steps, milliseconds.
         device: device name; defaults to the active device.
     """
-    verdict = json.loads(await check_trajectory(waypoints))
+    verdict = json.loads(await check_trajectory(waypoints, device=device))
     if not verdict.get("ok"):
         return json.dumps({"executed": False, "refused_because": verdict}, indent=2)
 
@@ -439,6 +617,7 @@ async def execute_path(waypoints: list[list[float]], step_ms: int = 80,
         "steps": len(waypoints),
         "finalJoints": state.get("joints"),
         "eePosition": state.get("eePosition"),
+        "validated": verdict,
     }, indent=2)
 
 
@@ -489,7 +668,7 @@ async def plan_scan(axis: str, start: float, stop: float, step: float,
         q[idx] = start + sign * abs(step) * i
         points.append([round(v, 4) for v in q])
 
-    verdict = json.loads(await check_trajectory(points))
+    verdict = json.loads(await check_trajectory(points, device=device))
     return json.dumps({
         "axis": names[idx],
         "points": len(points),
@@ -503,9 +682,10 @@ async def plan_scan(axis: str, start: float, stop: float, step: float,
 # ─────────────────────────────────────────────────────────────────────────────
 #  Live collision detection in the viewer
 #
-#  Distinct from check_pose/check_trajectory, which run the Python planner
-#  against capsules and bounding boxes. These read the viewer's own mesh-level
-#  checker, which is the only one that sees imported meshes and point clouds.
+#  check_pose/check_trajectory run the same mesh-level check headless, on a
+#  copy of the scene, without moving anything. These read the live viewer's
+#  checker for the scene as it stands, which is also the only one that sees
+#  point clouds and splats so far.
 # ─────────────────────────────────────────────────────────────────────────────
 
 @mcp.tool()

@@ -21,7 +21,7 @@ WORKDIR /app
 COPY --from=build /app/.venv /app/.venv
 COPY --from=build /app/node_modules ./node_modules/
 
-COPY server.py robot_ipython.py RemoteAPI.zip threejs_scene.html viewer.css *.glb ./
+COPY server.py robot_client.py robot_ipython.py RemoteAPI.zip threejs_scene.html viewer.css *.glb ./
 COPY js/ ./js/
 COPY *_config.json ./
 

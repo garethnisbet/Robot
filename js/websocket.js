@@ -18,12 +18,13 @@ import {
 import {
   setSTLParent, addPrimitive, duplicateSTL, deselectSTL,
   exportSceneState, syncSTLVisibility,
+  buildScenePayload, buildSceneMetadataForDB, sceneBufferSignature,
+  collisionPositions, meshVertexPositions,
 } from './stl.js';
 import {
   clearCollisionHighlights, setCollisionHeadless, isCollisionHeadless, updateCollisionLoop,
   getCollisionFreshness,
 } from './collision.js';
-import { setOrtho } from './scene.js';
 import { updateHexapodPose, computeLegLengthsFromPose, solveHexapodFK } from './hexapod.js';
 
 const deg2rad = Math.PI / 180;
@@ -94,6 +95,7 @@ export function initWsInfoPanel() {
 export function wsSetStatus(state) {
   const wsDot  = document.getElementById('ws-dot');
   const wsText = document.getElementById('ws-text');
+  if (!wsDot || !wsText) return;
   wsDot.className = 'dot ' + (state === 'on' ? 'on' : state === 'err' ? 'err' : 'off');
   const sid = getSessionId();
   wsText.textContent = state === 'on'  ? (_apiEnabled ? `API: connected [${sid}]`
@@ -215,7 +217,11 @@ export function buildObjectInfo(entry, index) {
 
   return {
     index,
+    id: entry.stlId,
     name: entry.name,
+    kind: entry.isPointCloud ? 'pointCloud' : entry.isSplat ? 'splat' : 'mesh',
+    // Whether the viewer collision-checks it from points (exportObjectPoints).
+    hasCollisionPoints: !!collisionPositions(entry),
     position: [+(p.x * 1000).toFixed(4), +(p.z * 1000).toFixed(4), +(p.y * 1000).toFixed(4)],
     rotation:  [+(r.x * rad2deg).toFixed(4), +(r.z * rad2deg).toFixed(4), +(r.y * rad2deg).toFixed(4)],
     scale:    [+s.x.toFixed(4), +s.y.toFixed(4), +s.z.toFixed(4)],
@@ -224,13 +230,17 @@ export function buildObjectInfo(entry, index) {
     worldPosition: [+(_objWorldPos.x * 1000).toFixed(4), +(_objWorldPos.z * 1000).toFixed(4), +(_objWorldPos.y * 1000).toFixed(4)],
     worldRotation: [+(we.x * rad2deg).toFixed(4), +(we.z * rad2deg).toFixed(4), +(we.y * rad2deg).toFixed(4)],
     worldBB,
+    // Local frame to world, unrounded: Three.js Y-up, metres, column-major.
+    // The rounded pose and scale above are for people; this is for the
+    // planner, which carries a mesh's vertices out by it.
+    matrixWorld: m.matrixWorld.toArray(),
   };
 }
 
 // ============================================================
 // buildDeviceInfo
 // ============================================================
-function buildDeviceInfo(dev) {
+export function buildDeviceInfo(dev) {
   const rg = dev.rootGroup;
   rg.updateWorldMatrix(true, false);
   rg.getWorldPosition(_objWorldPos);
@@ -251,6 +261,7 @@ function buildDeviceInfo(dev) {
     parent: dev.parentLink || null,
     isKappa: dev.isKappaGeometry || false,
     deviceType: dev.type || 'serial',
+    visible: dev.rootGroup.visible,
     mode: dev.ikMode ? 'IK' : 'FK',
     links: Object.keys(dev.linkToJoint || {}),
     ...(dev.type === 'hexapod' ? { platformPose: [...dev.platformPose] } : {}),
@@ -433,8 +444,6 @@ export function handleCommand(data) {
     return;
   }
 
-  const collisionBtn    = document.getElementById('collisionBtn');
-  const collisionInfoEl = document.getElementById('collision-info');
   const dev = resolveTargetDevice(data);
 
   // ── Device queries ──────────────────────────────────────────
@@ -797,9 +806,13 @@ export function handleCommand(data) {
     const on = data.enabled !== undefined ? !!data.enabled : !State.collisionEnabled;
     if (on !== State.collisionEnabled) {
       State.setCollisionEnabled(on);
-      collisionBtn.textContent = `Collision: ${on ? 'ON' : 'OFF'}`;
-      collisionBtn.classList.toggle('active', on);
-      collisionInfoEl.style.display = on ? 'block' : 'none';
+      const collisionBtn    = document.getElementById('collisionBtn');
+      const collisionInfoEl = document.getElementById('collision-info');
+      if (collisionBtn) {
+        collisionBtn.textContent = `Collision: ${on ? 'ON' : 'OFF'}`;
+        collisionBtn.classList.toggle('active', on);
+      }
+      if (collisionInfoEl) collisionInfoEl.style.display = on ? 'block' : 'none';
       if (!on) clearCollisionHighlights();
       updateCollisionLoop();
     }
@@ -904,7 +917,7 @@ export function handleCommand(data) {
     }
     if (data.name !== undefined && typeof data.name === 'string') {
       entry.name = data.name.trim();
-      entry.label.element.textContent = entry.name;
+      if (entry.label) entry.label.element.textContent = entry.name;
     }
     const idx = State.importedSTLs.indexOf(entry);
     wsSend({ type: 'object', ...buildObjectInfo(entry, idx) });
@@ -1175,6 +1188,41 @@ export function handleCommand(data) {
       floorSize: State.floorSize,
     });
 
+  } else if (cmd === 'exportScene') {
+    // The scene as Save Scene writes it, for a headless copy to check
+    // against. Point clouds and splats carry only their source file name.
+    // buffers: false sends transforms only; the signature (object ids and
+    // buffer sizes) tells the caller whether its geometry is still current.
+    const scene = data.buffers === false ? buildSceneMetadataForDB() : buildScenePayload();
+    wsSend({ type: 'scene', scene, signature: sceneBufferSignature(), _reqId: data._reqId });
+
+  } else if (cmd === 'exportObjectPoints') {
+    // The points an object's collision check uses (a point cloud's, or a
+    // PLY splat's), for a headless copy. Clouds run to millions of points,
+    // so they are fetched apart from exportScene and in chunks:
+    // { id, offset, count } in points; positions are little-endian float32,
+    // base64, in the object's local frame.
+    // With vertices: true it sends a mesh's triangles instead, three
+    // vertices each, which the planner fits boxes or capsules to when the
+    // mesh is carried by a link.
+    const entry = State.importedSTLs.find(e => e.stlId === data.id);
+    const all = entry && (data.vertices ? meshVertexPositions(entry) : collisionPositions(entry));
+    if (!all) {
+      const what = data.vertices ? 'mesh vertices' : 'collision points';
+      wsSend({ type: 'error', error: `No ${what} for object ${data.id}`, _reqId: data._reqId });
+      return;
+    }
+    const total = all.length / 3;
+    const offset = Math.max(0, Math.min(total, data.offset | 0));
+    const count = Math.max(0, Math.min(total - offset, data.count ?? total));
+    const slice = new Float32Array(all.buffer, all.byteOffset + offset * 12, count * 3);
+    const bytes = new Uint8Array(slice.buffer, slice.byteOffset, slice.byteLength);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    wsSend({ type: 'objectPoints', id: data.id, total, offset, count, positions: btoa(binary), _reqId: data._reqId });
+
   } else if (cmd === 'captureImage') {
     // Render one frame and return it as a base64 PNG, so a remote client
     // (an MCP agent, a script) can see the scene without a human at the tab.
@@ -1274,6 +1322,8 @@ export function handleCommand(data) {
         setFloorCollision:{ params: 'enabled?', description: 'Toggle floor-plane collision checks' },
         // Scene
         getSceneState:    { params: '', description: 'Get full scene state (devices, objects, camera)' },
+        exportScene:      { params: 'buffers?', description: 'Scene as Save Scene writes it (buffers: false for transforms only)' },
+        exportObjectPoints: { params: 'id, offset?, count?, vertices?', description: "An object's collision points (or, with vertices: true, a mesh's triangles, three vertices each), in chunks (base64 float32)" },
         getStats:         { params: 'frames?, device?, transparency?', description: 'Benchmark frame time (blocks the viewer while it runs)' },
         saveScene:        { params: '', description: 'Trigger scene file download in viewer' },
         help:             { params: '', description: 'List all available commands' },
@@ -1296,6 +1346,13 @@ export function registerSetActiveDevice(fn) { _setActiveDeviceFn = fn; }
 // ============================================================
 let _availableConfigs = [];
 export function registerAvailableConfigs(configs) { _availableConfigs = configs; }
+
+// ============================================================
+// Camera projection toggle (registered by main.js — scene.js builds the
+// renderer on import, so importing it here would tie this module to a page)
+// ============================================================
+let setOrtho = () => {};
+export function registerSetOrtho(fn) { setOrtho = fn; }
 
 // ============================================================
 // wsConnect

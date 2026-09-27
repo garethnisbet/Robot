@@ -1,0 +1,1 @@
+import '../../headless/register.mjs';

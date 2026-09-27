@@ -3,8 +3,9 @@
   "version": "1.0.0",
   "description": "Interactive 3D visualisation and control for robots and scientific instruments. Config-driven — works with any device defined by a JSON config and GLB model. Includes forward and inverse kinematics, mesh import, collision detection, and a remote control API.",
   "main": "js/main.js",
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --import ./test/js/setup.mjs --test test/js/"
   },
   "keywords": [],
   "author": "",
