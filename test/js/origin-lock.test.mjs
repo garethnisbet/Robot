@@ -9,7 +9,7 @@ import {
   createMeshEntry, parseMeshGeometry, primitiveSTLBuffer,
 } from '../../js/stl.js';
 import { getEEWorldPosition, getEEWorldQuaternion, solveIK, updateFK } from '../../js/kinematics.js';
-import { setIKLock, updateIKLocks, lockableObjects } from '../../js/ik-lock.js';
+import { setIKLock, setObjectLock, updateLocks, lockableObjects } from '../../js/locks.js';
 
 // World positions of a mesh's vertices.
 function worldVertices(entry) {
@@ -127,10 +127,10 @@ test('two arms locked to one object follow it together', async () => {
   const rel = d => pipePose().invert().multiply(grip(d));
   const relA = rel(a), relB = rel(b);
 
-  assert.deepEqual(updateIKLocks(), { moved: [], objectsMoved: false }, 'nothing moved yet');
+  assert.deepEqual(updateLocks(), { moved: [], objectsMoved: false }, 'nothing moved yet');
   pipe.mesh.position.y += 0.03;
   pipe.mesh.rotation.x += 0.2;
-  assert.deepEqual(updateIKLocks(), { moved: [a, b], objectsMoved: false });
+  assert.deepEqual(updateLocks(), { moved: [a, b], objectsMoved: false });
   for (const [d, r] of [[a, relA], [b, relB]]) {
     assertClose(rel(d).toArray(), r.toArray(), 1e-9, 'grip slipped');
     const err = solveIK(d, d.ikTarget.position, d.ikTargetQuat, 200, 0.00005);
@@ -140,14 +140,14 @@ test('two arms locked to one object follow it together', async () => {
   // Moving one arm's target carries the object, and the other arm with it.
   a.ikTarget.position.x += 0.01;
   a.ikTargetQuat.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), 0.1));
-  assert.deepEqual(updateIKLocks(), { moved: [b], objectsMoved: true });
+  assert.deepEqual(updateLocks(), { moved: [b], objectsMoved: true });
   assertClose(rel(a).toArray(), relA.toArray(), 1e-9, 'driving grip slipped');
   assertClose(rel(b).toArray(), relB.toArray(), 1e-9, 'following grip slipped');
-  assert.deepEqual(updateIKLocks(), { moved: [], objectsMoved: false }, 'settled after one frame');
+  assert.deepEqual(updateLocks(), { moved: [], objectsMoved: false }, 'settled after one frame');
 
   // Leaving IK mode drops the lock.
   b.ikMode = false;
-  updateIKLocks();
+  updateLocks();
   assert.equal(b.ikLock, null);
 });
 
@@ -168,7 +168,7 @@ test('an arm drives an object that a third arm carries', async () => {
   a.ikTargetQuat.identity();
   setIKLock(a, cube);
   a.ikTarget.position.y += 0.02;
-  assert.equal(updateIKLocks().objectsMoved, true);
+  assert.equal(updateLocks().objectsMoved, true);
   // Moved 20 mm up in the world, scale and parent unchanged.
   const expected = before.clone().premultiply(new THREE.Matrix4().makeTranslation(0, 0.02, 0));
   assertClose(world().toArray(), expected.toArray(), 1e-9, 'object pose');
@@ -177,7 +177,7 @@ test('an arm drives an object that a third arm carries', async () => {
   // And the carrying arm moving the object moves the locked arm.
   const target0 = a.ikTarget.position.clone();
   await e.handle({ cmd: 'setJoints', device: c.id, angles: [20, 0, 0, 0, 0, 0] });
-  assert.deepEqual(updateIKLocks().moved, [a]);
+  assert.deepEqual(updateLocks().moved, [a]);
   assert.ok(a.ikTarget.position.distanceTo(target0) > 0.01);
 });
 
@@ -190,4 +190,130 @@ test('an arm cannot lock to an object it carries', async () => {
   assert.deepEqual(lockableObjects(a), []);
   setIKLock(a, cube);
   assert.equal(a.ikLock, null);
+});
+
+// Rigid world pose of an object (scale left out).
+function rigid(entry) {
+  entry.mesh.updateWorldMatrix(true, false);
+  const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+  entry.mesh.matrixWorld.decompose(p, q, s);
+  return new THREE.Matrix4().compose(p, q, new THREE.Vector3(1, 1, 1));
+}
+const relPose = (a, b) => rigid(a).invert().multiply(rigid(b));
+
+test('objects locked together move as one, whichever is moved', async () => {
+  const e = await createEngine();
+  const pipe = await e.addPrimitive('cylinder');
+  const clamp = await e.addPrimitive('cube');
+  const tag = await e.addPrimitive('sphere');
+  pipe.mesh.position.set(0.3, 0.2, 0);
+  clamp.mesh.position.set(0.32, 0.25, 0.01);
+  clamp.mesh.rotation.set(0.3, 0, 0.5);
+  clamp.mesh.scale.multiplyScalar(2);
+  tag.mesh.position.set(0.4, 0.3, 0);
+  setObjectLock(clamp, pipe);
+  setObjectLock(tag, clamp);                          // a chain: tag–clamp–pipe
+  const r1 = relPose(pipe, clamp), r2 = relPose(pipe, tag);
+  const scale = clamp.mesh.scale.clone();
+
+  pipe.mesh.position.x += 0.05;
+  pipe.mesh.rotation.z += 0.4;
+  assert.equal(updateLocks().objectsMoved, true);
+  assertClose(relPose(pipe, clamp).toArray(), r1.toArray(), 1e-9, 'clamp slipped');
+  assertClose(relPose(pipe, tag).toArray(), r2.toArray(), 1e-9, 'tag slipped');
+  assert.ok(clamp.mesh.scale.distanceTo(scale) < 1e-12, 'scale kept');
+
+  // The other way: moving the end of the chain moves the pipe.
+  const pipeAt = pipe.mesh.position.clone();
+  tag.mesh.position.y -= 0.03;
+  updateLocks();
+  assert.ok(Math.abs(pipe.mesh.position.y - (pipeAt.y - 0.03)) < 1e-12);
+  assertClose(relPose(pipe, clamp).toArray(), r1.toArray(), 1e-9, 'clamp slipped');
+  assert.deepEqual(updateLocks(), { moved: [], objectsMoved: false }, 'settled');
+
+  // Moving an origin is not a move.
+  setObjectOrigin(clamp, new THREE.Vector3(5, 5, 5));
+  updateLocks();
+  assert.ok(pipe.mesh.position.distanceTo(pipeAt.clone().setY(pipeAt.y - 0.03)) < 1e-12, 'pipe moved');
+
+  // Unlocked, the tag moves alone.
+  setObjectLock(tag, null);
+  tag.mesh.position.y += 0.1;
+  assert.equal(updateLocks().objectsMoved, false);
+});
+
+test('an object locked to a pipe drives the arms locked to it', async () => {
+  const e = await createEngine();
+  const a = await e.addDevice('meca500_config.json');
+  [0, -20, 30, 0, 40, 0].forEach((deg, i) => { a.jointAngles[i] = deg * Math.PI / 180; });
+  updateFK(a);
+  const pipe = await e.addPrimitive('cylinder');
+  const clamp = await e.addPrimitive('cube');
+  pipe.mesh.position.set(0.25, 0.3, 0);
+  clamp.mesh.position.set(0.25, 0.35, 0);
+  e.State.scene.updateMatrixWorld(true);
+  a.ikMode = true;
+  a.ikTarget.position.copy(getEEWorldPosition(a));
+  a.ikTargetQuat.copy(getEEWorldQuaternion(a));
+  setIKLock(a, pipe);
+  setObjectLock(clamp, pipe);
+  const t0 = a.ikTarget.position.clone();
+
+  clamp.mesh.position.x += 0.02;
+  const r = updateLocks();
+  assert.deepEqual(r.moved, [a]);
+  assert.ok(Math.abs(a.ikTarget.position.x - (t0.x + 0.02)) < 1e-12);
+  assert.ok(Math.abs(pipe.mesh.position.x - 0.27) < 1e-12);
+});
+
+test('an arm cannot lock into a group holding an object it carries', async () => {
+  const e = await createEngine();
+  const a = await e.addDevice('meca500_config.json');
+  const held = await e.addPrimitive('cube');
+  const other = await e.addPrimitive('sphere');
+  await e.handle({ cmd: 'setObject', index: 0, parent: `${a.id}:L5` });
+  assert.deepEqual(lockableObjects(a), [other]);
+  await e.handle({ cmd: 'setObject', index: 1, lockTo: 0 });
+  assert.equal(other.lockedTo, held);
+  assert.deepEqual(lockableObjects(a), []);
+  a.ikMode = true;
+  setIKLock(a, other);
+  assert.equal(a.ikLock, null);
+  const [info] = await e.handle({ cmd: 'getObject', index: 1 });
+  assert.equal(info.lockedTo, held.stlId);
+  const [bad] = await e.handle({ cmd: 'setObject', index: 1, lockTo: 'nothing' });
+  assert.equal(bad.type, 'error');
+});
+
+test('two locked objects carried on one link move once, not twice', async () => {
+  const e = await createEngine();
+  const a = await e.addDevice('meca500_config.json');
+  const p = await e.addPrimitive('cube');
+  const q = await e.addPrimitive('sphere');
+  await e.handle({ cmd: 'setObject', index: 0, position: [250, 0, 300] });
+  await e.handle({ cmd: 'setObject', index: 1, position: [250, 50, 300] });
+  for (const i of [0, 1]) await e.handle({ cmd: 'setObject', index: i, parent: `${a.id}:L1` });
+  setObjectLock(q, p);
+  updateLocks();
+  const local = q.mesh.position.clone();
+  await e.handle({ cmd: 'setJoints', angles: [30, 0, 0, 0, 0, 0] });
+  updateLocks();
+  assert.ok(q.mesh.position.distanceTo(local) < 1e-12, 'moved twice');
+});
+
+test('a saved scene records object locks and arm locks', async () => {
+  const e = await createEngine();
+  const a = await e.addDevice('meca500_config.json');
+  const p = await e.addPrimitive('cube');
+  const q = await e.addPrimitive('sphere');
+  setObjectLock(q, p);
+  a.ikMode = true;
+  setIKLock(a, p);
+  State.initCoreObjects(e.scene, new THREE.PerspectiveCamera(), null, null);
+  State.initControls({ target: new THREE.Vector3() }, null, null, null);
+  const saved = buildScenePayloadForDB();
+  assert.equal(saved.devices[0].ikLock, p.stlId);
+  const recs = saved.stls;
+  assert.equal(recs[1].lockedTo, p.stlId);
+  assert.equal(recs[0].lockedTo, undefined);
 });

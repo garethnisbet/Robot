@@ -16,7 +16,7 @@ import {
   rebuildPrimaryModelDropdown, syncDeviceOpacitySlider,
 } from './panel.js';
 import {
-  setSTLParent, addPrimitive, duplicateSTL, deselectSTL,
+  setSTLParent, addPrimitive, PRIMITIVE_TYPES, duplicateSTL, deselectSTL, removeSTLEntry,
   exportSceneState, syncSTLVisibility,
   buildScenePayload, buildSceneMetadataForDB, sceneBufferSignature,
   collisionPositions, meshVertexPositions,
@@ -26,6 +26,8 @@ import {
   getCollisionFreshness,
 } from './collision.js';
 import { updateHexapodPose, computeLegLengthsFromPose, solveHexapodFK } from './hexapod.js';
+import { setObjectLock } from './locks.js';
+import { noteApiInput } from './undo.js';
 
 const deg2rad = Math.PI / 180;
 const rad2deg = 180 / Math.PI;
@@ -233,6 +235,8 @@ export function buildObjectInfo(entry, index) {
     // How far the origin has been moved from where the file put it, in
     // local units. Exported vertices are relative to the moved origin.
     origin: entry.origin ? entry.origin.toArray() : [0, 0, 0],
+    // The object it is locked to (moving either moves both), by id.
+    lockedTo: entry.lockedTo ? entry.lockedTo.stlId : null,
     // Local frame to world, unrounded: Three.js Y-up, metres, column-major.
     // The rounded pose and scale above are for people; this is for the
     // planner, which carries a mesh's vertices out by it.
@@ -435,6 +439,7 @@ export function setApiEnabled(on) {
 // ============================================================
 export function handleCommand(data) {
   const cmd = data.cmd;
+  if (typeof cmd === 'string' && !/^(list|get|export|help|ping)/.test(cmd)) noteApiInput();
   if (!cmd) return;
 
   if (!_apiEnabled) {
@@ -913,6 +918,17 @@ export function handleCommand(data) {
     if (data.parent !== undefined) {
       setSTLParent(entry, data.parent, false);
     }
+    if (data.lockTo !== undefined) {
+      // Another object's index, name or id; null or '' unlocks.
+      const v = data.lockTo;
+      const other = v === null || v === '' ? null
+        : typeof v === 'number' ? State.importedSTLs[v]
+        : State.importedSTLs.find(e => e.stlId === v || e.name === v);
+      if (other === undefined || other === entry) {
+        wsSend({ type: 'error', error: `lockTo: no other object ${JSON.stringify(v)}` }); return;
+      }
+      setObjectLock(entry, other);
+    }
     if (data.color !== undefined) {
       const c = new THREE.Color(data.color);
       entry.mesh.material.color.copy(c);
@@ -927,10 +943,10 @@ export function handleCommand(data) {
 
   } else if (cmd === 'addPrimitive') {
     const ptype = (data.type || data.primitive || 'cube').toLowerCase();
-    if (!['cube', 'sphere', 'cylinder'].includes(ptype)) {
-      wsSend({ type: 'error', error: 'Invalid primitive type. Use: cube, sphere, cylinder' }); return;
+    if (!PRIMITIVE_TYPES.includes(ptype)) {
+      wsSend({ type: 'error', error: `Invalid primitive type. Use: ${PRIMITIVE_TYPES.join(', ')}` }); return;
     }
-    addPrimitive(ptype);
+    addPrimitive(ptype, data.segments);
     const entry = State.importedSTLs[State.importedSTLs.length - 1];
     const idx = State.importedSTLs.length - 1;
     wsSend({ type: 'objectAdded', ...buildObjectInfo(entry, idx) });
@@ -939,18 +955,7 @@ export function handleCommand(data) {
     const entry = findSTLEntry(data);
     if (!entry) { wsSend({ type: 'error', error: 'Object not found' }); return; }
     const info = buildObjectInfo(entry, State.importedSTLs.indexOf(entry));
-    // Deselect if selected
-    if (State.selectedSTL === entry) deselectSTL();
-    // Remove mesh from scene
-    entry.mesh.removeFromParent();
-    if (entry.mesh.geometry) entry.mesh.geometry.dispose();
-    if (entry.mesh.material) entry.mesh.material.dispose();
-    // Remove from registry
-    const si = State.importedSTLs.indexOf(entry);
-    if (si >= 0) State.importedSTLs.splice(si, 1);
-    // Remove list item DOM
-    const listItems = document.querySelectorAll('#stl-list .stl-item');
-    if (listItems[si]) listItems[si].remove();
+    removeSTLEntry(entry);
     wsSend({ type: 'objectRemoved', name: info.name, index: info.index });
 
   } else if (cmd === 'duplicateObject') {
@@ -1303,8 +1308,8 @@ export function handleCommand(data) {
         // Objects
         listObjects:      { params: '', description: 'List all imported objects' },
         getObject:        { params: 'index|name|object', description: 'Get info for one object' },
-        setObject:        { params: 'index|name, position?, rotation?, scale?, visible?, parent?, color?, name?, space?', description: 'Modify an object (space: local|world)' },
-        addPrimitive:     { params: 'type', description: 'Add cube, sphere, or cylinder' },
+        setObject:        { params: 'index|name, position?, rotation?, scale?, visible?, parent?, lockTo?, color?, name?, space?', description: 'Modify an object (space: local|world); lockTo: another object (index|name|id) to move as one, null to unlock' },
+        addPrimitive:     { params: 'type, segments?', description: 'Add cube, sphere, icosphere, or cylinder; segments (default 24) sets the resolution of round shapes' },
         removeObject:     { params: 'index|name|object', description: 'Remove an object' },
         duplicateObject:  { params: 'index|name|object', description: 'Duplicate an object' },
         resetObjectRotation: { params: 'index|name|object', description: 'Reset object rotation to identity' },

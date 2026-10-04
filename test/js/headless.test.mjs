@@ -109,3 +109,22 @@ test('commands that need the page say so', async () => {
   assert.equal(r.type, 'error');
   assert.match(r.error, /headless/);
 });
+
+test('primitives take a resolution, and an icosphere is one of them', async () => {
+  const e = await createEngine();
+  const triangles = async (type, segments) => {
+    const [r] = await e.handle({ cmd: 'addPrimitive', type, segments });
+    assert.equal(r.type, 'objectAdded', JSON.stringify(r));
+    return e.State.importedSTLs.at(-1).mesh.geometry.getAttribute('position').count / 3;
+  };
+  assert.equal(await triangles('cylinder', 8), 8 * 4);          // sides 2 each, caps 1 each
+  assert.equal(await triangles('cylinder', 24), 24 * 4);
+  assert.equal(await triangles('sphere', 12), 12 * (2 * 8 - 2));
+  assert.equal(await triangles('icosphere', 5), 20);            // detail 0: the icosahedron
+  assert.equal(await triangles('icosphere', 24), 20 * 25);      // detail 4: 20·(d+1)²
+  assert.equal(await triangles('cube', 96), 12);                // flat; ignores it
+  assert.equal(await triangles('sphere'), 24 * (2 * 16 - 2));   // default 24 segments
+  assert.equal(e.State.importedSTLs.at(-2).name, 'Cube');
+  const [bad] = await e.handle({ cmd: 'addPrimitive', type: 'torus' });
+  assert.equal(bad.type, 'error');
+});

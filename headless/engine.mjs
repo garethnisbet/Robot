@@ -39,7 +39,7 @@ const { assembleDevice } = await import('../js/model.js');
 const { clampJoints } = await import('../js/kinematics.js');
 const { setDeviceParent } = await import('../js/panel.js');
 const {
-  createMeshEntry, createPointsEntry, parseMeshGeometry, primitiveSTLBuffer, applySavedObjectState,
+  createMeshEntry, createPointsEntry, parseMeshGeometry, primitiveSTLBuffer, PRIMITIVE_TYPES, applySavedObjectState,
   setSTLParent,
 } = await import('../js/stl.js');
 const { checkCollisionsNow } = await import('../js/collision.js');
@@ -105,8 +105,8 @@ export async function createEngine({ root = REPO_ROOT } = {}) {
     return createMeshEntry(geometry, buffer, fileType, name, 0x44aaff, stlId, null);
   }
 
-  async function addPrimitive(type) {
-    const { buffer, name } = primitiveSTLBuffer(type);
+  async function addPrimitive(type, segments) {
+    const { buffer, name } = primitiveSTLBuffer(type, segments);
     return addMesh(await parseMeshGeometry(buffer, 'stl'), buffer, 'stl', name);
   }
 
@@ -437,10 +437,10 @@ export async function createEngine({ root = REPO_ROOT } = {}) {
       replies.push({ type: 'deviceAdded', ...buildDeviceInfo(dev) });
     } else if (cmd === 'addPrimitive') {
       const type = (msg.type || msg.primitive || 'cube').toLowerCase();
-      if (!['cube', 'sphere', 'cylinder'].includes(type)) {
-        replies.push({ type: 'error', error: 'Invalid primitive type. Use: cube, sphere, cylinder' });
+      if (!PRIMITIVE_TYPES.includes(type)) {
+        replies.push({ type: 'error', error: `Invalid primitive type. Use: ${PRIMITIVE_TYPES.join(', ')}` });
       } else {
-        const entry = await addPrimitive(type);
+        const entry = await addPrimitive(type, msg.segments);
         replies.push({ type: 'objectAdded', ...buildObjectInfo(entry, State.importedSTLs.indexOf(entry)) });
       }
     } else if (cmd === 'loadScene') {

@@ -14,7 +14,7 @@ import {
   pyEulerFromRelQuat,
 } from './kinematics.js';
 import { loadHexapod } from './hexapod.js';
-import { refreshIKLockSelect } from './ik-lock.js';
+import { refreshIKLockSelect, setIKLock } from './locks.js';
 import { assembleDevice, attachModel, HIDDEN_NODE_NAMES } from './model.js';
 export { buildAdjacencyPairs } from './model.js';
 
@@ -251,6 +251,23 @@ export function setIKMode(dev, on) {
   } else {
     State.transformControls.detach();
   }
+}
+
+// ============================================================
+// restoreIKLock — lock an arm's target to an object where its hand is
+// ============================================================
+// For a restored scene or an undo: IK mode on, the target on the arm's
+// current end-effector pose (where it gripped), then the lock.
+export function restoreIKLock(dev, entry) {
+  setIKMode(dev, true);
+  State.scene.updateMatrixWorld(true);
+  dev.ikTarget.position.copy(getEEWorldPosition(dev));
+  dev.ikTargetQuat.copy(getEEWorldQuaternion(dev));
+  dev.ikTargetEuler.setFromQuaternion(dev.ikTargetQuat, 'YZX');
+  dev.ikTarget.quaternion.copy(dev.ikTargetQuat);
+  dev.ikTarget.visible = dev.ikLine.visible = true;
+  setIKLock(dev, entry);
+  if (dev === State.activeDevice) refreshIKLockSelect(dev);
 }
 
 // ============================================================

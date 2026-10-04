@@ -174,7 +174,13 @@
   <div style="display:flex; gap:4px; margin-top:4px;">
     <button id="addCubeBtn" style="flex:1; margin:0;">Cube</button>
     <button id="addSphereBtn" style="flex:1; margin:0;">Sphere</button>
+    <button id="addIcosphereBtn" style="flex:1; margin:0;">Icosphere</button>
     <button id="addCylinderBtn" style="flex:1; margin:0;">Cylinder</button>
+  </div>
+  <div style="display:flex; align-items:center; gap:6px; margin-top:4px;" title="Resolution of new spheres, icospheres and cylinders: segments around the equator">
+    <label for="primSegments" style="font-size:11px; color:#889; white-space:nowrap;">Segments:</label>
+    <input type="range" id="primSegments" min="6" max="96" value="24" step="2" style="flex:1;">
+    <span id="primSegmentsVal" style="font-size:11px; color:#8cf; min-width:24px;">24</span>
   </div>
   <div id="stl-list"></div>
   <div id="stl-mode">
@@ -245,9 +251,15 @@
         <option value="">World</option>
       </select>
     </div>
+    <div id="stl-lock" title="Lock to another object: moving either moves both, along with any arm locked to them">
+      <label for="stlLockSelect">Lock to:</label>
+      <select id="stlLockSelect"><option value="">None</option></select>
+    </div>
   </div>
   <div id="collision-info" style="display:none;">Collisions: <span id="collision-text">none</span><span id="collision-rate"></span><span id="collision-pairs"></span></div>
   <div style="display:flex; gap:4px; margin-top:8px; padding-top:8px; border-top:1px solid #334;">
+    <button id="undoBtn" title="Undo (Ctrl+Z)" style="flex:0 0 32px; margin:0;" disabled>&#x21B6;</button>
+    <button id="redoBtn" title="Redo (Ctrl+Shift+Z or Ctrl+Y)" style="flex:0 0 32px; margin:0;" disabled>&#x21B7;</button>
     <button id="saveSceneBtn" style="flex:1; margin:0;">Save Scene</button>
     <button id="loadSceneBtn" style="flex:1; margin:0;">Load Scene</button>
     <button id="clearSceneBtn" style="flex:1; margin:0;">Clear Scene</button>
