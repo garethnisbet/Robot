@@ -1776,28 +1776,7 @@ export function addSTLListItem(entry) {
   rmBtn.className = 'stl-rm';
   rmBtn.textContent = '\u2715';
   rmBtn.title = 'Remove';
-  rmBtn.addEventListener('click', () => {
-    if (State.selectedSTL === entry) deselectSTL();
-    entry.mesh.removeFromParent();
-    if (entry.isSplat) {
-      if (entry._splatViewer) entry._splatViewer.dispose();
-      if (entry._blobUrl) URL.revokeObjectURL(entry._blobUrl);
-      if (entry._collisionPoints) {
-        entry._collisionPoints.geometry.dispose();
-        entry._collisionPoints.material.dispose();
-      }
-    } else {
-      entry.mesh.geometry.dispose();
-      entry.mesh.material.dispose();
-    }
-    const si = State.importedSTLs.indexOf(entry);
-    if (si >= 0) State.importedSTLs.splice(si, 1);
-    item.remove();
-    if (entry.isSplat && !State.importedSTLs.some(s => s.isSplat)) {
-      State.setContinuousRender('splat', false);
-    }
-    State.requestRender();
-  });
+  rmBtn.addEventListener('click', () => removeSTLEntry(entry));
 
   const dupBtn = document.createElement('button');
   dupBtn.className = 'stl-vis';
@@ -1816,6 +1795,44 @@ export function addSTLListItem(entry) {
   item.appendChild(visBtn);
   item.appendChild(rmBtn);
   list.appendChild(item);
+  entry._ui = { item, colorSwatch, alphaSlider, nameSpan };
+}
+
+// Bring a row back in line with its object after something other than the
+// row changed it (an undo, say).
+export function syncSTLListItem(entry) {
+  const ui = entry._ui;
+  if (ui) {
+    ui.colorSwatch.value = '#' + new THREE.Color(entry.isSplat ? (entry._splatTint ?? 0xffffff) : entry.color).getHexString();
+    ui.alphaSlider.value = Math.round((entry.opacity ?? 1) * 100);
+    ui.nameSpan.textContent = entry.name;
+  }
+  if (entry.label) entry.label.element.textContent = entry.name;
+  syncSTLVisibility(entry);
+}
+
+// Take an object out of the scene and the list, and free its GPU data.
+export function removeSTLEntry(entry) {
+  if (State.selectedSTL === entry) deselectSTL();
+  entry.mesh.removeFromParent();
+  if (entry.isSplat) {
+    if (entry._splatViewer) entry._splatViewer.dispose();
+    if (entry._blobUrl) URL.revokeObjectURL(entry._blobUrl);
+    if (entry._collisionPoints) {
+      entry._collisionPoints.geometry.dispose();
+      entry._collisionPoints.material.dispose();
+    }
+  } else {
+    entry.mesh.geometry?.dispose();
+    entry.mesh.material?.dispose();
+  }
+  const si = State.importedSTLs.indexOf(entry);
+  if (si >= 0) State.importedSTLs.splice(si, 1);
+  entry._ui?.item.remove();
+  if (entry.isSplat && !State.importedSTLs.some(s => s.isSplat)) {
+    State.setContinuousRender('splat', false);
+  }
+  State.requestRender();
 }
 
 // ============================================================

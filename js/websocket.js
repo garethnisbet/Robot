@@ -16,7 +16,7 @@ import {
   rebuildPrimaryModelDropdown, syncDeviceOpacitySlider,
 } from './panel.js';
 import {
-  setSTLParent, addPrimitive, PRIMITIVE_TYPES, duplicateSTL, deselectSTL,
+  setSTLParent, addPrimitive, PRIMITIVE_TYPES, duplicateSTL, deselectSTL, removeSTLEntry,
   exportSceneState, syncSTLVisibility,
   buildScenePayload, buildSceneMetadataForDB, sceneBufferSignature,
   collisionPositions, meshVertexPositions,
@@ -27,6 +27,7 @@ import {
 } from './collision.js';
 import { updateHexapodPose, computeLegLengthsFromPose, solveHexapodFK } from './hexapod.js';
 import { setObjectLock } from './locks.js';
+import { noteApiInput } from './undo.js';
 
 const deg2rad = Math.PI / 180;
 const rad2deg = 180 / Math.PI;
@@ -438,6 +439,7 @@ export function setApiEnabled(on) {
 // ============================================================
 export function handleCommand(data) {
   const cmd = data.cmd;
+  if (typeof cmd === 'string' && !/^(list|get|export|help|ping)/.test(cmd)) noteApiInput();
   if (!cmd) return;
 
   if (!_apiEnabled) {
@@ -953,18 +955,7 @@ export function handleCommand(data) {
     const entry = findSTLEntry(data);
     if (!entry) { wsSend({ type: 'error', error: 'Object not found' }); return; }
     const info = buildObjectInfo(entry, State.importedSTLs.indexOf(entry));
-    // Deselect if selected
-    if (State.selectedSTL === entry) deselectSTL();
-    // Remove mesh from scene
-    entry.mesh.removeFromParent();
-    if (entry.mesh.geometry) entry.mesh.geometry.dispose();
-    if (entry.mesh.material) entry.mesh.material.dispose();
-    // Remove from registry
-    const si = State.importedSTLs.indexOf(entry);
-    if (si >= 0) State.importedSTLs.splice(si, 1);
-    // Remove list item DOM
-    const listItems = document.querySelectorAll('#stl-list .stl-item');
-    if (listItems[si]) listItems[si].remove();
+    removeSTLEntry(entry);
     wsSend({ type: 'objectRemoved', name: info.name, index: info.index });
 
   } else if (cmd === 'duplicateObject') {

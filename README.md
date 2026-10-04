@@ -41,6 +41,7 @@ New devices can be added from Blender scenes using `import_robot.py` (serial rob
 - **Persistent objects** — imported and primitive objects are automatically saved to IndexedDB and restored on page reload
 - **Object manipulation** — click objects to select, then move, rotate, or scale with transform gizmos (keyboard: T/R/S, Escape to deselect); World/Local space toggle for gizmo axis alignment
 - **Parent-child linking** — attach objects to device links so they follow the kinematic chain
+- **Undo / redo** — Ctrl+Z / Ctrl+Shift+Z for any scene edit, including deletions
 - **Locking** — lock objects to each other and arms' IK targets to objects, so they move as one (e.g. two arms carrying a pipe)
 - **Self-collision detection** — BVH-accelerated triangle-level intersection testing between device links, using kinematic adjacency to skip physically connected parts
 - **Collision detection** — intersection testing between device links and imported scene objects, with red highlight on colliding meshes
@@ -332,6 +333,10 @@ Locked things move as one rigid group, whichever of them is moved:
 - **Arm to object** — in IK mode, the IK panel's **Lock to** dropdown locks the arm's target to an object at its current grip. Moving the object (or anything locked to it) drives the arm, and moving the arm's target carries the object and every other arm locked to it, so two arms can hold one pipe. Locked arms keep solving IK when they are not the selected device. An arm cannot lock into a group that holds an object it carries itself.
 
 To change a grip, set **Lock to** to None, move, and lock again. Scaling an object does not affect its locks.
+
+### Undo / Redo
+
+**Ctrl+Z** undoes and **Ctrl+Shift+Z** or **Ctrl+Y** redoes, as do the ↶ ↷ buttons next to Save Scene. Anything a saved scene records can be undone: moving, rotating or scaling objects and devices, joint changes, parents, locks, origins, colours, opacity, visibility, renames, deletions (objects come back with their geometry, devices reload), Clear Scene, and loading a scene. A drag is one step, and changes made through the API are one step per burst of commands. The camera, the selection and IK mode are view state and are not undone. The history holds 100 steps and is not kept across a page reload.
 
 ### Object Origin
 

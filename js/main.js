@@ -30,7 +30,7 @@ import {
 } from './kinematics.js';
 import {
   loadDevice,
-  updateSliders, setIKMode, syncIKSliders, setDeviceOpacity,
+  updateSliders, setIKMode, syncIKSliders, setDeviceOpacity, restoreIKLock,
 } from './device.js';
 import { updateHexapodPose, syncHexapodFromTransform, syncHexapodSliders, clampPlatformPose } from './hexapod.js';
 import {
@@ -57,6 +57,7 @@ import {
   setCollisionHeadless, isCollisionHeadless, updateCollisionLoop,
 } from './collision.js';
 import { initVR, updateVR } from './vr.js';
+import { initUndo, setUndoSuspended } from './undo.js';
 import { updateLocks, setIKLock, setObjectLock, refreshIKLockSelect, refreshObjectLockSelect } from './locks.js';
 import {
   wsConnect, initWsInfoPanel, registerSetActiveDevice, registerAvailableConfigs, registerSetOrtho,
@@ -1445,7 +1446,7 @@ document.getElementById('loadSceneBtn').addEventListener('click', () => {
 });
 
 document.getElementById('clearSceneBtn').addEventListener('click', () => {
-  if (!confirm('Clear the entire scene? This cannot be undone.')) return;
+  if (!confirm('Clear the entire scene? (Ctrl+Z undoes it.)')) return;
 
   // Clear imported STLs
   for (const entry of [...State.importedSTLs]) {
@@ -1494,7 +1495,17 @@ document.getElementById('clearSceneBtn').addEventListener('click', () => {
 // ============================================================
 // Core scene restore (used by file load and localStorage restore)
 // ============================================================
+// Loading a scene is one undo step, not every half-built state on the way.
 async function restoreScene(data) {
+  setUndoSuspended(true);
+  try {
+    await _restoreScene(data);
+  } finally {
+    setUndoSuspended(false);
+  }
+}
+
+async function _restoreScene(data) {
   // Clear existing imported STLs
   for (const entry of [...State.importedSTLs]) {
     if (State.selectedSTL === entry) deselectSTL();
@@ -1618,14 +1629,7 @@ async function restoreScene(data) {
     const dev = State.devices[i];
     const entry = devState.ikLock && State.importedSTLs.find(e => e.stlId === devState.ikLock);
     if (!dev || !entry || dev.type === 'hexapod' || dev.isBranching) return;
-    setIKMode(dev, true);
-    dev.ikTarget.position.copy(getEEWorldPosition(dev));
-    dev.ikTargetQuat.copy(getEEWorldQuaternion(dev));
-    dev.ikTargetEuler.setFromQuaternion(dev.ikTargetQuat, 'YZX');
-    dev.ikTarget.quaternion.copy(dev.ikTargetQuat);
-    dev.ikTarget.visible = dev.ikLine.visible = true;
-    setIKLock(dev, entry);
-    if (dev === State.activeDevice) refreshIKLockSelect(dev);
+    restoreIKLock(dev, entry);
   });
 
   rebuildDeviceList();
@@ -1655,6 +1659,9 @@ document.getElementById('loadSceneFile').addEventListener('change', async (e) =>
 
 // Start VR support
 initVR();
+
+// Undo history starts from the scene as loaded
+initUndo();
 
 // Start render loop
 State.renderer.setAnimationLoop(animate);

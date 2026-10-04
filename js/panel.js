@@ -616,13 +616,15 @@ export function rebuildPrimaryModelDropdown(currentConfigFile) {
 // ============================================================
 // removeDevice
 // ============================================================
-export function removeDevice(dev) {
-  if (State.devices.length <= 1) return; // keep at least one device
+// allowLast: an undo may take the scene back to having no devices.
+export function removeDevice(dev, { allowLast = false } = {}) {
+  if (State.devices.length <= 1 && !allowLast) return; // keep at least one device
 
   // Switch to another device if this is the active one
   if (dev === State.activeDevice) {
     const remaining = State.devices.filter(d => d !== dev);
-    setActiveDevice(remaining[0]);
+    if (remaining.length) setActiveDevice(remaining[0]);
+    else { State.transformControls?.detach(); State.setActiveDevice(null); }
   }
 
   // Clean up scene objects
