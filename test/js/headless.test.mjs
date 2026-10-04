@@ -124,6 +124,10 @@ test('primitives take a resolution, and an icosphere is one of them', async () =
   assert.equal(await triangles('icosphere', 24), 20 * 25);      // detail 4: 20·(d+1)²
   assert.equal(await triangles('cone', 16), 16 * 2);            // a side and a base triangle each
   assert.equal(e.State.importedSTLs.at(-1).name, 'Cone');
+  assert.equal(await triangles('cone', 3), 6);                  // the slider's lowest: a triangular pyramid
+  assert.equal(await triangles('cylinder', 3), 12);             // a triangular prism
+  assert.equal(await triangles('sphere', 3), 3 * 2);            // 3 around, 2 rings
+  assert.equal(await triangles('icosphere', 3), 20);            // detail 0
   assert.equal(await triangles('cube', 96), 12);                // flat; ignores it
   assert.equal(await triangles('sphere'), 24 * (2 * 16 - 2));   // default 24 segments
   assert.equal(e.State.importedSTLs.at(-2).name, 'Cube');
