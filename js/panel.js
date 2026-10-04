@@ -16,6 +16,7 @@ import {
 import { updateVirtualAngles } from './kinematics.js';
 import { updateHexapodPose, computeLegLengthsFromPose, solveHexapodFK, syncHexapodSliders, effectivePoseLimits } from './hexapod.js';
 import { resolveParentLink } from './stl.js';
+import { refreshIKLockSelect } from './ik-lock.js';
 
 const deg2rad = Math.PI / 180;
 const rad2deg = 180 / Math.PI;
@@ -415,6 +416,7 @@ export function buildControlPanel(dev) {
     if (dev.ikMode) {
       State.transformControls.attach(dev.ikTarget);
       syncIKSliders(dev);
+      refreshIKLockSelect(dev);
     } else {
       State.transformControls.detach();
     }

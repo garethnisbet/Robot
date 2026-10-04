@@ -14,6 +14,7 @@ import { MeshBVH } from 'three-mesh-bvh';
 import { DropInViewer, SceneFormat } from 'gaussian-splats-3d';
 
 import * as State from './state.js';
+import { removeCollisionMesh } from './collision.js';
 import { dbSaveFileHandle, dbLoadFileHandle } from './storage.js';
 
 // ============================================================
@@ -115,6 +116,7 @@ function _buildSTLPayload(entry, bufferFn, includeHeavyBuffers) {
     rec.pointSize = entry.pointSize ?? DEFAULT_POINT_SIZE;
     rec.pointShape = entry.pointShape || 'square';
   }
+  if (entry.origin && entry.origin.lengthSq() > 0) rec.origin = entry.origin.toArray();
   return rec;
 }
 
@@ -550,6 +552,13 @@ export function applySavedObjectState(entry, rec) {
     if (rec.opacity !== undefined) entry.opacity = rec.opacity;
     if (rec.splatTint !== undefined) entry._splatTint = rec.splatTint;
   }
+  // Saved origin: shift the geometry by the difference, so a sync that
+  // repeats the same record leaves it alone.
+  if (rec.origin || entry.origin) {
+    const delta = new THREE.Vector3().fromArray(rec.origin || [0, 0, 0]);
+    if (entry.origin) delta.sub(entry.origin);
+    if (delta.lengthSq() > 0) shiftObjectGeometry(entry, delta);
+  }
   if (entry.isPointCloud) {
     if (rec.pointSize !== undefined) entry.pointSize = rec.pointSize;
     // Older saves stored a boolean roundPoints instead of pointShape.
@@ -562,6 +571,98 @@ export function applySavedObjectState(entry, rec) {
   if (resolvedParent) {
     setSTLParent(entry, resolvedParent, true);
   }
+}
+
+// ============================================================
+// Object origin
+// ============================================================
+// An object's origin is the point its gizmo moves and rotates about. It
+// starts where the file put it; entry.origin records how far it has been
+// moved since, in the object's local units, so a saved scene can redo it.
+// Splats have no geometry here to move.
+export function canSetOrigin(entry) {
+  return !entry.isSplat && !!entry.mesh.geometry?.getAttribute('position');
+}
+
+// Move the geometry by -delta in the local frame (its origin by +delta),
+// leaving the object's transform alone. Collision data built from the old
+// vertices is dropped and rebuilt.
+export function shiftObjectGeometry(entry, delta) {
+  if (!canSetOrigin(entry)) return;
+  const m = entry.mesh;
+  m.geometry.translate(-delta.x, -delta.y, -delta.z);
+  if (m.geometry.boundsTree) m.geometry.boundsTree = new MeshBVH(m.geometry);
+  m._collGrid = undefined;
+  removeCollisionMesh(m);
+  for (const child of m.children) child.position.sub(delta);
+  entry.origin = (entry.origin || new THREE.Vector3()).add(delta);
+  State.requestRender();
+}
+
+// Put the origin at localPoint (in the object's current local frame)
+// without moving the object in the world.
+export function setObjectOrigin(entry, localPoint) {
+  if (!canSetOrigin(entry)) return;
+  const m = entry.mesh;
+  m.updateMatrix();
+  const newPosition = localPoint.clone().applyMatrix4(m.matrix);
+  shiftObjectGeometry(entry, localPoint);
+  m.position.copy(newPosition);
+}
+
+// Origin edit mode: the object's gizmo is swapped for a bare axes marker
+// at its origin; dropping the marker moves the origin there and leaves the
+// object where it is.
+let _originMarker = null;
+let _originEditEntry = null;
+
+function _onOriginDrag(e) {
+  if (e.value || !_originEditEntry) return;
+  const entry = _originEditEntry;
+  const p = entry.mesh.worldToLocal(_originMarker.position.clone());
+  setObjectOrigin(entry, p);
+  syncSTLNumericInputs(entry);
+}
+
+export function isOriginEditing() { return !!_originEditEntry; }
+
+export function setOriginEditMode(on) {
+  const entry = State.selectedSTL;
+  const ctrl = State.stlTransformControls;
+  const btn = document.getElementById('stlOriginEdit');
+  if (on && entry && canSetOrigin(entry)) {
+    if (!_originMarker) {
+      _originMarker = new THREE.AxesHelper(0.08);
+      _originMarker.material.depthTest = false;
+      _originMarker.renderOrder = 3;
+      ctrl.addEventListener('dragging-changed', _onOriginDrag);
+    }
+    entry.mesh.updateWorldMatrix(true, false);
+    entry.mesh.matrixWorld.decompose(_originMarker.position, _originMarker.quaternion, new THREE.Vector3());
+    State.scene.add(_originMarker);
+    _originEditEntry = entry;
+    setSTLTransformMode('translate');
+    ctrl.attach(_originMarker);
+  } else if (_originEditEntry) {
+    State.scene.remove(_originMarker);
+    _originEditEntry = null;
+    if (entry) ctrl.attach(entry.mesh); else ctrl.detach();
+  }
+  if (btn) btn.classList.toggle('active', !!_originEditEntry);
+  State.requestRender();
+}
+
+// Where a preset puts the origin, in the object's current local frame:
+// 'centre' of its bounding box, 'base' (the centre of the box's lowest
+// face in the world), or 'file' (where the file put it).
+export function originPresetPoint(entry, preset) {
+  const m = entry.mesh;
+  if (preset === 'file') return entry.origin ? entry.origin.clone().negate() : new THREE.Vector3();
+  m.updateWorldMatrix(true, false);
+  const box = new THREE.Box3().setFromObject(m, true);
+  const p = box.getCenter(new THREE.Vector3());
+  if (preset === 'base') p.y = box.min.y;
+  return m.worldToLocal(p);
 }
 
 // ============================================================
@@ -1510,6 +1611,7 @@ export async function duplicateSTL(srcEntry) {
     newEntry.opacity = srcEntry.opacity;
     newEntry.mesh.material.opacity = srcEntry.opacity;
   }
+  if (newEntry && srcEntry.origin) shiftObjectGeometry(newEntry, srcEntry.origin);
   if (newEntry && newEntry.isPointCloud) {
     newEntry.pointSize = srcEntry.pointSize ?? DEFAULT_POINT_SIZE;
     newEntry.pointShape = srcEntry.pointShape || 'square';
@@ -1761,6 +1863,7 @@ export function selectSTL(entry, listItem) {
 
   State.stlTransformControls.attach(entry.mesh);
   document.getElementById('stl-mode').style.display = 'block';
+  document.getElementById('stl-origin').style.display = canSetOrigin(entry) ? 'flex' : 'none';
   document.getElementById('stl-sel-name').textContent = entry.name;
   document.getElementById('stlParentSelect').value = entry.parentLink || '';
   syncSTLNumericInputs(entry);
@@ -1797,6 +1900,7 @@ export function syncSTLNumericInputs(entry) {
 
 export function deselectSTL() {
   if (State.selectedSTL) {
+    setOriginEditMode(false);
     State.stlTransformControls.detach();
     State.stlTransformControls.setSpace('world');
     if (State.selectedListItem) State.selectedListItem.classList.remove('selected');
@@ -1810,6 +1914,7 @@ export function deselectSTL() {
 }
 
 export function setSTLTransformMode(mode) {
+  if (mode !== 'translate' && _originEditEntry) setOriginEditMode(false);
   State.stlTransformControls.setMode(mode);
   document.getElementById('stlModeT').classList.toggle('active', mode === 'translate');
   document.getElementById('stlModeR').classList.toggle('active', mode === 'rotate');
