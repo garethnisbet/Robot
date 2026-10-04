@@ -274,9 +274,6 @@ export function syncIKSliders(dev) {
   const ad = Math.round(a);
   const bd = Math.round(b);
   const cd = Math.round(g);
-  console.log('[IK-OUT]', {ikTargetQuat: dev.ikTargetQuat.toArray(),
-    homeQInv: dev.homeQuaternionInv.toArray(),
-    readbackRelQ: relQuat.toArray(), decoded: [a, b, g], rounded: [ad, bd, cd]});
   document.getElementById('ika').value = ad;
   document.getElementById('ikva').textContent = ad;
   document.getElementById('ikb').value = bd;

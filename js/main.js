@@ -544,9 +544,6 @@ deviceOpacityInput.addEventListener('input', (e) => {
     State.activeDevice.ikTargetQuat.copy(relQuat).multiply(State.activeDevice.homeQuaternion);
     State.activeDevice.ikTargetEuler.setFromQuaternion(State.activeDevice.ikTargetQuat, 'YZX');
     State.activeDevice.ikTarget.quaternion.copy(State.activeDevice.ikTargetQuat);
-    console.log('[IK-IN]', {input: [aDeg, bDeg, cDeg], relQuat: relQuat.toArray(),
-      homeQ: State.activeDevice.homeQuaternion.toArray(),
-      ikTargetQuat: State.activeDevice.ikTargetQuat.toArray()});
   });
 });
 
