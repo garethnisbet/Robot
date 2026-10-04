@@ -1544,11 +1544,30 @@ function geometryToSTLBuffer(geometry) {
 
 // A primitive as the STL buffer the viewer stores it as (so it saves and
 // restores like any imported mesh), with its default name.
-export const PRIMITIVE_TYPES = ['cube', 'sphere', 'icosphere', 'cylinder'];
+// Three.js closes a cone's tip with zero-area triangles; they would be
+// stored and collision-tested for nothing.
+function dropDegenerateTriangles(geometry) {
+  const pos = geometry.getAttribute('position');
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  const kept = [];
+  for (let i = 0; i < pos.count; i += 3) {
+    a.fromBufferAttribute(pos, i); b.fromBufferAttribute(pos, i + 1); c.fromBufferAttribute(pos, i + 2);
+    if (c.sub(a).cross(b.sub(a)).lengthSq() > 1e-20) kept.push(i);
+  }
+  if (kept.length * 3 === pos.count) return geometry;
+  const out = new THREE.BufferGeometry();
+  const arr = new Float32Array(kept.length * 9);
+  kept.forEach((i, k) => arr.set(pos.array.subarray(i * 3, i * 3 + 9), k * 9));
+  out.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+  geometry.dispose();
+  return out;
+}
+
+export const PRIMITIVE_TYPES = ['cube', 'sphere', 'icosphere', 'cylinder', 'cone'];
 export const DEFAULT_PRIMITIVE_SEGMENTS = 24;
 
 // `segments` is the resolution of the round shapes: the number of segments
-// around the equator (sphere, cylinder) or, for the icosphere, the
+// around the equator (sphere, cylinder, cone) or, for the icosphere, the
 // subdivision that gives about as many (5 per level, plus the base 5).
 // A cube is flat and ignores it.
 export function primitiveSTLBuffer(type, segments = DEFAULT_PRIMITIVE_SEGMENTS) {
@@ -1565,11 +1584,14 @@ export function primitiveSTLBuffer(type, segments = DEFAULT_PRIMITIVE_SEGMENTS) 
   } else if (type === 'icosphere') {
     geometry = new THREE.IcosahedronGeometry(size / 2, Math.max(0, Math.round(n / 5) - 1));
     name = 'Icosphere';
+  } else if (type === 'cone') {
+    geometry = new THREE.ConeGeometry(size / 2, size, n);
+    name = 'Cone';
   } else {
     geometry = new THREE.CylinderGeometry(size / 2, size / 2, size, n);
     name = 'Cylinder';
   }
-  const nonIndexed = geometry.index ? geometry.toNonIndexed() : geometry;
+  const nonIndexed = dropDegenerateTriangles(geometry.index ? geometry.toNonIndexed() : geometry);
   const buffer = geometryToSTLBuffer(nonIndexed);
   geometry.dispose();
   nonIndexed.dispose();

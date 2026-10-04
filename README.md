@@ -36,7 +36,7 @@ New devices can be added from Blender scenes using `import_robot.py` (serial rob
 - **Double-click to type** — double-click any slider value label to enter a number directly
 - **Mesh labels toggle** — show/hide object name labels on all meshes
 - **Mesh import** — load external STL, OBJ, PLY, and GLB/GLTF files into the scene with auto-scaling, labels, and per-object colour
-- **Primitive objects** — add cube, sphere, icosphere, and cylinder primitives directly from the toolbar, at a chosen resolution
+- **Primitive objects** — add cube, sphere, icosphere, cylinder, and cone primitives directly from the toolbar, at a chosen resolution
 - **Object duplication** — duplicate any imported or primitive object with a single click
 - **Persistent objects** — imported and primitive objects are automatically saved to IndexedDB and restored on page reload
 - **Object manipulation** — click objects to select, then move, rotate, or scale with transform gizmos (keyboard: T/R/S, Escape to deselect); World/Local space toggle for gizmo axis alignment
@@ -308,7 +308,7 @@ Click **Import Mesh** to load files into the scene. Supported formats:
 
 ### Primitives
 
-Click **Cube**, **Sphere**, **Icosphere**, or **Cylinder** to add a primitive shape. The **Segments** slider sets the resolution of the round shapes (segments around the equator; default 24) and applies to the next one added. Primitives behave identically to imported objects — they can be moved, coloured, parented, and are persisted across reloads.
+Click **Cube**, **Sphere**, **Icosphere**, **Cylinder**, or **Cone** to add a primitive shape. The **Segments** slider sets the resolution of the round shapes (segments around the equator; default 24) and applies to the next one added. Primitives behave identically to imported objects — they can be moved, coloured, parented, and are persisted across reloads.
 
 ### Transform Gizmos
 
