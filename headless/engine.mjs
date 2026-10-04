@@ -220,6 +220,24 @@ export async function createEngine({ root = REPO_ROOT } = {}) {
   // Clouds the check needs but has no points for: the visible ones.
   const needPoints = () => skipped.filter(s => s.needPoints && s.visible).map(s => ({ id: s.id, name: s.name }));
 
+  // Locks from the scene records: objects locked to objects, and arms'
+  // targets locked to objects. The collision check treats a lock group as
+  // one body (js/collision.js), so the engine must hold the same groups.
+  // indexMap maps the payload's device indices to the engine's.
+  function applyLocks(payload, indexMap) {
+    const byId = new Map(State.importedSTLs.map(e => [e.stlId, e]));
+    for (const rec of payload.stls || []) {
+      const entry = byId.get(rec.id);
+      if (entry) entry.lockedTo = (rec.lockedTo && byId.get(rec.lockedTo)) || null;
+    }
+    (payload.devices || []).forEach((d, i) => {
+      if (!indexMap.has(i)) return;
+      const dev = State.devices[indexMap.get(i)];
+      const entry = d.ikLock && byId.get(d.ikLock);
+      dev.ikLock = entry ? { entry, pose: null } : null;
+    });
+  }
+
   // Load a scene saved by the viewer (Save Scene, its auto-save format, or
   // exportScene). Hexapods are not built, nor are clouds whose points have
   // not been supplied yet; both are listed in `skipped`, since a check
@@ -269,6 +287,7 @@ export async function createEngine({ root = REPO_ROOT } = {}) {
       entry.stlId = rec.id ?? entry.stlId;
       applySavedObjectState(entry, { ...rec, parentLink: remapParent(rec.parentLink, indexMap) });
     }
+    applyLocks(payload, indexMap);
     loadedKey = structureKey(payload);
     checkCollisionsNow();
     return { rebuilt: true, devices: State.devices.length, objects: State.importedSTLs.length,
@@ -317,6 +336,7 @@ export async function createEngine({ root = REPO_ROOT } = {}) {
       const rec = (payload.stls || []).find(r => (s.id !== undefined ? r.id === s.id : r.name === s.name));
       if (rec) s.visible = rec.visible !== false;
     }
+    applyLocks(payload, indexMap);
     checkCollisionsNow();
     return { rebuilt: false, devices: State.devices.length, objects: State.importedSTLs.length,
              skipped, needPoints: needPoints() };

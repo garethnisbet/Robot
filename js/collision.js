@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import * as State from './state.js';
 import { resolveParentLink } from './stl.js';
+import { lockedGroup } from './locks.js';
 import { buildPointGrid, pointCloudIntersectsMesh,
          POINT_CLOUD_COLLISION_THRESHOLD } from './point-grid.js';
 
@@ -287,10 +288,12 @@ function buildCollisionContext() {
   const visiblePointClouds = State.importedSTLs.filter(e => isEffectivelyVisible(e.mesh) && e.isPointCloud);
   const visibleSplatClouds = State.importedSTLs.filter(e => isEffectivelyVisible(e.mesh) && e.isSplat && e._collisionPoints);
   for (const s of visibleSplatClouds) {
-    visiblePointClouds.push({ mesh: s._collisionPoints, name: s.name, parentLink: s.parentLink, isPointCloud: true });
+    visiblePointClouds.push({ mesh: s._collisionPoints, name: s.name, parentLink: s.parentLink, isPointCloud: true, entry: s });
   }
 
-  const worldSTLs    = visibleSTLs.filter(e => !e.parentLink);
+  const groups = lockGroupLinks(visibleSTLs);
+  const grouped = new Set(groups.flatMap(g => g.stlEntries));
+  const worldSTLs    = visibleSTLs.filter(e => !e.parentLink && !grouped.has(e));
   const parentedSTLs = visibleSTLs.filter(e => e.parentLink);
 
   // A hidden device drops out entirely. Its links are still enumerated when
@@ -321,7 +324,64 @@ function buildCollisionContext() {
     }
   }
 
-  return { worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks };
+  allExtendedLinks.push(...groups);
+
+  // A parented member of a lock group keeps its own place on its link, and
+  // skips what the group skips.
+  const skipFor = new Map();
+  for (const g of groups) for (const e of g.lockGroup) if (e.parentLink) skipFor.set(e.mesh, g.skipLinks);
+
+  return { worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks, skipFor };
+}
+
+const linkKey = link => `${link.deviceId}:${link.name}`;
+
+// The link an arm grips with: the links on the joint that carries its
+// end-effector, and the links next to them.
+function gripLinks(dev) {
+  let joint = -1;
+  for (let o = dev.eeMarker; o && joint < 0; o = o.parent) joint = dev.jointRotGroups?.indexOf(o) ?? -1;
+  const on = dev.robotLinkMeshes.filter(l => l.jointIdx === joint).map(l => l.name);
+  const keys = new Set(on.map(n => `${dev.id}:${n}`));
+  for (const l of dev.robotLinkMeshes) {
+    if (on.some(n => dev.adjPairs?.has([n, l.name].sort().join('|')))) keys.add(`${dev.id}:${l.name}`);
+  }
+  return keys;
+}
+
+// Objects locked together (js/locks.js) move as one body, so, like an
+// object parented to a link, each group is checked as a link of its own:
+// against point clouds, objects, devices, other groups and the floor. It
+// skips itself (and clouds locked into it), the grip of every arm locked
+// to it, and the link carrying any member that is parented.
+function lockGroupLinks(visibleSTLs) {
+  const groups = [];
+  const done = new Set();
+  for (const start of State.importedSTLs) {
+    if (done.has(start)) continue;
+    const members = lockedGroup(start);
+    members.forEach(m => done.add(m));
+    const arms = State.devices.filter(d => d.ikLock && members.includes(d.ikLock.entry)
+                                           && isEffectivelyVisible(d.rootGroup));
+    if (members.length + arms.length < 2) continue;
+    const skipLinks = new Set();
+    for (const dev of arms) for (const k of gripLinks(dev)) skipLinks.add(k);
+    for (const m of members) {
+      const { dev, linkName } = resolveParentLink(m.parentLink);
+      if (dev && linkName) skipLinks.add(`${dev.id}:${linkName}`);
+    }
+    const free = members.filter(m => visibleSTLs.includes(m) && !m.parentLink);
+    groups.push({
+      name: free[0]?.name || members[0].name,
+      deviceName: '',
+      deviceId: 'lock:' + members[0].stlId,
+      meshes: free.map(m => m.mesh),
+      stlEntries: free,
+      lockGroup: new Set(members),
+      skipLinks,
+    });
+  }
+  return groups;
 }
 
 function meshDisplayName(link, mesh) {
@@ -336,6 +396,7 @@ function meshDisplayName(link, mesh) {
 // distinct mesh pair; kind is 'mesh' or 'pointCloud' (meshA is the cloud).
 function forEachCollisionPair(ctx, visit) {
   const { worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks } = ctx;
+  const skipFor = ctx.skipFor || new Map();
   const seen = new Set();
 
   function pair(kind, meshA, meshB, nameA, nameB) {
@@ -359,8 +420,10 @@ function forEachCollisionPair(ctx, visit) {
   // 2) Parented STLs vs other links
   for (const stl of parentedSTLs) {
     const { dev: stlDev, linkName: stlLinkName } = resolveParentLink(stl.parentLink);
+    const skip = skipFor.get(stl.mesh);
     for (const link of allExtendedLinks) {
       if (link.deviceId === (stlDev ? stlDev.id : null) && link.name === stlLinkName) continue;
+      if (skip?.has(linkKey(link))) continue;
       for (const robotMesh of link.meshes) {
         pair('mesh', stl.mesh, robotMesh, meshDisplayName(link, robotMesh), stl.name);
       }
@@ -370,6 +433,7 @@ function forEachCollisionPair(ctx, visit) {
   // 3) Point clouds vs all device links
   for (const pc of visiblePointClouds) {
     for (const link of allExtendedLinks) {
+      if (link.lockGroup?.has(pc.entry || pc)) continue;     // a cloud locked into the group
       for (const robotMesh of link.meshes) {
         pair('pointCloud', pc.mesh, robotMesh, meshDisplayName(link, robotMesh), pc.name);
       }
@@ -381,6 +445,7 @@ function forEachCollisionPair(ctx, visit) {
     for (let j = i + 1; j < allExtendedLinks.length; j++) {
       const linkA = allExtendedLinks[i];
       const linkB = allExtendedLinks[j];
+      if (linkA.skipLinks?.has(linkKey(linkB)) || linkB.skipLinks?.has(linkKey(linkA))) continue;
       if (linkA.deviceId === linkB.deviceId) {
         const dev = State.devices.find(d => d.id === linkA.deviceId);
         if (dev && dev.type === 'hexapod') continue;
