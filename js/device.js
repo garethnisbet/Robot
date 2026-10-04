@@ -14,7 +14,7 @@ import {
   pyEulerFromRelQuat,
 } from './kinematics.js';
 import { loadHexapod } from './hexapod.js';
-import { refreshIKLockSelect } from './ik-lock.js';
+import { refreshIKLockSelect } from './locks.js';
 import { assembleDevice, attachModel, HIDDEN_NODE_NAMES } from './model.js';
 export { buildAdjacencyPairs } from './model.js';
 

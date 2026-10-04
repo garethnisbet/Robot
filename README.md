@@ -36,11 +36,12 @@ New devices can be added from Blender scenes using `import_robot.py` (serial rob
 - **Double-click to type** — double-click any slider value label to enter a number directly
 - **Mesh labels toggle** — show/hide object name labels on all meshes
 - **Mesh import** — load external STL, OBJ, PLY, and GLB/GLTF files into the scene with auto-scaling, labels, and per-object colour
-- **Primitive objects** — add cube, sphere, and cylinder primitives directly from the toolbar
+- **Primitive objects** — add cube, sphere, icosphere, and cylinder primitives directly from the toolbar, at a chosen resolution
 - **Object duplication** — duplicate any imported or primitive object with a single click
 - **Persistent objects** — imported and primitive objects are automatically saved to IndexedDB and restored on page reload
 - **Object manipulation** — click objects to select, then move, rotate, or scale with transform gizmos (keyboard: T/R/S, Escape to deselect); World/Local space toggle for gizmo axis alignment
 - **Parent-child linking** — attach objects to device links so they follow the kinematic chain
+- **Locking** — lock objects to each other and arms' IK targets to objects, so they move as one (e.g. two arms carrying a pipe)
 - **Self-collision detection** — BVH-accelerated triangle-level intersection testing between device links, using kinematic adjacency to skip physically connected parts
 - **Collision detection** — intersection testing between device links and imported scene objects, with red highlight on colliding meshes
 - **Screenshot** — one-click PNG capture of the WebGL view composited with the control panel overlay
@@ -306,7 +307,7 @@ Click **Import Mesh** to load files into the scene. Supported formats:
 
 ### Primitives
 
-Click **Cube**, **Sphere**, or **Cylinder** to add a primitive shape. Primitives behave identically to imported objects — they can be moved, coloured, parented, and are persisted across reloads.
+Click **Cube**, **Sphere**, **Icosphere**, or **Cylinder** to add a primitive shape. The **Segments** slider sets the resolution of the round shapes (segments around the equator; default 24) and applies to the next one added. Primitives behave identically to imported objects — they can be moved, coloured, parented, and are persisted across reloads.
 
 ### Transform Gizmos
 
@@ -322,6 +323,19 @@ Both device and object gizmos have a **World/Local** toggle button. In World mod
 ### Parent-Child Linking
 
 Use the **Parent** dropdown to attach objects to device links. Parented objects follow the kinematic chain. Local transforms are preserved when reparenting.
+
+### Locking
+
+Locked things move as one rigid group, whichever of them is moved:
+
+- **Object to object** — the object panel's **Lock to** dropdown locks the selected object to another. Moving either (by its gizmo, the API, or an arm that carries it) moves both. Locks chain: a tag locked to a clamp locked to a pipe moves with the pipe. Object locks are saved with the scene.
+- **Arm to object** — in IK mode, the IK panel's **Lock to** dropdown locks the arm's target to an object at its current grip. Moving the object (or anything locked to it) drives the arm, and moving the arm's target carries the object and every other arm locked to it, so two arms can hold one pipe. Locked arms keep solving IK when they are not the selected device. An arm cannot lock into a group that holds an object it carries itself.
+
+To change a grip, set **Lock to** to None, move, and lock again. Scaling an object does not affect its locks.
+
+### Object Origin
+
+The object panel's **Origin** row moves an object's origin (the point its gizmo moves and rotates about) without moving the object: **Move** shows an axes marker to drag to the new origin, **Centre** and **Base** snap it to the bounding box's centre or the centre of its lowest face, and **File** puts it back where the file had it. Not available for Gaussian splats.
 
 ## Collision Detection
 
@@ -731,9 +745,11 @@ The `getState` response for hexapod devices includes `platformPose`, `legLengths
 {"cmd": "setObject", "object": "MyPart", "position": [100, 50, 0], "rotation": [0, 0, 45]}
 {"cmd": "setObject", "object": "MyPart", "position": [100, 50, 0], "space": "world"}
 {"cmd": "setObject", "object": "MyPart", "color": "#ff0000", "parent": "dev_0:L3"}
+{"cmd": "setObject", "object": "Clamp", "lockTo": "Pipe"}
 {"cmd": "translateObject", "name": "MyPart", "delta": [10, 0, 0], "space": "parent"}
 {"cmd": "rotateObject", "name": "MyPart", "delta": [0, 0, 45], "space": "local"}
 {"cmd": "addPrimitive", "type": "cube"}
+{"cmd": "addPrimitive", "type": "icosphere", "segments": 48}
 {"cmd": "removeObject", "object": "MyPart"}
 {"cmd": "duplicateObject", "object": "MyPart"}
 {"cmd": "resetObjectRotation", "object": "MyPart"}

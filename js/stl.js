@@ -15,6 +15,7 @@ import { DropInViewer, SceneFormat } from 'gaussian-splats-3d';
 
 import * as State from './state.js';
 import { removeCollisionMesh } from './collision.js';
+import { refreshObjectLockSelect } from './locks.js';
 import { dbSaveFileHandle, dbLoadFileHandle } from './storage.js';
 
 // ============================================================
@@ -74,6 +75,8 @@ function _buildDevicesPayload() {
       parentLink: _parentLinkToStable(dev.parentLink),
     };
     if (dev.type === 'hexapod') entry.platformPose = [...dev.platformPose];
+    // The object the arm's IK target is locked to, by id.
+    if (dev.ikLock) entry.ikLock = dev.ikLock.entry.stlId;
     return entry;
   });
 }
@@ -117,6 +120,7 @@ function _buildSTLPayload(entry, bufferFn, includeHeavyBuffers) {
     rec.pointShape = entry.pointShape || 'square';
   }
   if (entry.origin && entry.origin.lengthSq() > 0) rec.origin = entry.origin.toArray();
+  if (entry.lockedTo) rec.lockedTo = entry.lockedTo.stlId;
   return rec;
 }
 
@@ -526,6 +530,12 @@ export async function restoreSTLsFromState(records) {
       'parent:', entry.parentLink,
       'meshParent:', m.parent?.name || 'Scene');
   }
+
+  // ── Phase 3: object locks, now that every object exists ──
+  for (const { rec, entry } of created) {
+    if (!entry || !rec.lockedTo) continue;
+    entry.lockedTo = created.find(c => c.entry && c.rec.id === rec.lockedTo)?.entry || null;
+  }
 }
 
 // Apply one saved object record (transforms, visibility, appearance,
@@ -608,6 +618,9 @@ export function setObjectOrigin(entry, localPoint) {
   const newPosition = localPoint.clone().applyMatrix4(m.matrix);
   shiftObjectGeometry(entry, localPoint);
   m.position.copy(newPosition);
+  // Its pose moved with the origin, but it did not move: a group it is
+  // locked into must not follow.
+  entry._lockPose = null;
 }
 
 // Origin edit mode: the object's gizmo is swapped for a bare axes marker
@@ -1531,18 +1544,29 @@ function geometryToSTLBuffer(geometry) {
 
 // A primitive as the STL buffer the viewer stores it as (so it saves and
 // restores like any imported mesh), with its default name.
-export function primitiveSTLBuffer(type) {
+export const PRIMITIVE_TYPES = ['cube', 'sphere', 'icosphere', 'cylinder'];
+export const DEFAULT_PRIMITIVE_SEGMENTS = 24;
+
+// `segments` is the resolution of the round shapes: the number of segments
+// around the equator (sphere, cylinder) or, for the icosphere, the
+// subdivision that gives about as many (5 per level, plus the base 5).
+// A cube is flat and ignores it.
+export function primitiveSTLBuffer(type, segments = DEFAULT_PRIMITIVE_SEGMENTS) {
   const size = 0.05;
+  const n = Math.round(THREE.MathUtils.clamp(segments || DEFAULT_PRIMITIVE_SEGMENTS, 3, 256));
   let geometry;
   let name;
   if (type === 'cube') {
     geometry = new THREE.BoxGeometry(size, size, size);
     name = 'Cube';
   } else if (type === 'sphere') {
-    geometry = new THREE.SphereGeometry(size / 2, 24, 16);
+    geometry = new THREE.SphereGeometry(size / 2, n, Math.max(2, Math.round(n * 2 / 3)));
     name = 'Sphere';
+  } else if (type === 'icosphere') {
+    geometry = new THREE.IcosahedronGeometry(size / 2, Math.max(0, Math.round(n / 5) - 1));
+    name = 'Icosphere';
   } else {
-    geometry = new THREE.CylinderGeometry(size / 2, size / 2, size, 24);
+    geometry = new THREE.CylinderGeometry(size / 2, size / 2, size, n);
     name = 'Cylinder';
   }
   const nonIndexed = geometry.index ? geometry.toNonIndexed() : geometry;
@@ -1552,8 +1576,8 @@ export function primitiveSTLBuffer(type) {
   return { buffer, name };
 }
 
-export function addPrimitive(type) {
-  const { buffer, name } = primitiveSTLBuffer(type);
+export function addPrimitive(type, segments) {
+  const { buffer, name } = primitiveSTLBuffer(type, segments);
   const color = nextColor();
   const stlId = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
   createSTLFromBuffer(buffer, name, color, stlId, null);
@@ -1866,6 +1890,7 @@ export function selectSTL(entry, listItem) {
   document.getElementById('stl-origin').style.display = canSetOrigin(entry) ? 'flex' : 'none';
   document.getElementById('stl-sel-name').textContent = entry.name;
   document.getElementById('stlParentSelect').value = entry.parentLink || '';
+  refreshObjectLockSelect(entry);
   syncSTLNumericInputs(entry);
 
   const pointsRow = document.getElementById('stl-points');

@@ -57,7 +57,7 @@ import {
   setCollisionHeadless, isCollisionHeadless, updateCollisionLoop,
 } from './collision.js';
 import { initVR, updateVR } from './vr.js';
-import { updateIKLocks, setIKLock, refreshIKLockSelect } from './ik-lock.js';
+import { updateLocks, setIKLock, setObjectLock, refreshIKLockSelect, refreshObjectLockSelect } from './locks.js';
 import {
   wsConnect, initWsInfoPanel, registerSetActiveDevice, registerAvailableConfigs, registerSetOrtho,
   setApiEnabled, isApiEnabled,
@@ -115,9 +115,9 @@ function animate(time, frame) {
   // (possibly moving) target. It is cheap once converged — solveIK
   // returns on the first iteration. A render is requested only while the
   // end-effector is actually moving, so a settled IK pose stays idle.
-  // Arms whose target is locked to an object keep solving when they are
-  // not the active device, so several can move with one object together.
-  const locks = updateIKLocks();
+  // Locked objects and arms move as one group (js/locks.js). Arms whose
+  // target is locked keep solving when they are not the active device.
+  const locks = updateLocks();
   for (const d of locks.moved) {
     if (d === dev) syncIKSliders(d);
   }
@@ -848,9 +848,15 @@ State.renderer.domElement.addEventListener('drop', async (e) => {
 });
 
 // Primitive buttons
-document.getElementById('addCubeBtn').addEventListener('click',     () => addPrimitive('cube'));
-document.getElementById('addSphereBtn').addEventListener('click',   () => addPrimitive('sphere'));
-document.getElementById('addCylinderBtn').addEventListener('click', () => addPrimitive('cylinder'));
+const primSegments = document.getElementById('primSegments');
+primSegments.addEventListener('input', () => {
+  document.getElementById('primSegmentsVal').textContent = primSegments.value;
+});
+const addPrim = type => () => addPrimitive(type, +primSegments.value);
+document.getElementById('addCubeBtn').addEventListener('click',      addPrim('cube'));
+document.getElementById('addSphereBtn').addEventListener('click',    addPrim('sphere'));
+document.getElementById('addIcosphereBtn').addEventListener('click', addPrim('icosphere'));
+document.getElementById('addCylinderBtn').addEventListener('click',  addPrim('cylinder'));
 
 // STL transform mode buttons
 document.getElementById('stlModeT').addEventListener('click',  () => setSTLTransformMode('translate'));
@@ -955,6 +961,15 @@ State.stlTransformControls.addEventListener('objectChange', () => {
 
 document.getElementById('stlParentSelect').addEventListener('change', (e) => {
   if (State.selectedSTL) setSTLParent(State.selectedSTL, e.target.value, false);
+});
+
+// Lock the selected object to another, so they move as one. The list is
+// rebuilt on open, so objects imported since selection are offered too.
+const stlLockSelect = document.getElementById('stlLockSelect');
+stlLockSelect.addEventListener('pointerdown', () => refreshObjectLockSelect(State.selectedSTL));
+stlLockSelect.addEventListener('change', (e) => {
+  if (!State.selectedSTL) return;
+  setObjectLock(State.selectedSTL, State.importedSTLs.find(o => o.stlId === e.target.value) || null);
 });
 
 // Collision button
@@ -1595,6 +1610,23 @@ async function restoreScene(data) {
   if (data.stls && data.stls.length > 0) {
     await restoreSTLsFromState(data.stls);
   }
+
+  // Arm locks, now that the objects exist. Each target goes on the arm's
+  // restored end-effector pose, which is where it gripped.
+  State.scene.updateMatrixWorld(true);
+  (data.devices || []).forEach((devState, i) => {
+    const dev = State.devices[i];
+    const entry = devState.ikLock && State.importedSTLs.find(e => e.stlId === devState.ikLock);
+    if (!dev || !entry || dev.type === 'hexapod' || dev.isBranching) return;
+    setIKMode(dev, true);
+    dev.ikTarget.position.copy(getEEWorldPosition(dev));
+    dev.ikTargetQuat.copy(getEEWorldQuaternion(dev));
+    dev.ikTargetEuler.setFromQuaternion(dev.ikTargetQuat, 'YZX');
+    dev.ikTarget.quaternion.copy(dev.ikTargetQuat);
+    dev.ikTarget.visible = dev.ikLine.visible = true;
+    setIKLock(dev, entry);
+    if (dev === State.activeDevice) refreshIKLockSelect(dev);
+  });
 
   rebuildDeviceList();
   rebuildPrimaryModelDropdown(State.devices[0]?.configFile || 'meca500_config.json');
