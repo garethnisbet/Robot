@@ -109,6 +109,10 @@
       <label>&gamma; (Rz) <span id="ikvc">0</span></label>
       <input type="range" id="ikc" min="-180" max="180" value="0" step="1">
     </div>
+    <div id="ik-lock" title="Keep the target's pose relative to an object, so moving the object drives the arm">
+      <label for="ikLockSelect">Lock to:</label>
+      <select id="ikLockSelect"><option value="">None</option></select>
+    </div>
     <div id="ee-info">
       EE: <span id="eePos">-</span><br>
       Target: <span id="tgtPos">-</span><br>
@@ -186,6 +190,13 @@
       <button id="stlResetPos" style="flex:1; width:auto; padding:4px 0; margin:0; font-size:11px;">Reset Position</button>
       <button id="stlResetRot" style="flex:1; width:auto; padding:4px 0; margin:0; font-size:11px;">Reset Rotation</button>
       <button id="stlResetScale" style="flex:1; width:auto; padding:4px 0; margin:0; font-size:11px;">Reset Scale</button>
+    </div>
+    <div id="stl-origin" style="display:flex; gap:4px; margin-top:5px; align-items:center;">
+      <span style="font-size:11px; color:#889; white-space:nowrap;">Origin:</span>
+      <button id="stlOriginEdit" title="Drag the axes to a new origin; the object stays where it is" style="flex:1; width:auto; padding:4px 0; margin:0; font-size:11px;">Move</button>
+      <button id="stlOriginCentre" title="Origin to the centre of the bounding box" style="flex:1; width:auto; padding:4px 0; margin:0; font-size:11px;">Centre</button>
+      <button id="stlOriginBase" title="Origin to the centre of the bounding box's lowest face" style="flex:1; width:auto; padding:4px 0; margin:0; font-size:11px;">Base</button>
+      <button id="stlOriginFile" title="Origin back to where the file put it" style="flex:1; width:auto; padding:4px 0; margin:0; font-size:11px;">File</button>
     </div>
     <div id="stl-numeric" style="margin-top:6px; font-size:11px; color:#889;">
       <div style="display:grid; grid-template-columns:18px 1fr 18px 1fr 18px 1fr; align-items:center; gap:2px 4px; margin-bottom:3px;">

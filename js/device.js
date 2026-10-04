@@ -14,6 +14,7 @@ import {
   pyEulerFromRelQuat,
 } from './kinematics.js';
 import { loadHexapod } from './hexapod.js';
+import { refreshIKLockSelect } from './ik-lock.js';
 import { assembleDevice, attachModel, HIDDEN_NODE_NAMES } from './model.js';
 export { buildAdjacencyPairs } from './model.js';
 
@@ -213,6 +214,7 @@ export function updateSliders(dev) {
 // ============================================================
 export function setIKMode(dev, on) {
   dev.ikMode = on;
+  dev.ikLock = null;
   if (dev !== State.activeDevice) return;
 
   const btn = document.getElementById('ikBtn');
@@ -245,6 +247,7 @@ export function setIKMode(dev, on) {
     dev.ikTarget.quaternion.copy(dev.ikTargetQuat);
     State.transformControls.attach(dev.ikTarget);
     syncIKSliders(dev);
+    refreshIKLockSelect(dev);
   } else {
     State.transformControls.detach();
   }

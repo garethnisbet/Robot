@@ -230,6 +230,9 @@ export function buildObjectInfo(entry, index) {
     worldPosition: [+(_objWorldPos.x * 1000).toFixed(4), +(_objWorldPos.z * 1000).toFixed(4), +(_objWorldPos.y * 1000).toFixed(4)],
     worldRotation: [+(we.x * rad2deg).toFixed(4), +(we.z * rad2deg).toFixed(4), +(we.y * rad2deg).toFixed(4)],
     worldBB,
+    // How far the origin has been moved from where the file put it, in
+    // local units. Exported vertices are relative to the moved origin.
+    origin: entry.origin ? entry.origin.toArray() : [0, 0, 0],
     // Local frame to world, unrounded: Three.js Y-up, metres, column-major.
     // The rounded pose and scale above are for people; this is for the
     // planner, which carries a mesh's vertices out by it.

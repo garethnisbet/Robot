@@ -189,6 +189,8 @@ export async function createEngine({ root = REPO_ROOT } = {}) {
                 importScale: wrapper.scale.clone() };
       State.importedSTLs.push(entry);
     }
+    // The viewer exported these points with its origin already applied.
+    if (stored.origin) entry.origin = new THREE.Vector3().fromArray(stored.origin);
     applySavedObjectState(entry, { ...rec, parentLink: remapParent(rec.parentLink, deviceIndexMap) });
     skipped = skipped.filter(s => s.id !== rec.id);
     return entry;
@@ -199,7 +201,7 @@ export async function createEngine({ root = REPO_ROOT } = {}) {
   function setObjectPoints({ id, offset, total, positions }) {
     let stored = pointStore.get(id);
     if (!stored || stored.total !== total) {
-      stored = { total, data: new Float32Array(total * 3), filled: 0 };
+      stored = { total, data: new Float32Array(total * 3), filled: 0, origin: cloudRecs.get(id)?.origin || null };
       pointStore.set(id, stored);
     }
     const bytes = Buffer.from(positions, 'base64');

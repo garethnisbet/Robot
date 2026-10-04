@@ -685,7 +685,7 @@ def payload_shapes(obj, local_vertices):
     U, sigma, Vt = np.linalg.svd(M[:3, :3])
     R, S = U @ Vt, Vt.T @ np.diag(sigma) @ Vt
     verts = np.asarray(local_vertices, dtype=np.float64).reshape(-1, 3)
-    key = (obj["id"], len(verts), tuple(np.round(S, 9).ravel()))
+    key = (obj["id"], len(verts), tuple(np.round(S, 9).ravel()), tuple(obj.get("origin") or ()))
     if key not in _PAYLOAD_FIT_CACHE:
         if len(_PAYLOAD_FIT_CACHE) >= 16:
             _PAYLOAD_FIT_CACHE.pop(next(iter(_PAYLOAD_FIT_CACHE)))

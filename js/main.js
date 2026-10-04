@@ -48,6 +48,7 @@ import {
   addPrimitive,
   selectSTL, deselectSTL, setSTLTransformMode, setSTLParent, syncSTLNumericInputs,
   applyPointCloudSettings, rememberSourceFileHandle,
+  setObjectOrigin, originPresetPoint, setOriginEditMode, isOriginEditing,
 } from './stl.js';
 import { initVisBoxUI, updateVisBoxUI, visBoxActive, setVisBoxMode } from './visbox.js';
 import { dbSave, dbLoad, BUFFERS_KEY } from './storage.js';
@@ -56,6 +57,7 @@ import {
   setCollisionHeadless, isCollisionHeadless, updateCollisionLoop,
 } from './collision.js';
 import { initVR, updateVR } from './vr.js';
+import { updateIKLocks, setIKLock, refreshIKLockSelect } from './ik-lock.js';
 import {
   wsConnect, initWsInfoPanel, registerSetActiveDevice, registerAvailableConfigs, registerSetOrtho,
   setApiEnabled, isApiEnabled,
@@ -101,7 +103,6 @@ const ikErrEl  = document.getElementById('ikErr');
 
 // Scratch state for the IK driver's end-effector movement test
 const _ikEEPos = new THREE.Vector3();
-const _ikPrevEE = new THREE.Vector3(NaN, NaN, NaN);
 let _ikLastErr = 0;
 
 function animate(time, frame) {
@@ -114,11 +115,24 @@ function animate(time, frame) {
   // (possibly moving) target. It is cheap once converged — solveIK
   // returns on the first iteration. A render is requested only while the
   // end-effector is actually moving, so a settled IK pose stays idle.
-  if (dev && dev.ikMode && dev.type !== 'hexapod') {
-    _ikLastErr = solveIK(dev, dev.ikTarget.position, dev.ikTargetQuat, 10, 0.00005);
-    _ikEEPos.copy(getEEWorldPosition(dev));
-    if (_ikEEPos.distanceToSquared(_ikPrevEE) > 1e-12) {
-      _ikPrevEE.copy(_ikEEPos);
+  // Arms whose target is locked to an object keep solving when they are
+  // not the active device, so several can move with one object together.
+  const locks = updateIKLocks();
+  for (const d of locks.moved) {
+    if (d === dev) syncIKSliders(d);
+  }
+  if (locks.objectsMoved) {
+    if (State.selectedSTL) syncSTLNumericInputs(State.selectedSTL);
+    State.requestRender();
+  }
+  for (const d of State.devices) {
+    if (!d.ikMode || d.type === 'hexapod' || (d !== dev && !d.ikLock)) continue;
+    const err = solveIK(d, d.ikTarget.position, d.ikTargetQuat, 10, 0.00005);
+    if (d === dev) _ikLastErr = err;
+    _ikEEPos.copy(getEEWorldPosition(d));
+    d._ikPrevEE ??= new THREE.Vector3(NaN, NaN, NaN);
+    if (_ikEEPos.distanceToSquared(d._ikPrevEE) > 1e-12) {
+      d._ikPrevEE.copy(_ikEEPos);
       State.requestRender();
     }
   }
@@ -274,6 +288,17 @@ document.getElementById('demoBtn').addEventListener('click', () => {
     dev.ikTarget.quaternion.copy(dev.ikTargetQuat);
     syncIKSliders(dev);
   }
+});
+
+// Lock the IK target to an object. The list is rebuilt on open, so
+// objects imported since the panel was drawn are offered too.
+const ikLockSelect = document.getElementById('ikLockSelect');
+ikLockSelect.addEventListener('pointerdown', () => refreshIKLockSelect(State.activeDevice));
+ikLockSelect.addEventListener('change', (e) => {
+  const dev = State.activeDevice;
+  if (!dev) return;
+  State.scene.updateMatrixWorld(true);
+  setIKLock(dev, State.importedSTLs.find(o => o.stlId === e.target.value) || null);
 });
 
 document.getElementById('ikBtn').addEventListener('click', () => {
@@ -843,6 +868,20 @@ document.getElementById('stlSpaceBtn').addEventListener('click', () => {
   btn.classList.toggle('active', !isLocal);
 });
 document.getElementById('stlDeselect').addEventListener('click', deselectSTL);
+
+// Object origin: drag a marker to it, or snap it to a preset point
+document.getElementById('stlOriginEdit').addEventListener('click', () => {
+  setOriginEditMode(!isOriginEditing());
+});
+for (const [id, preset] of [['stlOriginCentre', 'centre'], ['stlOriginBase', 'base'], ['stlOriginFile', 'file']]) {
+  document.getElementById(id).addEventListener('click', () => {
+    const entry = State.selectedSTL;
+    if (!entry) return;
+    setOriginEditMode(false);
+    setObjectOrigin(entry, originPresetPoint(entry, preset));
+    syncSTLNumericInputs(entry);
+  });
+}
 
 document.getElementById('lockAspectCb').addEventListener('change', (e) => {
   State.setLockAspect(e.target.checked);
