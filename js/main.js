@@ -858,6 +858,7 @@ document.getElementById('addCubeBtn').addEventListener('click',      addPrim('cu
 document.getElementById('addSphereBtn').addEventListener('click',    addPrim('sphere'));
 document.getElementById('addIcosphereBtn').addEventListener('click', addPrim('icosphere'));
 document.getElementById('addCylinderBtn').addEventListener('click',  addPrim('cylinder'));
+document.getElementById('addConeBtn').addEventListener('click',      addPrim('cone'));
 
 // STL transform mode buttons
 document.getElementById('stlModeT').addEventListener('click',  () => setSTLTransformMode('translate'));

@@ -1309,7 +1309,7 @@ export function handleCommand(data) {
         listObjects:      { params: '', description: 'List all imported objects' },
         getObject:        { params: 'index|name|object', description: 'Get info for one object' },
         setObject:        { params: 'index|name, position?, rotation?, scale?, visible?, parent?, lockTo?, color?, name?, space?', description: 'Modify an object (space: local|world); lockTo: another object (index|name|id) to move as one, null to unlock' },
-        addPrimitive:     { params: 'type, segments?', description: 'Add cube, sphere, icosphere, or cylinder; segments (default 24) sets the resolution of round shapes' },
+        addPrimitive:     { params: 'type, segments?', description: 'Add cube, sphere, icosphere, cylinder, or cone; segments (default 24) sets the resolution of round shapes' },
         removeObject:     { params: 'index|name|object', description: 'Remove an object' },
         duplicateObject:  { params: 'index|name|object', description: 'Duplicate an object' },
         resetObjectRotation: { params: 'index|name|object', description: 'Reset object rotation to identity' },
