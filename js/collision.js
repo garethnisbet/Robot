@@ -327,11 +327,22 @@ function buildCollisionContext() {
   allExtendedLinks.push(...groups);
 
   // A parented member of a lock group keeps its own place on its link, and
-  // skips what the group skips.
+  // a cloud in a group is checked on its own; both skip what the group
+  // skips. groupOf lets any two members of one group, however they are
+  // checked, skip each other.
   const skipFor = new Map();
-  for (const g of groups) for (const e of g.lockGroup) if (e.parentLink) skipFor.set(e.mesh, g.skipLinks);
+  const groupOf = new Map();
+  for (const g of groups) {
+    for (const e of g.lockGroup) {
+      for (const m of [e.mesh, e._collisionPoints]) if (m) groupOf.set(m, g);
+      if (e.parentLink || e.isPointCloud || e.isSplat) {
+        skipFor.set(e.mesh, g.skipLinks);
+        if (e._collisionPoints) skipFor.set(e._collisionPoints, g.skipLinks);
+      }
+    }
+  }
 
-  return { worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks, skipFor };
+  return { worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks, skipFor, groupOf };
 }
 
 const linkKey = link => `${link.deviceId}:${link.name}`;
@@ -397,9 +408,12 @@ function meshDisplayName(link, mesh) {
 function forEachCollisionPair(ctx, visit) {
   const { worldSTLs, parentedSTLs, visiblePointClouds, allExtendedLinks } = ctx;
   const skipFor = ctx.skipFor || new Map();
+  const groupOf = ctx.groupOf || new Map();
   const seen = new Set();
 
   function pair(kind, meshA, meshB, nameA, nameB) {
+    const g = groupOf.get(meshA);
+    if (g && g === groupOf.get(meshB)) return;     // locked together
     const key = meshA.uuid < meshB.uuid
       ? meshA.uuid + '|' + meshB.uuid
       : meshB.uuid + '|' + meshA.uuid;
@@ -432,8 +446,10 @@ function forEachCollisionPair(ctx, visit) {
 
   // 3) Point clouds vs all device links
   for (const pc of visiblePointClouds) {
+    const skip = skipFor.get(pc.mesh);
     for (const link of allExtendedLinks) {
       if (link.lockGroup?.has(pc.entry || pc)) continue;     // a cloud locked into the group
+      if (skip?.has(linkKey(link))) continue;                // or gripped with it
       for (const robotMesh of link.meshes) {
         pair('pointCloud', pc.mesh, robotMesh, meshDisplayName(link, robotMesh), pc.name);
       }
@@ -705,6 +721,11 @@ function contextFingerprint(ctx) {
   for (const pc of ctx.visiblePointClouds) h = _hashMesh(h, pc.mesh);
   for (const link of ctx.allExtendedLinks) {
     for (const m of link.meshes) h = _hashMesh(h, m);
+  }
+  // Locks change which pairs are checked without moving anything.
+  for (const [m, g] of ctx.groupOf || []) {
+    h = Math.imul(h ^ m.id, 16777619);
+    h = Math.imul(h ^ g.lockGroup.size ^ (g.skipLinks.size << 8), 16777619);
   }
   return h;
 }
