@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { createEngine } from '../../headless/engine.mjs';
-import { createPointsEntry, primitiveSTLBuffer } from '../../js/stl.js';
+import { createPointsEntry, primitiveSTLBuffer, setSTLParent } from '../../js/stl.js';
 import { setObjectLock, setIKLock } from '../../js/locks.js';
 import { getEEWorldPosition, getEEWorldQuaternion } from '../../js/kinematics.js';
 
@@ -106,4 +106,18 @@ test('the headless engine takes the locks from a viewer scene', async () => {
   await e.handle({ cmd: 'loadScene', scene });
   const hits = await pairs(e);
   assert.ok(hits.length > 0 && hits.every(h => h.includes('Ball')), hits.join(', '));
+});
+
+test('members of a group skip each other when one is parented to a link', async () => {
+  const e = await createEngine();
+  await e.handle({ cmd: 'addDevice', config: 'meca500_config.json' });
+  const dev = e.State.devices[0];
+  const pipe = await e.addPrimitive('cylinder');
+  const clamp = await e.addPrimitive('cube');
+  place(pipe, [1500, 0, 400]);
+  place(clamp, [1510, 0, 410]);         // overlapping the pipe, well clear of the arm
+  setSTLParent(pipe, `${dev.id}:${dev.robotLinkMeshes[1].name}`);
+  assert.deepEqual(await pairs(e), ['Cube↔Cylinder']);
+  setObjectLock(clamp, pipe);
+  assert.deepEqual(await pairs(e), []);
 });
