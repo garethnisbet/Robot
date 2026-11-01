@@ -1,0 +1,128 @@
+{
+  "_note": "Board frame: origin at sheet centre, X right, Y towards the top edge of the print, Z up. Lay the mat with its TOP edge towards the robot. board_in_robot is a hand measurement of the sheet centre in the Meca500 base frame (BRF, origin at the base bottom, X forward) - MEASURE IT; rz_deg = 90 makes board +Y point at the robot (robot -X) and board +X along robot +Y. Stage 2 replaces this with a fitted T_robot_board.",
+  "width_mm": 420.0,
+  "height_mm": 297.0,
+  "dict_name": "DICT_5X5_100",
+  "markers": [
+    {
+      "id": 0,
+      "x": -178.0,
+      "y": -116.5,
+      "size": 40.0,
+      "rot_deg": 0.0
+    },
+    {
+      "id": 1,
+      "x": -106.8,
+      "y": -116.5,
+      "size": 40.0,
+      "rot_deg": 0.0
+    },
+    {
+      "id": 2,
+      "x": -35.6,
+      "y": -116.5,
+      "size": 40.0,
+      "rot_deg": 0.0
+    },
+    {
+      "id": 3,
+      "x": 35.6,
+      "y": -116.5,
+      "size": 40.0,
+      "rot_deg": 0.0
+    },
+    {
+      "id": 4,
+      "x": 106.8,
+      "y": -116.5,
+      "size": 40.0,
+      "rot_deg": 0.0
+    },
+    {
+      "id": 5,
+      "x": 178.0,
+      "y": -116.5,
+      "size": 40.0,
+      "rot_deg": 0.0
+    },
+    {
+      "id": 6,
+      "x": 178.0,
+      "y": -38.833,
+      "size": 40.0,
+      "rot_deg": 0.0
+    },
+    {
+      "id": 7,
+      "x": 178.0,
+      "y": 38.833,
+      "size": 40.0,
+      "rot_deg": 0.0
+    },
+    {
+      "id": 8,
+      "x": 178.0,
+      "y": 116.5,
+      "size": 40.0,
+      "rot_deg": 0.0
+    },
+    {
+      "id": 9,
+      "x": 106.8,
+      "y": 116.5,
+      "size": 40.0,
+      "rot_deg": 0.0
+    },
+    {
+      "id": 10,
+      "x": 35.6,
+      "y": 116.5,
+      "size": 40.0,
+      "rot_deg": 0.0
+    },
+    {
+      "id": 11,
+      "x": -35.6,
+      "y": 116.5,
+      "size": 40.0,
+      "rot_deg": 0.0
+    },
+    {
+      "id": 12,
+      "x": -106.8,
+      "y": 116.5,
+      "size": 40.0,
+      "rot_deg": 0.0
+    },
+    {
+      "id": 13,
+      "x": -178.0,
+      "y": 116.5,
+      "size": 40.0,
+      "rot_deg": 0.0
+    },
+    {
+      "id": 14,
+      "x": -178.0,
+      "y": 38.833,
+      "size": 40.0,
+      "rot_deg": 0.0
+    },
+    {
+      "id": 15,
+      "x": -178.0,
+      "y": -38.833,
+      "size": 40.0,
+      "rot_deg": 0.0
+    }
+  ],
+  "board_in_robot": {
+    "xyz": [
+      230.0,
+      0.0,
+      0.0
+    ],
+    "rz_deg": 90.0
+  }
+}
