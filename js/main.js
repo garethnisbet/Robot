@@ -37,9 +37,9 @@ import {
   buildControlPanel, rebuildDeviceList,
   setActiveDevice, findDeviceForObject,
   setDeviceParent, rebuildDeviceParentDropdown,
-  rebuildPrimaryModelDropdown, rebuildAddDeviceDropdown,
+  rebuildPrimaryModelDropdown, rebuildAddDeviceDropdown, updateDeleteLocalDeviceBtn,
 } from './panel.js';
-import { importLocalDeviceFiles, looksLikeDeviceConfig } from './local-devices.js';
+import { importLocalDeviceFiles, looksLikeDeviceConfig, deleteLocalDevice, isLocalConfig } from './local-devices.js';
 import {
   buildScenePayload,
   buildSceneMetadataForDB, buildSceneBuffersForDB, sceneBufferSignature,
@@ -786,6 +786,18 @@ document.getElementById('importDeviceFile').addEventListener('change', (e) => {
   const files = [...e.target.files];
   e.target.value = '';
   if (files.length) importLocalDevices(files);
+});
+document.getElementById('addDeviceSelect').addEventListener('change', updateDeleteLocalDeviceBtn);
+document.getElementById('deleteLocalDeviceBtn').addEventListener('click', async () => {
+  const key = document.getElementById('addDeviceSelect').value;
+  if (!isLocalConfig(key) || State.devices.some(d => d.configFile === key)) return;
+  try {
+    await deleteLocalDevice(key);
+  } catch (err) {
+    console.error('Failed to delete device:', err);
+    showLoadError('Failed to delete device', err);
+  }
+  await rebuildAddDeviceDropdown();
 });
 rebuildAddDeviceDropdown();
 

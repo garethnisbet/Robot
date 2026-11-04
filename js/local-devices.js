@@ -11,7 +11,7 @@
 // The files are kept in IndexedDB as well as memory, so a device still loads
 // after a page reload (auto-save restore) without picking the files again.
 import * as THREE from 'three';
-import { dbSave, dbLoad, dbListKeys } from './storage.js';
+import { dbSave, dbLoad, dbListKeys, dbDelete } from './storage.js';
 
 export const LOCAL_PREFIX = 'local:';
 const DB_PREFIX = 'local_device:';
@@ -128,6 +128,18 @@ export async function listLocalConfigs() {
     for (const k of await dbListKeys(DB_PREFIX)) keys.add(k.slice(DB_PREFIX.length));
   } catch (e) { console.warn('[local-devices] list failed:', e); }
   return [...keys].sort();
+}
+
+// Forget a local device: its files leave memory and this browser's storage.
+// Devices already built from it keep their meshes; the caller decides
+// whether deleting one that is still in the scene is allowed.
+export async function deleteLocalDevice(configFile) {
+  if (!isLocalConfig(configFile)) throw new Error(`${configFile} is not an imported device`);
+  const entry = registry.get(configFile);
+  if (entry) for (const u of entry.urls.values()) URL.revokeObjectURL(u);
+  registry.delete(configFile);
+  try { await dbDelete(DB_PREFIX + configFile); }
+  catch (e) { console.warn(`[local-devices] ${configFile} not removed from storage (it will be back after a reload):`, e); }
 }
 
 export const localConfigLabel = (key) =>

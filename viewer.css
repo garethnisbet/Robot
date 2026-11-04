@@ -229,9 +229,11 @@
     flex: 1; background: #223; color: #aac; border: 1px solid #446;
     border-radius: 4px; font-size: 11px; padding: 3px 6px; outline: none;
   }
-  #addDeviceBtn, #importDeviceBtn {
+  #addDeviceBtn, #importDeviceBtn, #deleteLocalDeviceBtn {
     width: 32px; padding: 3px 0; margin: 0; font-size: 14px; font-weight: bold;
   }
+  #deleteLocalDeviceBtn:hover:not(:disabled) { color: #f66; }
+  #deleteLocalDeviceBtn:disabled { opacity: 0.4; cursor: not-allowed; }
   #device-parent { display: flex; align-items: center; gap: 5px; }
   #device-parent label { font-size: 11px; color: #889; white-space: nowrap; }
   #deviceParentSelect {

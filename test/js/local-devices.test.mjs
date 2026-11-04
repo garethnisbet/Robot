@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   importLocalDeviceFiles, readDeviceConfig, loadingManagerFor,
-  looksLikeDeviceConfig, isLocalConfig,
+  looksLikeDeviceConfig, isLocalConfig, deleteLocalDevice, listLocalConfigs,
 } from '../../js/local-devices.js';
 
 // GLTFLoader reaches browser image APIs through `self` (as headless/engine.mjs).
@@ -44,4 +44,13 @@ test('an imported device reads back and its model parses through the local loade
   const names = [];
   gltf.scene.traverse(c => c.name && names.push(c.name));
   for (const link of config.links) assert.ok(names.includes(link.name), `${link.name} in model`);
+});
+
+test('a deleted device leaves the list and no longer loads', async () => {
+  const { keys } = await importLocalDeviceFiles([file('motomini_config.json'), file('motomini_scene.glb')]);
+  assert.ok((await listLocalConfigs()).includes(keys[0]));
+  await deleteLocalDevice(keys[0]);
+  assert.ok(!(await listLocalConfigs()).includes(keys[0]));
+  await assert.rejects(readDeviceConfig(keys[0]), /import its files again/);
+  await assert.rejects(deleteLocalDevice('motomini_config.json'), /not an imported device/);
 });

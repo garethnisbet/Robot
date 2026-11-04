@@ -102,3 +102,13 @@ export async function dbListKeys(prefix = '') {
     req.onerror   = e => reject(e.target.error);
   });
 }
+
+export async function dbDelete(key) {
+  const db = await _openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).delete(key);
+    tx.oncomplete = resolve;
+    tx.onerror    = e => reject(e.target.error);
+  });
+}
