@@ -95,3 +95,39 @@ for (const name of ['i16', 'i19']) {
     }
   });
 }
+
+// A target dragged at constant speed, solved once a frame as the viewer does
+// (10 iterations). With damping fixed in metres the small arms trailed by
+// 9–20 mm and crept on after the drag stopped; it is now scaled to reach.
+// The tool orientation must hold tight throughout, including a rotation-only
+// drag, which a loose 0.57 deg convergence test used to leave stepping behind.
+const deg = Math.PI / 180;
+for (const name of ['meca500', 'motomini', 'gp180', 'gp225']) {
+  for (const [kind, moveFrac, rotDeg] of [['move', 0.25, 0], ['move+rotate', 0.15, 20], ['rotate', 0, 15]]) {
+    test(`${name}: IK keeps up with a dragged target (${kind})`, () => {
+      const scene = freshScene();
+      const dev = makeDevice(name);
+      const start = [0.3, 0.2, 0.4, 0.2, -0.6, 0.1];
+      let k = 0;
+      for (let i = 0; i < dev.numJoints; i++) if (!dev.jointFixed?.[i]) dev.jointAngles[i] = start[k++ % 6];
+      updateFK(dev); scene.updateMatrixWorld(true);
+      const p0 = getEEWorldPosition(dev), q0 = getEEWorldQuaternion(dev);
+      const dir = new THREE.Vector3(0.6, -0.3, 0.74).normalize().multiplyScalar(moveFrac * p0.length());
+      const axis = new THREE.Vector3(0.3, 1, 0.2).normalize();
+      const target = new THREE.Vector3(), tq = new THREE.Quaternion();
+      let maxLag = 0, maxOri = 0;
+      for (let f = 1; f <= 90; f++) {
+        target.copy(p0).addScaledVector(dir, f / 90);
+        tq.setFromAxisAngle(axis, rotDeg * deg * f / 90).multiply(q0);
+        solveIK(dev, target, tq, 10, 0.00005);
+        maxLag = Math.max(maxLag, getEEWorldPosition(dev).distanceTo(target) / p0.length());
+        maxOri = Math.max(maxOri, getEEWorldQuaternion(dev).angleTo(tq));
+      }
+      for (let f = 0; f < 5; f++) solveIK(dev, target, tq, 10, 0.00005);
+      assert.ok(maxLag < 0.005, `lag ${(maxLag * 100).toFixed(2)}% of reach`);
+      assert.ok(maxOri < 0.01 * deg, `orientation slipped ${(maxOri / deg).toFixed(4)} deg during the drag`);
+      assert.ok(getEEWorldPosition(dev).distanceTo(target) < 1e-4, 'settles within 5 frames');
+      assert.ok(getEEWorldQuaternion(dev).angleTo(tq) < 0.002 * deg, 'orientation exact once settled');
+    });
+  }
+}

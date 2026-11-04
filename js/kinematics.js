@@ -140,9 +140,48 @@ export function orientationError(qTarget, qCurrent) {
   return new THREE.Vector3(qErr.x/sinHalf * angle, qErr.y/sinHalf * angle, qErr.z/sinHalf * angle);
 }
 
+// Damped least squares, with damping and the orientation weight scaled to
+// the arm's size (ikReach), so a 0.35 m Meca500 and a 3 m GP180 respond
+// alike. Both were fixed in metres (0.5 and 0.3); on the small arms the
+// damping then swamped the step, so the arm trailed a dragged target by
+// centimetres and crept on for a second after the mouse stopped.
+//
+// Orientation is weighted to hold tight: at 1.0 (an arc at full reach
+// counts as much as the same distance at the tool) the tool angle stayed
+// exact through every dragged path tried on five arms, including ones that
+// pass near a wrist singularity, where the position trails instead and
+// catches up once the drag stops. At 0.3 the angle slipped 1-3 deg there.
+export const ikTuning = { damping: 0.1, oriWeight: 1.0 };
+
+// Length of the chain from the base to the end-effector, in world units:
+// the sum of the joint-to-joint offsets, which no pose changes. Cached per
+// device; clear dev._ikReach if the device is rescaled.
+export function ikReach(dev) {
+  if (dev._ikReach) return dev._ikReach;
+  const pos = (o) => { o.updateWorldMatrix(true, false); return new THREE.Vector3().setFromMatrixPosition(o.matrixWorld); };
+  let len = 0;
+  let prev = pos(dev.eeMarker);
+  const parentOf = (i) => {
+    const p = dev.config?.joints?.[i]?.parent;
+    return p !== undefined ? p : i - 1;
+  };
+  for (let i = dev.numJoints - 1; i >= 0; i = parentOf(i)) {
+    const p = pos(dev.jointRestGroups[i]);
+    len += p.distanceTo(prev);
+    prev = p;
+  }
+  dev._ikReach = len > 1e-4 ? len : 1;
+  return dev._ikReach;
+}
+
 export function solveIK(dev, targetPos, targetQuat, maxIter = 20, tolerance = 0.0005) {
-  const lambda = 0.5;
-  const oriWeight = 0.3;
+  const reach = ikReach(dev);
+  const lambda = ikTuning.damping * reach;
+  const oriWeight = ikTuning.oriWeight * reach;
+  // Orientation is converged when its error, as an arc at full reach, is
+  // within the position tolerance. A fixed 0.01 rad (0.57 deg) let a
+  // rotation-only drag stall until the error built up, then step.
+  const oriTolerance = tolerance / reach;
 
   const movable = [];
   for (let i = 0; i < dev.numJoints; i++) {
@@ -150,9 +189,11 @@ export function solveIK(dev, targetPos, targetQuat, maxIter = 20, tolerance = 0.
   }
   const nMov = movable.length;
 
+  // Only the arm's own chain moves while solving, and the world-pose getters
+  // below refresh the chain on demand; refreshing the whole scene each
+  // iteration cost milliseconds a frame in a busy scene.
   for (let iter = 0; iter < maxIter; iter++) {
     updateFK(dev);
-    State.scene.updateMatrixWorld(true);
 
     const eePos = getEEWorldPosition(dev);
     const eeQuat = getEEWorldQuaternion(dev);
@@ -161,7 +202,10 @@ export function solveIK(dev, targetPos, targetQuat, maxIter = 20, tolerance = 0.
     const oriErr = orientationError(targetQuat, eeQuat);
     const posNorm = posErr.length();
 
-    if (posNorm < tolerance && oriErr.length() < 0.01) return posNorm;
+    if (posNorm < tolerance && oriErr.length() < oriTolerance) {
+      dev.rootGroup.updateMatrixWorld(true);
+      return posNorm;
+    }
 
     const J = Array.from({length: 6}, () => Array(nMov).fill(0));
     for (let m = 0; m < nMov; m++) {
@@ -212,7 +256,7 @@ export function solveIK(dev, targetPos, targetQuat, maxIter = 20, tolerance = 0.
   }
 
   updateFK(dev);
-  State.scene.updateMatrixWorld(true);
+  dev.rootGroup.updateMatrixWorld(true);   // link meshes, for collision
   return getEEWorldPosition(dev).distanceTo(targetPos);
 }
 
