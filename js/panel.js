@@ -17,6 +17,7 @@ import { updateVirtualAngles } from './kinematics.js';
 import { updateHexapodPose, computeLegLengthsFromPose, solveHexapodFK, syncHexapodSliders, effectivePoseLimits } from './hexapod.js';
 import { resolveParentLink } from './stl.js';
 import { refreshIKLockSelect } from './locks.js';
+import { listLocalConfigs, localConfigLabel, isLocalConfig } from './local-devices.js';
 
 const deg2rad = Math.PI / 180;
 const rad2deg = 180 / Math.PI;
@@ -586,15 +587,47 @@ export function rebuildDeviceList() {
 // ============================================================
 // rebuildAddDeviceDropdown
 // ============================================================
-export function rebuildAddDeviceDropdown() {
-  const select = document.getElementById('addDeviceSelect');
-  select.innerHTML = '';
+// Served configs, then any devices imported from this browser's machine.
+// `select` keeps a chosen option selected once the list is rebuilt.
+export async function rebuildAddDeviceDropdown(select = null) {
+  const el = document.getElementById('addDeviceSelect');
+  const keep = select ?? el.value;
+  const locals = await listLocalConfigs();
+  el.innerHTML = '';
   for (const cf of configFiles) {
     const opt = document.createElement('option');
     opt.value = cf;
     opt.textContent = cf.replace('_config.json', '').replace(/_/g, ' ');
-    select.appendChild(opt);
+    el.appendChild(opt);
   }
+  if (locals.length) {
+    const group = document.createElement('optgroup');
+    group.label = 'Imported';
+    for (const key of locals) {
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = localConfigLabel(key);
+      group.appendChild(opt);
+    }
+    el.appendChild(group);
+  }
+  if (keep && [...el.options].some(o => o.value === keep)) el.value = keep;
+  updateDeleteLocalDeviceBtn();
+}
+
+// The delete button shows for an imported device, and is disabled while a
+// device built from it is in the scene (a reload or undo would need its files).
+export function updateDeleteLocalDeviceBtn() {
+  const el = document.getElementById('addDeviceSelect');
+  const btn = document.getElementById('deleteLocalDeviceBtn');
+  if (!el || !btn) return;
+  const key = el.value;
+  btn.style.display = isLocalConfig(key) ? '' : 'none';
+  const inUse = State.devices.filter(d => d.configFile === key).length;
+  btn.disabled = inUse > 0;
+  btn.title = inUse
+    ? `In use by ${inUse} device${inUse > 1 ? 's' : ''} in the scene; remove ${inUse > 1 ? 'them' : 'it'} first`
+    : "Delete this imported device from the list and this browser's storage";
 }
 
 // ============================================================

@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import * as State from './state.js';
 import {
-  updateFK, getEEWorldPosition, getEEWorldQuaternion, clampJoints, solveIK,
+  updateFK, getEEWorldPosition, getEEWorldQuaternion, clampJoints, solveIK, orientationError, ikReach,
   kappaToEuler, eulerToKappa, getCompensation, updateVirtualAngles,
   updateChain, pyEulerFromRelQuat, relQuatFromPyEuler,
 } from './kinematics.js';
@@ -315,7 +315,9 @@ function settleIK(dev, maxIter = 400, tolerance = 0.00005) {
   let err = null;
   for (let i = 0; i < maxIter / 10; i++) {
     err = solveIK(dev, dev.ikTarget.position, dev.ikTargetQuat, 10, tolerance);
-    if (err !== null && err < tolerance) break;
+    // Done only when the orientation has settled too (same test as solveIK).
+    if (err !== null && err < tolerance &&
+        orientationError(dev.ikTargetQuat, getEEWorldQuaternion(dev)).length() < tolerance / ikReach(dev)) break;
   }
   updateSliders(dev);
   return err;
