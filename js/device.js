@@ -16,6 +16,7 @@ import {
 import { loadHexapod } from './hexapod.js';
 import { refreshIKLockSelect, setIKLock } from './locks.js';
 import { assembleDevice, attachModel, HIDDEN_NODE_NAMES } from './model.js';
+import { readDeviceConfig, loadingManagerFor } from './local-devices.js';
 export { buildAdjacencyPairs } from './model.js';
 
 const deg2rad = Math.PI / 180;
@@ -25,8 +26,8 @@ const rad2deg = 180 / Math.PI;
 // loadDevice
 // ============================================================
 export async function loadDevice(configFile) {
-  const peek = await fetch(configFile + '?_=' + Date.now()).then(r => r.json());
-  if (peek.type === 'hexapod') return loadHexapod(configFile);
+  const peek = await readDeviceConfig(configFile);
+  if (peek.type === 'hexapod') return loadHexapod(configFile, peek);
 
   const config = peek;
   const id = State.incrementDeviceId();
@@ -128,7 +129,7 @@ export async function loadDevice(configFile) {
 
   // Load GLB model
   await new Promise((resolve, reject) => {
-    const loader = new GLTFLoader();
+    const loader = new GLTFLoader(loadingManagerFor(configFile));
     loader.load(config.model, (gltf) => {
       const model = gltf.scene;
       model.traverse((child) => {

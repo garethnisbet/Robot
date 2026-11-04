@@ -37,8 +37,9 @@ import {
   buildControlPanel, rebuildDeviceList,
   setActiveDevice, findDeviceForObject,
   setDeviceParent, rebuildDeviceParentDropdown,
-  rebuildPrimaryModelDropdown,
+  rebuildPrimaryModelDropdown, rebuildAddDeviceDropdown,
 } from './panel.js';
+import { importLocalDeviceFiles, looksLikeDeviceConfig } from './local-devices.js';
 import {
   buildScenePayload,
   buildSceneMetadataForDB, buildSceneBuffersForDB, sceneBufferSignature,
@@ -721,12 +722,8 @@ document.getElementById('primaryModelSelect').addEventListener('change', async (
   select.disabled = false;
 });
 
-// Add device button
-document.getElementById('addDeviceBtn').addEventListener('click', async () => {
-  const select = document.getElementById('addDeviceSelect');
-  const configFile = select.value;
-  if (!configFile) return;
-
+// Load a device by config key (served or local) and make it the active one.
+async function addDeviceToScene(configFile) {
   const btn = document.getElementById('addDeviceBtn');
   btn.disabled = true;
   btn.textContent = '...';
@@ -741,14 +738,56 @@ document.getElementById('addDeviceBtn').addEventListener('click', async () => {
     document.getElementById('loading').style.display = 'none';
   } catch (err) {
     console.error('Failed to load device:', err);
-    document.getElementById('loading').innerHTML =
-      `<span style="color:#f88">Failed to load device</span><br>` +
-      `<span style="color:#aaa; font-size:0.85em">${err?.message || err}</span>`;
-    setTimeout(() => { document.getElementById('loading').style.display = 'none'; }, 3000);
+    showLoadError('Failed to load device', err);
   }
   btn.disabled = false;
   btn.textContent = '+';
+}
+
+function showLoadError(title, err) {
+  document.getElementById('loading').style.display = 'block';
+  document.getElementById('loading').innerHTML =
+    `<span style="color:#f88">${title}</span><br>` +
+    `<span style="color:#aaa; font-size:0.85em">${err?.message || err}</span>`;
+  setTimeout(() => { document.getElementById('loading').style.display = 'none'; }, 4000);
+}
+
+// Add device button
+document.getElementById('addDeviceBtn').addEventListener('click', () => {
+  const configFile = document.getElementById('addDeviceSelect').value;
+  if (configFile) addDeviceToScene(configFile);
 });
+
+// Import device from this computer: a _config.json and the model it names.
+// Each imported device joins the add-device list and is added to the scene.
+async function importLocalDevices(files) {
+  let result;
+  try {
+    result = await importLocalDeviceFiles(files);
+  } catch (err) {
+    console.error('Failed to import device:', err);
+    showLoadError('Failed to import device', err);
+    return null;
+  }
+  if (!result.keys.length) {
+    showLoadError('Failed to import device', 'No device config (.json with "model" and "joints") among the files');
+    return result;
+  }
+  await rebuildAddDeviceDropdown(result.keys[result.keys.length - 1]);
+  for (const key of result.keys) await addDeviceToScene(key);
+  if (result.errors.length) showLoadError('Some devices were not imported', result.errors.join('<br>'));
+  return result;
+}
+
+document.getElementById('importDeviceBtn').addEventListener('click', () => {
+  document.getElementById('importDeviceFile').click();
+});
+document.getElementById('importDeviceFile').addEventListener('change', (e) => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  if (files.length) importLocalDevices(files);
+});
+rebuildAddDeviceDropdown();
 
 // Shared dispatch for the import button, file picker, and drag-and-drop
 function importModelFiles(files) {
@@ -827,8 +866,20 @@ State.renderer.domElement.addEventListener('drop', async (e) => {
     }
   });
 
-  const jsonFiles  = files.filter(f => f.name.split('.').pop().toLowerCase() === 'json');
-  const modelFiles = files.filter(f => f.name.split('.').pop().toLowerCase() !== 'json');
+  // Device configs (with the model files they name) import as devices;
+  // other JSON is a saved scene, and the remaining files are objects.
+  const isJson = f => f.name.split('.').pop().toLowerCase() === 'json';
+  let deviceUsed = new Set();
+  const deviceConfigs = [];
+  for (const f of files.filter(isJson)) {
+    try { if (looksLikeDeviceConfig(JSON.parse(await f.text()))) deviceConfigs.push(f); } catch { /* scene loader reports it */ }
+  }
+  if (deviceConfigs.length) {
+    const result = await importLocalDevices(files);
+    deviceUsed = result?.used ?? new Set(deviceConfigs);
+  }
+  const jsonFiles  = files.filter(f => isJson(f) && !deviceUsed.has(f));
+  const modelFiles = files.filter(f => !isJson(f) && !deviceUsed.has(f));
 
   for (const file of jsonFiles) {
     try {

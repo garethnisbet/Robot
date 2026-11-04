@@ -6,14 +6,15 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { MeshBVH } from 'three-mesh-bvh';
 import * as State from './state.js';
+import { readDeviceConfig, loadingManagerFor } from './local-devices.js';
 
 const deg2rad = Math.PI / 180;
 
 // ============================================================
 // loadHexapod
 // ============================================================
-export async function loadHexapod(configFile) {
-  const config = await fetch(configFile + '?_=' + Date.now()).then(r => r.json());
+export async function loadHexapod(configFile, preloaded = null) {
+  const config = preloaded || await readDeviceConfig(configFile);
   const id = State.incrementDeviceId();
 
   const rootGroup = new THREE.Group();
@@ -125,7 +126,7 @@ export async function loadHexapod(configFile) {
   };
 
   await new Promise((resolve, reject) => {
-    const loader = new GLTFLoader();
+    const loader = new GLTFLoader(loadingManagerFor(configFile));
     loader.load(config.model, (gltf) => {
       const model = gltf.scene;
       const allNodes = {};

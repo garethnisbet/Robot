@@ -91,3 +91,14 @@ export async function dbLoadVRAnchor() {
     req.onerror   = e => reject(e.target.error);
   });
 }
+
+// Every key in the store that starts with `prefix`.
+export async function dbListKeys(prefix = '') {
+  const db = await _openDB();
+  return new Promise((resolve, reject) => {
+    const tx  = db.transaction(STORE, 'readonly');
+    const req = tx.objectStore(STORE).getAllKeys();
+    req.onsuccess = e => resolve(e.target.result.filter(k => typeof k === 'string' && k.startsWith(prefix)));
+    req.onerror   = e => reject(e.target.error);
+  });
+}

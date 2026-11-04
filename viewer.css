@@ -229,7 +229,7 @@
     flex: 1; background: #223; color: #aac; border: 1px solid #446;
     border-radius: 4px; font-size: 11px; padding: 3px 6px; outline: none;
   }
-  #addDeviceBtn {
+  #addDeviceBtn, #importDeviceBtn {
     width: 32px; padding: 3px 0; margin: 0; font-size: 14px; font-weight: bold;
   }
   #device-parent { display: flex; align-items: center; gap: 5px; }
