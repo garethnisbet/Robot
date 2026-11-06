@@ -89,6 +89,24 @@ def test_side_grip_from_outside():
     assert np.hypot(b.x - 150, b.y + 105) < 15 and b.z < 1.0 and b.tilt < 5
 
 
+def test_drop_beside_the_heap():
+    """A brick dropped on an occupied spot goes on clear mat next to it, not on top."""
+    from legosort.geometry import rot_z
+    from legosort.pick import HOME, corners, pick_side, side_grasps
+    sim = PileSim([Brick(2, 4, "red"), Brick(2, 2, "red")], robot=True, q0=HOME)
+    sim.place(0, rot_z(20), (215, 0, 0))
+    sim.place(1, rot_z(0), (150, -105, 0))         # already on the spot
+    sim.settle()
+    g = next(g for g in side_grasps(sim.bricks(), sim.gripper, (185, 0)) if g.index == 0)
+    assert pick_side(sim, 0, g, (150, -105), travel_z=40.0, log=lambda *a: None)
+    sim.settle()
+    a, b = sim.bricks()
+    assert np.hypot(a.x - 150, a.y + 105) < 25 and a.z < 1.0 and a.tilt < 5
+    assert np.hypot(b.x - 150, b.y + 105) < 3                  # the heap is left alone
+    gap = np.min(np.linalg.norm(corners(a)[:, None, :2] - corners(b)[None, :, :2], axis=2))
+    assert gap > 1.0
+
+
 def test_push_one_wide_brick():
     """A 1x1 can't be gripped by the bare jaws: it is pushed, jaws first, and stays near the mat."""
     from legosort.geometry import rot_z
@@ -121,3 +139,29 @@ def test_stepped_fingers_grip_one_and_two_wide():
         sim.settle()
         b = sim.bricks()[0]
         assert np.hypot(b.x - 150, b.y + 105) < 15 and b.z < 1.0
+
+
+def _rebound(sim, height=80.0):
+    sim.place(0, np.eye(3), (200, 0, height))
+    zs = []
+    for _ in range(300):
+        sim.step(0.002)
+        zs.append(sim.pose(0)[1][2])
+    zs = np.array(zs)
+    k = np.argmax(np.diff(zs) > 0)              # first impact
+    return zs[k:].max() - zs[k]
+
+
+def test_bricks_bounce_but_a_pile_comes_to_rest():
+    assert _rebound(PileSim([Brick(2, 4, "red")], timestep=5e-4)) < 3.0          # default: dead contacts
+    assert _rebound(PileSim([Brick(2, 4, "red")], timestep=5e-4, restitution=0.5)) > 8.0
+    # bouncy contacts only while a brick moves fast: a resting pile neither jitters nor creeps
+    rng = np.random.default_rng(2)
+    sim = PileSim([Brick(*s, "red") for s in [(2, 4), (2, 2), (1, 3), (2, 3), (1, 2), (2, 6)] * 2],
+                  timestep=5e-4, sleep=True, restitution=0.5)
+    sim.pour(centre=(165, 0), spread=15, rng=rng)
+    sim.step(1.0)
+    p0 = np.array([sim.pose(i)[1] for i in sim.indices()])
+    sim.step(1.0)
+    p1 = np.array([sim.pose(i)[1] for i in sim.indices()])
+    assert np.abs(p1 - p0).max() < 0.05

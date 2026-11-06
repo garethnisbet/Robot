@@ -68,12 +68,23 @@ def _v(t, scale=MM):
 
 class PileSim:
     def __init__(self, bricks, friction=0.4, mat_friction=0.5, timestep=2.5e-4, hollow=True,
-                 walls=None, robot=False, gripper=None, q0=None):
+                 walls=None, robot=False, gripper=None, q0=None, sleep=False, restitution=None):
         """bricks: lego.Brick list (sizes and colours; poses are set by pour/place).
 
         friction: ABS on ABS (sliding); mat_friction: ABS on the paper mat.
         walls: optional (xmin, xmax, ymin, ymax) mm, invisible fences that keep the pile on the mat.
         robot: add the Meca500 with ``gripper`` (default megp25e.MEGP25E()), starting at joints q0.
+        sleep: let bricks at rest sleep (MuJoCo skips them until something touches or moves
+            them; the arm never sleeps). 3-5x faster with a resting pile; off by default so
+            results match earlier runs.
+        restitution: make bricks bounce, roughly this coefficient of restitution on the mat
+            and on each other (ABS on a table is about 0.4-0.5). None (default): the
+            original critically damped contacts, which hardly bounce. Only a brick moving
+            faster than BOUNCE_SPEED (falling, tumbling) gets the bouncy contacts, kept for
+            BOUNCE_HOLD after it slows so the rebound completes: lightly damped contacts
+            never come to rest in a pile (the bricks jitter, creep and never sleep). Robot
+            contacts stay critically damped, and only bricks touching the arm or gripper
+            body are speed-capped (otherwise the cap would clip every rebound).
         """
         self.proto = [Brick(b.nx, b.ny, b.colour, height=b.height) for b in bricks]
         self.hollow = hollow
@@ -83,6 +94,9 @@ class PileSim:
             from .robotmodel import RobotModel
             self._robot_model = RobotModel()
         self.model = mujoco.MjModel.from_xml_string(self._xml(friction, mat_friction, timestep, walls))
+        if sleep:
+            self.model.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP
+        self.restitution = restitution
         self.data = mujoco.MjData(self.model)
         m = self.model
         self._qadr = [m.jnt_qposadr[m.body_jntadr[m.body(f"b{i}").id]] for i in range(len(bricks))]
@@ -91,6 +105,8 @@ class PileSim:
         self._ang = self._lin + 3
         self._geoms = [np.where(m.geom_bodyid == m.body(f"b{i}").id)[0] for i in range(len(bricks))]
         self._brick_body = {m.body(f"b{i}").id: i for i in range(len(bricks))}
+        if restitution is not None:
+            self._set_bounce(restitution)
         self.active = np.zeros(len(bricks), bool)
         for i in range(len(bricks)):
             self._park(i)
@@ -102,8 +118,15 @@ class PileSim:
             self._arm_q = [m.jnt_qposadr[m.joint(f"j{k}").id] for k in range(6)]
             self._arm_v = [m.jnt_dofadr[m.joint(f"j{k}").id] for k in range(6)]
             self._fingers = [m.body("finger_a").id, m.body("finger_b").id]
+            # per geom: touches-the-fingers flag and brick index (-1: not a brick), for _cap
+            self._geom_finger = np.isin(m.geom_bodyid, self._fingers)
+            self._geom_brick = np.full(m.ngeom, -1)
+            for i, g in enumerate(self._geoms):
+                self._geom_brick[g] = i
+            self._geom_robot = (m.geom_bodyid != 0) & (self._geom_brick < 0) & ~self._geom_finger
             self._finger_q = [m.jnt_qposadr[m.joint(n).id] for n in ("fa", "fb")]
             self.q = np.zeros(6) if q0 is None else np.asarray(q0, float)
+            self._q_start = self.q.copy()
             self._qd = np.zeros(6)
             self.data.ctrl[:] = self.gripper.stroke / 2 * MM          # start open
             self.data.qpos[self._finger_q] = self.gripper.stroke / 2 * MM
@@ -256,6 +279,26 @@ class PileSim:
         self.model.body_contype[b] = ct
         self.model.body_conaffinity[b] = ca
 
+    def snapshot(self):
+        """The full state (arrays), to put back with ``restore`` into this sim or a fresh one
+        built from the same bricks and gripper."""
+        return {"qpos": self.data.qpos.copy(), "qvel": self.data.qvel.copy(), "ctrl": self.data.ctrl.copy(),
+                "active": self.active.copy(), "time": np.array([self.data.time, self.time]),
+                "q": np.array(getattr(self, "q", np.zeros(6)), float)}
+
+    def restore(self, s):
+        for i, a in enumerate(s["active"]):
+            if a and not self.active[i]:
+                self._activate(i)
+            elif not a and self.active[i]:
+                self._park(i)
+        self.data.qpos[:], self.data.qvel[:], self.data.ctrl[:] = s["qpos"], s["qvel"], s["ctrl"]
+        self.data.time, self.time = (float(t) for t in s["time"])
+        if self.gripper is not None:
+            self.q = np.asarray(s["q"], float).copy()
+            self._qd = np.zeros(6)
+        mujoco.mj_forward(self.model, self.data)
+
     def pose(self, i):
         """(R, origin mm) of brick i's frame (origin at its bottom centre)."""
         a = self._qadr[i]
@@ -291,6 +334,41 @@ class PileSim:
 
     # ------------------------------------------------------------ time
 
+    # Contact time constant x damping ratio fixes MuJoCo's contact stiffness; the default
+    # (2 ms, 1) is kept for the stiffness, so a bouncier contact gets a longer time constant
+    # (lowering the damping ratio alone makes the contact stiffer and the 0.5 ms step unstable).
+    # Measured: damping 0.25 / 8 ms gives e ~0.49 for a 2x4 dropped flat on the mat.
+    _CONTACT_STIFFNESS_TC = 0.002
+
+    BOUNCE_SPEED = 0.05       # m/s: a brick faster than this gets the bouncy contacts ...
+    BOUNCE_HOLD = 0.04        # s: ... and keeps them this long after it slows (an impact lasts ~15 ms)
+
+    def _set_bounce(self, e):
+        m = self.model
+        L = -np.log(np.clip(e, 0.01, 0.9))
+        zeta = L / np.sqrt(np.pi ** 2 + L ** 2)          # damped-oscillator restitution
+        self._bouncy_ref = (self._CONTACT_STIFFNESS_TC / zeta, zeta)
+        self._calm_ref = tuple(m.geom_solref[self._geoms[0][0]])
+        self._bouncy = np.zeros(len(self.proto), bool)
+        self._bouncy_until = np.zeros(len(self.proto))
+        # contacts mix the two geoms' solref weighted by solmix: robot contacts take the
+        # robot's (stiff, damped) one; a bouncing brick's wins against the mat or a resting brick
+        robot = (m.geom_bodyid != 0) & ~np.isin(np.arange(m.ngeom), np.concatenate(self._geoms))
+        m.geom_solmix[robot] = 1e3
+
+    def _bounce(self):
+        if self.restitution is None:
+            return
+        v = self.data.qvel[self._lin]
+        fast = np.einsum("ij,ij->i", v, v) > self.BOUNCE_SPEED ** 2
+        self._bouncy_until[fast] = self.time + self.BOUNCE_HOLD
+        want = self._bouncy_until > self.time
+        for i in np.where(want != self._bouncy)[0]:
+            g = self._geoms[i]
+            self.model.geom_solref[g] = self._bouncy_ref if want[i] else self._calm_ref
+            self.model.geom_solmix[g] = 10.0 if want[i] else 1.0
+        self._bouncy = want
+
     def _write_arm(self):
         if self.gripper is None:
             return
@@ -307,15 +385,22 @@ class PileSim:
 
     def _cap(self):
         q = self.data.qvel
-        free = np.ones(len(self._lin), bool)
+        robot_only = self.restitution is not None
+        free = np.full(len(self._lin), not robot_only)
         if self.gripper is not None and self.data.ncon:
             c = self.data.contact[:self.data.ncon]
-            b1 = self.model.geom_bodyid[c.geom1]
-            b2 = self.model.geom_bodyid[c.geom2]
-            f = np.isin(b1, self._fingers) | np.isin(b2, self._fingers)
-            for b in np.r_[b1[f], b2[f]]:
-                if b in self._brick_body:
-                    free[self._brick_body[b]] = False
+            g1, g2 = c.geom1, c.geom2
+            if robot_only:          # cap only bricks the arm or gripper body is pushing
+                r = self._geom_robot[g1] | self._geom_robot[g2]
+                if r.any():
+                    k = np.r_[self._geom_brick[g1[r]], self._geom_brick[g2[r]]]
+                    free[k[k >= 0]] = True
+            f = self._geom_finger[g1] | self._geom_finger[g2]
+            if f.any():
+                k = np.r_[self._geom_brick[g1[f]], self._geom_brick[g2[f]]]
+                free[k[k >= 0]] = False
+        if not free.any():
+            return
         for idx, cap in ((self._lin[:, :2], self.max_brick_speed), (self._ang, self.max_brick_spin)):
             v = q[idx]
             n = np.linalg.norm(v, axis=1)
@@ -336,15 +421,17 @@ class PileSim:
         """Advance time with the arm held where it is."""
         n = max(1, int(round(seconds / self.model.opt.timestep)))
         dt = self.model.opt.timestep
-        if self.gripper is None and self.on_frame is None:
+        if self.gripper is None and self.on_frame is None and self.restitution is None:
             mujoco.mj_step(self.model, self.data, nstep=n)
             self.time += n * dt
             return
-        self._qd[:] = 0
+        if self.gripper is not None:
+            self._qd[:] = 0
         for _ in range(n):
             self._write_arm()
             mujoco.mj_step(self.model, self.data)
             self._cap()
+            self._bounce()
             self.time += dt
             self._tick()
 
@@ -481,6 +568,7 @@ class PileSim:
             self._write_arm()
             mujoco.mj_step(self.model, self.data)
             self._cap()
+            self._bounce()
             self.time += dt
             self._tick()
         self.q = qs[-1].copy()
@@ -523,11 +611,15 @@ class PileSim:
         T = self.gripper.T_tool_grip
         R_tool = np.asarray(R_grip, float) @ T[:3, :3].T
         flange = np.asarray(p_tcp, float) - R_tool @ T[:3, 3]
-        k.storeCurrentPosition(np.asarray(self.q if seed is None else seed, float))
-        q = k.i_kinematics(np.array([flange, R_tool[:, 0], R_tool[:, 1], R_tool[:, 2]]))
-        if np.any(np.isnan(q)):
-            raise ValueError(f"no IK solution for TCP at {np.round(p_tcp, 1)}")
-        return np.asarray(q, float)
+        target = np.array([flange, R_tool[:, 0], R_tool[:, 1], R_tool[:, 2]])
+        # The solver starts from a seed and can fail from one that is far from the answer
+        # (a plan made from one arm pose, then run from another): retry from the start pose.
+        for s in (self.q if seed is None else seed, self._q_start):
+            k.storeCurrentPosition(np.asarray(s, float))
+            q = k.i_kinematics(target)
+            if not np.any(np.isnan(q)):
+                return np.asarray(q, float)
+        raise ValueError(f"no IK solution for TCP at {np.round(p_tcp, 1)}")
 
     def grip(self, opening_mm, max_seconds=1.0):
         """Command the finger opening (mm, 0 = closed) and wait until the fingers stop."""

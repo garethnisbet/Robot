@@ -58,6 +58,10 @@ class Viewer:
         self.ws = connect(url, max_size=None, open_timeout=timeout)
         self.timeout = timeout
         self._req = 0
+        # unique per client: replies go to every controller on the session, so two clients
+        # numbering their requests alike could take each other's replies
+        self._rid = f"ls{np.random.default_rng().integers(1 << 32):08x}_"
+        self.on_message = None        # callback(dict) for messages nobody asked for (e.g. bridgeCommand)
 
     def close(self):
         self.ws.close()
@@ -71,15 +75,24 @@ class Viewer:
         otherwise be taken as the reply to a later getState."""
         while True:
             try:
-                self.ws.recv(timeout=0)
+                m = self.ws.recv(timeout=0)
             except TimeoutError:
                 return
+            self._unasked(m)
 
-    def request(self, msg, want, timeout=None):
-        """Send ``msg`` and return the first reply of type ``want`` (raises on 'error')."""
+    def _unasked(self, m):
+        if self.on_message is not None:
+            d = json.loads(m) if isinstance(m, (str, bytes)) else m
+            if d.get("type") != "state":
+                self.on_message(d)
+
+    def request(self, msg, want, timeout=None, strict=False):
+        """Send ``msg`` and return the first reply of type ``want`` (raises on 'error').
+        strict: only the reply to this request (not a broadcast of the same type, which
+        may be older)."""
         self._drain()
         self._req += 1
-        msg = dict(msg, _reqId=f"ls{self._req}")
+        msg = dict(msg, _reqId=f"{self._rid}{self._req}")
         self.send(msg)
         end = time.monotonic() + (timeout or self.timeout)
         while True:
@@ -88,7 +101,10 @@ class Viewer:
                 raise TimeoutError(f"no '{want}' reply to {msg.get('cmd')}")
             d = json.loads(self.ws.recv(timeout=left))
             rid = d.get("_reqId")
-            if rid not in (None, msg["_reqId"]):
+            if rid not in (None, msg["_reqId"]) or (strict and rid is None and d.get("type") == want):
+                continue
+            if d.get("type") == "bridgeCommand":
+                self._unasked(d)
                 continue
             if d.get("type") == "error" and rid == msg["_reqId"]:
                 raise RuntimeError(f"viewer error for {msg.get('cmd')}: {d.get('error')}")
@@ -407,8 +423,10 @@ class PhysicsView:
     costs one small message per brick that moved.
     """
 
-    def __init__(self, viewer: Viewer, sim, on_frame=None):
-        self.v, self.sim, self.extra = viewer, sim, on_frame
+    def __init__(self, viewer: Viewer, sim, on_frame=None, drive_arm=True):
+        """drive_arm=False: leave the viewer's robot joints alone (they are the operator's
+        command, and the physics arm follows them; see apps/sim_teleop.py)."""
+        self.v, self.sim, self.extra, self.drive_arm = viewer, sim, on_frame, drive_arm
         self._last = {}
         viewer.remove_objects(SIM_PREFIX + "brick_")
         viewer.remove_objects(SIM_PREFIX + "grip_")
@@ -444,7 +462,8 @@ class PhysicsView:
     def update(self, sim=None, force=False):
         sim = self.sim
         if sim.gripper is not None:
-            self.v.send({"cmd": "setJoints", "angles": [float(a) for a in sim.q]})
+            if self.drive_arm:
+                self.v.send({"cmd": "setJoints", "angles": [float(a) for a in sim.q]})
             for body, name in self.parts:
                 R, p = sim.body_pose(body)
                 self._move(name, R, p, force)

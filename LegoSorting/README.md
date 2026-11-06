@@ -249,8 +249,9 @@ checks for interference with the gripper open and closed, and rewrites everythin
 
 In the simulation: `MEGP25E(fingers=True)`, or `apps/sim_pick.py --fingers`.
 
-To change the CAD, re-run `tools/megp25e_export.py` in FreeCAD (see its docstring);
-it writes `models/megp25e/megp25e_parts.npz`. Mesh decimation needs `fast_simplification`.
+To change the CAD, re-run `tools/megp25e_export.py` in FreeCAD (see its docstring): it
+meshes the open `MEGP_fingers2` document (or the vendor STEP) and writes
+`models/megp25e/megp25e_parts.npz`, about 57k triangles, which the viewer draws as is.
 `PhysicsView` plays the simulation in the viewer: joints, gripper and
 bricks moved every frame.
 
@@ -264,6 +265,38 @@ Reach: with the tool pointing down, the Meca500 reaches only about 260 mm from i
 axis at the mat (245 mm at 80 mm up). The mat is centred at 230 mm, so its far half
 is out of reach. The pile defaults to (165, 0), with drop spots inside the reach.
 Grasp choice uses the simulator's true poses for now, not the camera.
+
+**Driving the arm yourself** (`apps/sim_teleop.py`): closes the loop, so you move the
+robot in the viewer and it interacts with the bricks. The app attaches to the viewer
+as a robot bridge (like `meca500_bridge.py --sim`), but the robot is the physics arm:
+
+```bash
+python3 apps/sim_teleop.py --url ws://127.0.0.1:8099/ws             # 12 bricks
+python3 apps/sim_teleop.py --url ws://127.0.0.1:8099/ws --n 20 --fingers
+```
+
+- The viewer's joints (sliders, IK gizmo, VR, macros) are the command. The physics
+  arm follows them at the Meca500's joint speeds, times the bridge panel's speed scale
+  (default 100 %), and pushes whatever it meets. It updates 60 times a second.
+- The gripper panel (Open, Close, opening slider) and the VR trigger work the physics
+  jaws. "holding part" shows when a brick touches both jaws. Gripping force is fixed
+  in the sim (`MEGP25E.force`), so the force slider does nothing.
+- Bricks and gripper are drawn where the physics has them. The viewer's arm shows the
+  command, so after a big jump (Home, a typed angle) the gripper trails the drawn arm
+  until the physics catches up.
+- Disable and E-stop freeze the arm; Enable or Resume carry on. Reset pours a new pile.
+- The arm is kinematic, so it never stalls: it can drive through the mat or a heap.
+- Dropped bricks bounce (`--bounce`, the coefficient of restitution, default 0.5;
+  `--bounce 0` for the old dead contacts). In `PileSim(restitution=e)` only a brick
+  moving faster than 50 mm/s gets bouncy contacts, for 40 ms after it slows. Bouncy
+  contacts all the time never let a pile come to rest: the bricks jitter at 1-2 mm/s,
+  slide off the heap and never sleep.
+- It refuses to start if another bridge (possibly the real arm) is attached to the viewer.
+- Bricks at rest sleep (`PileSim(sleep=True)`): MuJoCo skips them until the arm or
+  another brick touches them. A 60 Hz frame then costs about 3 ms of physics with
+  20 bricks (37 ms without). The physics step is 0.5 ms (0.25 ms in `sim_pick`, which
+  leaves sleep off so its results match earlier runs). It warns if it falls below 90 %
+  of real time.
 
 ## Tests
 

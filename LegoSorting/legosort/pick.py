@@ -192,7 +192,7 @@ def path_clear(gripper, R, waypoints, points, margin=1.0):
 
 
 def side_grasps(bricks, gripper, pile_centre, margin=0.6, max_tilt=12.0, body_clear=1.0,
-                travel_z=None, back=20.0, min_contact=4.0, path_margin=1.0):
+                travel_z=None, back=20.0, min_contact=4.0, path_margin=1.0, nudge=None, only=None):
     """Side grips, outermost first: the jaws point horizontally, inward from outside the pile.
 
     For a side-mounted gripper this keeps the wrist above the gripper (flange axis vertical,
@@ -208,6 +208,10 @@ def side_grasps(bricks, gripper, pile_centre, margin=0.6, max_tilt=12.0, body_cl
     real gripper shape plus the wrist): down from ``travel_z`` to ``back`` mm outside the
     brick, in to the grip, and back up to ``travel_z``. The jaws (``jaw_up``/``jaw_down``
     about the TCP) must overlap the brick by at least ``min_contact`` mm of height.
+
+    ``nudge`` {i: neighbours} (for a clump of touching bricks): brick i's grip may push those
+    neighbours aside as the jaws slide in and lift, but the gripper must still come down on
+    clear mat. ``only``: just these brick indices.
     Returns Grasps with R = the grip frame.
     """
     from .lego import STUD_H
@@ -218,7 +222,13 @@ def side_grasps(bricks, gripper, pile_centre, margin=0.6, max_tilt=12.0, body_cl
     boxes = [corners(b, studs=False) for b in bricks]
     out = []
     for i, b in enumerate(bricks):
+        if only is not None and i not in only:
+            continue
         T = b.T
+        others = np.vstack([clouds[j] for j in range(len(bricks)) if j != i] or [np.zeros((0, 3))])
+        pushed = set(nudge.get(i, ())) if nudge else set()
+        rest = (np.vstack([clouds[j] for j in range(len(bricks)) if j != i and j not in pushed]
+                          or [np.zeros((0, 3))]) if pushed else others)
         # across the width, the length, or the height (over the studs: they touch the jaw)
         sides = ((0, b.length), (1, b.width), (2, b.height + STUD_H))
         for (axis, size), (gap, d_lo, d_hi) in itertools.product(sides, gripper.steps):
@@ -249,11 +259,12 @@ def side_grasps(bricks, gripper, pile_centre, margin=0.6, max_tilt=12.0, body_cl
                 if min(zhi, z + gripper.jaw_up) - max(zlo, z - gripper.jaw_down) < min_contact:
                     continue                             # too little jaw on the brick
                 tcp[2] = z
-                others = np.vstack([clouds[j] for j in range(len(bricks)) if j != i] or [np.zeros((0, 3))])
                 hi_z = max(travel_z if travel_z is not None else 0.0, z + 15.0)
                 out_p = tcp - d * back
                 path = [np.r_[out_p[:2], hi_z], out_p, tcp, np.r_[tcp[:2], hi_z]]
-                if not path_clear(gripper, R, path, others, path_margin):
+                if not path_clear(gripper, R, path[:2], others, path_margin):
+                    continue                             # coming down: clear of everything
+                if not path_clear(gripper, R, path[1:], rest, path_margin):
                     continue
                 g = Grasp(i, tcp, R, size, boxes[i][:, 2].max(), z - boxes[i][:, 2].min())
                 g.step = gap
@@ -265,10 +276,11 @@ def side_grasps(bricks, gripper, pile_centre, margin=0.6, max_tilt=12.0, body_cl
 
 
 def pick_side(sim, idx, grasp, drop_xy, travel_z, back=20.0, release=2.0, log=print,
-              fast=150.0, lin=150.0, slow=50.0):
+              fast=150.0, lin=150.0, slow=50.0, free=True):
     """Side grip: come down outside the pile, slide in along the approach direction, close,
-    lift to travel height and set the brick down at drop_xy (``release`` mm above whatever
-    is there). Ends over the drop spot at travel height. Returns True if it was held."""
+    lift to travel height and set the brick down at drop_xy. With ``free`` it goes on clear
+    mat near drop_xy (``free_drop``), else on top of whatever is there (``release`` mm above
+    it). Ends over the drop at travel height. Returns True if it was held."""
     g = sim.gripper
     d = grasp.approach
     out = grasp.centre - d * back
@@ -284,30 +296,95 @@ def pick_side(sim, idx, grasp, drop_xy, travel_z, back=20.0, release=2.0, log=pr
     ok = idx in sim.held()
     log(f"  {'holding' if ok else 'missed'} {sim.proto[idx].colour} {sim.proto[idx].nx}x{sim.proto[idx].ny} "
         f"(opening {sim.opening():.2f} mm)")
-    floor = 0.0
-    for j, b in zip(sim.indices(), sim.bricks()):
-        c = corners(b, studs=True)
-        if j != idx and (np.hypot(*(c[:, :2] - drop_xy).T) < 25).any():
-            floor = max(floor, c[:, 2].max())
-    drop_z = max(floor + grasp.below + release, grasp.centre[2])
-    hi = max(travel_z, drop_z + 15)
-    R = drop_orientation(sim, grasp.R, [drop_xy[0], drop_xy[1], drop_z], min_clear=0.5)
-    if ok:                       # put the brick's centre on the spot, not the jaw tips
-        Rg, p = sim.tcp_pose()
-        rel = Rg.T @ (corners(sim.bricks()[list(sim.indices()).index(idx)]).mean(axis=0) - p)
-        shifted = np.asarray(drop_xy, float) - (R @ rel)[:2]
-        try:
-            q = sim.ik([shifted[0], shifted[1], drop_z], R)
-            if sim.clearance(q) >= 0.5:
-                drop_xy = shifted
-        except ValueError:
-            pass
+    spot = free_drop(sim, idx, grasp.R, drop_xy, travel_z, release) if ok and free else None
+    if spot is not None:         # clear mat beside whatever is already on the spot
+        drop_xy, drop_z, R = spot
+        hi = max(travel_z, drop_z + 15)
+    else:
+        floor = 0.0
+        for j, b in zip(sim.indices(), sim.bricks()):
+            c = corners(b, studs=True)
+            if j != idx and (np.hypot(*(c[:, :2] - drop_xy).T) < 25).any():
+                floor = max(floor, c[:, 2].max())
+        drop_z = max(floor + grasp.below + release, grasp.centre[2])
+        hi = max(travel_z, drop_z + 15)
+        R = drop_orientation(sim, grasp.R, [drop_xy[0], drop_xy[1], drop_z], min_clear=0.5)
+        if ok:                       # put the brick's centre on the spot, not the jaw tips
+            Rg, p = sim.tcp_pose()
+            rel = Rg.T @ (corners(sim.bricks()[list(sim.indices()).index(idx)]).mean(axis=0) - p)
+            shifted = np.asarray(drop_xy, float) - (R @ rel)[:2]
+            try:
+                q = sim.ik([shifted[0], shifted[1], drop_z], R)
+                if sim.clearance(q) >= 0.5:
+                    drop_xy = shifted
+            except ValueError:
+                pass
     sim.move_joints(sim.ik([drop_xy[0], drop_xy[1], hi], R), speed=fast)
     sim.move_linear([drop_xy[0], drop_xy[1], drop_z], speed=lin)
     sim.grip(g.stroke)
     sim.step(0.1)
     sim.move_linear([drop_xy[0], drop_xy[1], hi], speed=lin)
     return ok
+
+
+def free_drop(sim, idx, R, spot_xy, travel_z, release=2.0, rings=(0.0, 9.0, 15.0, 21.0, 26.0), n_dir=12,
+              yaws=(0, 90, -90, 180, 45, -45, 135, -135), passes=((3.0, 21.0), (1.5, 21.0), (3.0, 26.0))):
+    """Where to set the held brick idx down on clear mat near spot_xy, so it is not dropped
+    onto a heap it could slide off (out of the arm's reach, past the spot arc).
+
+    Tries brick-centre positions on ``rings`` (mm) round the spot, nearest first and the
+    robot's side of the spot before the far side; for each, grip orientations turned about
+    the vertical by ``yaws``. Kept if the held brick ends ``clear`` mm from every other
+    brick, the gripper comes straight down from travel height without touching one, and IK
+    works; ``passes`` are the (clear, furthest ring) tried in turn. Returns (tcp_xy, tcp_z, R)
+    or None.
+    """
+    Rg, p = sim.tcp_pose()
+    i_list = list(sim.indices())
+    held = sample_points(sim.bricks()[i_list.index(idx)])
+    rel = (held - p) @ Rg                                  # grip frame
+    rel_c = rel.mean(axis=0)
+    others = [sample_points(b) for j, b in zip(i_list, sim.bricks()) if j != idx]
+    others = np.vstack(others) if others else np.zeros((0, 3))
+    spot = np.asarray(spot_xy, float)
+    out_dir = spot / max(np.linalg.norm(spot), 1e-9)
+    cands = [spot]
+    for r in rings[1:]:
+        for a in np.linspace(0, 2 * np.pi, n_dir, endpoint=False):
+            cands.append(spot + r * np.array([np.cos(a), np.sin(a)]))
+    cands.sort(key=lambda c: np.linalg.norm(c - spot) + 0.7 * max(0.0, (c - spot) @ out_dir))
+    for clear, ring in passes:
+        for c in cands:
+            if np.linalg.norm(c - spot) > ring + 1e-6:
+                continue
+            r = _drop_at(sim, c, R, rel, rel_c, others, travel_z, release, yaws, clear)
+            if r is not None:
+                return r
+    return None
+
+
+def _drop_at(sim, c, R, rel, rel_c, others, travel_z, release, yaws, clear):
+    """free_drop at one brick-centre position c: (tcp_xy, tcp_z, R) or None."""
+    from .geometry import rot_z
+    near = others[np.hypot(*(others[:, :2] - c).T) < 60] if len(others) else others
+    for yaw in yaws:
+        Ry = rot_z(yaw) @ R
+        w = rel @ Ry.T                                 # held brick about the TCP, robot axes
+        z = release - w[:, 2].min()                    # brick bottom ``release`` above the mat
+        tcp = np.r_[c - (Ry @ rel_c)[:2], z]
+        brick = w + tcp
+        hi = np.r_[tcp[:2], max(travel_z, z + 15)]
+        if len(near) and (_inside_hull(near, np.vstack([brick, brick + hi - tcp]), clear)
+                          or not path_clear(sim.gripper, Ry, [hi, tcp], near, clear)):
+            continue
+        try:
+            q = sim.ik(tcp, Ry)
+            sim.ik(hi, Ry, q)
+        except ValueError:
+            continue
+        if sim.clearance(q) >= 0.5:
+            return tcp[:2], tcp[2], Ry
+    return None
 
 
 def pile_top(sim, centre, radius=90.0):
@@ -388,7 +465,7 @@ def push_frame(direction):
 def plan_push(sim, bricks, i, goal_xy, travel_z, legs=(120.0, 60.0, 30.0),
               turns=(0, 20, -20, 40, -40, 60, -60, 80, -80), body_clear=1.0, gap=4.0, keep_off=8.0,
               path_margin=1.0, max_low=4.0, contact=False, spots=(), spot_clear=50.0,
-              band=(125.0, 225.0), sector=105.0, ignore=(), best=False, why=None):
+              band=(125.0, 225.0), sector=105.0, ignore=(), best=False, outward_cost=0.0, why=None):
     """One straight push of brick i towards goal_xy, jaws first, steering round other bricks.
 
     The brick must sit low (lowest corner within ``max_low`` mm of the mat) so the gripper,
@@ -406,7 +483,9 @@ def plan_push(sim, bricks, i, goal_xy, travel_z, legs=(120.0, 60.0, 30.0),
     onto a sorted heap.
 
     best=True: try every direction (``turns``) and return the push that leaves the brick
-    furthest from all others, as (plan, gap_mm), or None; for spreading a pile.
+    furthest from all others, as (plan, gap_mm), or None; for spreading a pile. Each mm the
+    brick ends further from the robot costs ``outward_cost`` mm of that gap (outward pushes
+    are the easy ones to reach, so without it a pile drifts out of reach as it is spread).
     Returns (R, start_tcp, end_tcp, hi_z) or None.
     """
     why = {} if why is None else why            # reason -> count, for diagnosis
@@ -492,9 +571,10 @@ def plan_push(sim, bricks, i, goal_xy, travel_z, legs=(120.0, 60.0, 30.0),
                 return R, start, end, hi_z
             room = min((np.min(np.linalg.norm(o[:, None, :] - moved[None, :, :2], axis=2)) for o in others_xy),
                        default=1e9)
-            if found is None or room > found[1]:
-                found = ((R, start, end, hi_z), room)
-    return found
+            score = room - outward_cost * max(0.0, r_end - r_now)
+            if found is None or score > found[2]:
+                found = ((R, start, end, hi_z), room, score)
+    return found[:2] if found else None
 
 
 def push(sim, plan, fast=150.0, lin=150.0, slow=40.0):

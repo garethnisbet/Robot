@@ -32,7 +32,7 @@ sys.path.insert(0, str(HERE))
 from legosort.boards import BaseMat  # noqa: E402
 from legosort.camera import DATA  # noqa: E402
 from legosort.physics import PileSim  # noqa: E402
-from legosort.pick import HOME, pick_side, pile_top, plan_push, push, side_grasps  # noqa: E402
+from legosort.pick import HOME, corners, pick_side, pile_top, plan_push, push, side_grasps  # noqa: E402
 from legosort.sim import PhysicsView, SimCamera, Viewer, build_scene, to_api  # noqa: E402
 from sim_pile import random_bricks, summary  # noqa: E402
 
@@ -50,11 +50,13 @@ def _arc(r, a):
 # nearest the pile first: the first colours (in pour order) get the shortest trips
 BINS = [_arc(SPOT_R, a) for a in (-40, 40, -55, 55, -70, 70, -85, 85, -100, 100)]
 SPREAD = 40.0            # mm: a push that has to shove others moves a brick this far out from the pile
-SPREAD_BAND = (115.0, SPOT_R - 15.0)     # mm from the robot axis: where spreading may leave a brick
+SPREAD_BAND = (115.0, 205.0)     # mm from the robot axis: where spreading may leave a brick
+SPREAD_OUT_COST = 0.5    # mm of clearance a spreading push gives up per mm it moves a brick outward
 SPOT_BAND = (125.0, SPOT_R + 15.0)       # ... and where a push towards a spot may
 MAX_SPREADS = 6          # spreading pushes per brick between bricks getting sorted (else they ping-pong)
-PUSH_SHORT = 15.0        # mm: a pushed brick is aimed this far short of its spot, not into the heap
+PUSH_SHORT = 20.0        # mm: a pushed brick is aimed at clear mat this far from its spot, not into the heap
 SORTED = 30.0            # mm: a brick this close to its colour's spot is done
+TOUCH = 4.0              # mm: bricks this close count as a clump (a grip may nudge the other)
 
 
 def main():
@@ -152,10 +154,32 @@ def run(args):
         return [k for k, b in enumerate(bricks)
                 if np.hypot(*(b.T[:2, 3] - spot[b.colour])) > SORTED], idx, bricks
 
+    stats = {"held": 0, "missed": 0}
+
+    def grip(step, g, names, idx_map, tz, note):
+        t0 = sim.time
+        i = int(idx_map[g.index])
+        dest = spot[sim.proto[i].colour]
+        how = "" if len(sim.gripper.steps) == 1 else (" (narrow step)" if g.step < 14 else " (wide step)")
+        print(f"{step + 1}: grip {names[g.index]}{how}{note}, {g.radius:.0f} mm from the pile centre "
+              f"-> ({dest[0]:.0f}, {dest[1]:.0f}); travelling at {tz:.0f} mm")
+        try:
+            ok = pick_side(sim, i, g, dest, tz)
+        except ValueError as e:
+            print(f"  gave up: {e}")
+            ok = False
+        stats["held" if ok else "missed"] += 1
+        if ok:
+            now = sim.bricks()[list(sim.indices()).index(i)]
+            print(f"  landed {np.hypot(*(now.T[:2, 3] - dest)):.0f} mm from its spot")
+        else:
+            fails[i] = fails.get(i, 0) + 1
+        print(f"  {sim.time - t0:.1f} s")
+
     t_start = sim.time
     fails = {}                     # sim index -> grips that missed or pushes that did nothing
     spreads = {}                   # sim index -> spreading pushes
-    held = missed = pushes = 0
+    pushes = 0
     left = None
     for step in range(args.steps):
         todo, idx_map, bricks = unsorted()
@@ -170,27 +194,10 @@ def run(args):
                  for k in todo}
         g = next((g for g in side_grasps(bricks, sim.gripper, args.centre, travel_z=tz)
                   if g.index in todo and fails.get(int(idx_map[g.index]), 0) < 3 and feasible(g, tz)), None)
-        t0 = sim.time
         if g is not None:
-            i = int(idx_map[g.index])
-            dest = spot[sim.proto[i].colour]
-            how = "" if len(sim.gripper.steps) == 1 else (" (narrow step)" if g.step < 14 else " (wide step)")
-            print(f"{step + 1}: grip {names[g.index]}{how}, {g.radius:.0f} mm from the pile centre "
-                  f"-> ({dest[0]:.0f}, {dest[1]:.0f}); travelling at {tz:.0f} mm")
-            try:
-                ok = pick_side(sim, i, g, dest, tz)
-            except ValueError as e:
-                print(f"  gave up: {e}")
-                ok = False
-            held += ok
-            missed += not ok
-            if ok:
-                now = sim.bricks()[list(sim.indices()).index(i)]
-                print(f"  landed {np.hypot(*(now.T[:2, 3] - dest)):.0f} mm from its spot")
-            if not ok:
-                fails[i] = fails.get(i, 0) + 1
-            print(f"  {sim.time - t0:.1f} s")
+            grip(step, g, names, idx_map, tz, "")
             continue
+        t0 = sim.time
         # nothing to grip: push the outermost low brick that can move towards its spot
         # A clean push (touching nothing else) towards the brick's spot if any brick has one;
         # otherwise spread the pile: push a brick outward from the middle of what is left,
@@ -203,12 +210,31 @@ def run(args):
                 continue
             c = bricks[k].T[:2, 3]
             sp = spot[bricks[k].colour]
-            goal = sp + (c - sp) / max(np.linalg.norm(c - sp), 1e-6) * PUSH_SHORT
-            heap = [j for j, o in enumerate(bricks) if o.colour == bricks[k].colour and j not in todo]
-            plan = plan_push(sim, bricks, k, goal, tz, band=SPOT_BAND, ignore=heap)
+            # aim at clear mat PUSH_SHORT from the spot, on the side the brick comes from (or
+            # round it): never into the heap, which would shove sorted bricks out of reach
+            a0 = np.arctan2(*(c - sp)[::-1])
+            for off in (0, 30, -30, 60, -60):
+                a = a0 + np.radians(off)
+                goal = sp + PUSH_SHORT * np.array([np.cos(a), np.sin(a)])
+                plan = plan_push(sim, bricks, k, goal, tz, band=SPOT_BAND)
+                if plan is not None:
+                    break
             if plan is not None:
                 kind = " towards its spot"
                 break
+        if plan is None:
+            # a clump of touching bricks: grip one, nudging its neighbours as the jaws slide in
+            box = {k: corners(bricks[k])[:, :2] for k in range(len(bricks))}
+            nudge = {k: [j for j in range(len(bricks)) if j != k and
+                         np.min(np.linalg.norm(box[j][:, None] - box[k][None], axis=2)) < TOUCH]
+                     for k in todo}
+            nudge = {k: v for k, v in nudge.items() if v}
+            g = next((g for g in side_grasps(bricks, sim.gripper, args.centre, travel_z=tz, nudge=nudge,
+                                             only=set(nudge))
+                      if fails.get(int(idx_map[g.index]), 0) < 3 and feasible(g, tz)), None)
+            if g is not None:
+                grip(step, g, names, idx_map, tz, ", nudging its neighbour")
+                continue
         if plan is None:
             # spread the pile: of all the low bricks and 12 directions, the push (shoving
             # neighbours if need be, never towards a spot) that leaves a brick most room
@@ -221,7 +247,8 @@ def run(args):
                 out = c - mid
                 goal = c + out / max(np.linalg.norm(out), 1e-6) * SPREAD
                 r = plan_push(sim, bricks, k, goal, tz, contact=True, spots=list(spot.values()),
-                              band=SPREAD_BAND, turns=range(0, 360, 30), best=True)
+                              band=SPREAD_BAND, turns=range(0, 360, 30), best=True,
+                              outward_cost=SPREAD_OUT_COST)
                 if r is not None and (best is None or r[1] > best[2]):
                     best = (k, r[0], r[1])
             if best is not None:
@@ -247,7 +274,7 @@ def run(args):
             fails[i] = fails.get(i, 0) + 1
         print(f"  moved {moved:.0f} mm, {sim.time - t0:.1f} s")
     todo, _, bricks = unsorted()
-    print(f"{len(bricks) - len(todo)} of {len(bricks)} bricks sorted: {held} grips held, {missed} missed, "
+    print(f"{len(bricks) - len(todo)} of {len(bricks)} bricks sorted: {stats['held']} grips held, {stats['missed']} missed, "
           f"{pushes} pushes, {sim.time - t_start:.0f} s of robot time")
     if writer:
         writer.release()

@@ -1,7 +1,7 @@
 """The Mecademic MEGP 25E gripper, from the vendor STEP files, and how it is mounted.
 
-Meshes come from models/megp25e/megp25e_parts.npz (made by tools/megp25e_export.py
-from /FastDrive/MEGP_25E_electric_gripper). Everything here is in the TOOL frame, mm:
+Meshes come from models/megp25e/megp25e_parts.npz (meshed in FreeCAD by
+tools/megp25e_export.py from the vendor STEP model, drawn without decimation). Everything here is in the TOOL frame, mm:
 the GNKinematics flange frame, origin on the flange face, z out of the flange.
 
 The GRIP frame (``T_tool_grip``) is what grasps are planned in: origin midway between
@@ -77,13 +77,6 @@ def _fingers():
 def _raw():
     d = np.load(PARTS)
     return {k[:-2]: (d[k].astype(float), d[k[:-2] + "_f"]) for k in d.files if k.endswith("_v")}
-
-
-def _simplify(v, f, faces):
-    m = trimesh.Trimesh(v, f, process=True)
-    if faces and len(m.faces) > faces:
-        m = m.simplify_quadric_decimation(face_count=faces)      # needs fast_simplification
-    return np.asarray(m.vertices), np.asarray(m.faces)
 
 
 @dataclass
@@ -177,7 +170,7 @@ class MEGP25E:
     def _mount_part(self):
         """(vertices, faces) of the adapter plate or the printed spacer, tool frame."""
         if self.mount == "axial":
-            v, f = _simplify(*_raw()[ADAPTER], 1500)
+            v, f = _raw()[ADAPTER]
             return self._adapter_to_tool(v), f
         m = trimesh.creation.cylinder(radius=self.spacer_d / 2, height=self.spacer, sections=32)
         return np.asarray(m.vertices) + [0, 0, self.spacer / 2], np.asarray(m.faces)
@@ -188,11 +181,12 @@ class MEGP25E:
         """[(vertices, faces, rgb)] for everything that does not move."""
         if "static" not in self._cache:
             raw, out = _raw(), []
-            groups = [([BODY], "body", 6000), ([CAP], "cap", 1500), ([KEYPAD], "keypad", 800),
-                      (SCREWS, "screw", 300), (CONNECTOR, "connector", 1500)]
-            for names, col, faces in groups:
+            # drawn as meshed in FreeCAD (tools/megp25e_export.py): decimating distorts them
+            groups = [([BODY], "body"), ([CAP], "cap"), ([KEYPAD], "keypad"),
+                      (SCREWS, "screw"), (CONNECTOR, "connector")]
+            for names, col in groups:
                 for n in names:
-                    v, f = _simplify(*raw[n], faces)
+                    v, f = raw[n]
                     out.append((self.to_tool(v), f, COLOURS[col]))
             v, f = self._mount_part()
             out.append((v, f, COLOURS["adapter" if self.mount == "axial" else "spacer"]))
@@ -207,7 +201,7 @@ class MEGP25E:
             raw, out = _raw(), []
             shift = (self.axis if side == "a" else -self.axis) * self.stroke / 2
             for n in (JAW_A if side == "a" else JAW_B):
-                v, f = _simplify(*raw[n], 800)
+                v, f = raw[n]
                 out.append((self.to_tool(v) - shift, f, COLOURS["jaw"]))
             if self.fingers:
                 v, f = _fingers()[1][side]
