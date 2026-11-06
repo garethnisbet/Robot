@@ -97,7 +97,7 @@ def run(args):
             http = args.url.replace("ws://", "http://").rsplit("/ws", 1)[0]
             session = json.loads(urllib.request.urlopen(http + "/sessions").read())[0]["id"]
         v = Viewer(args.url, session)
-        build_scene(v, BaseMat.load())
+        build_scene(v, BaseMat.load(), table=False)
         v.set_joints(HOME)
         cx, cy = args.centre
         v.request({"cmd": "setCamera", "position": to_api([cx + 330, cy - 330, 330]), "target": to_api([cx - 40, cy, 40])},

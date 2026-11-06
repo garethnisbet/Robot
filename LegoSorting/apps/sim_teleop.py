@@ -212,7 +212,7 @@ def main():
         raise SystemExit(f"another robot bridge is attached to this viewer ({other}); "
                          "stop it first, or it would follow the same joints")
     b = PhysicsBridge(v, args)
-    build_scene(v, BaseMat.load())
+    build_scene(v, BaseMat.load(), table=False)
     v.set_joints(HOME)
     cx, cy = args.centre
     v.request({"cmd": "setCamera", "position": to_api([cx + 330, cy - 330, 330]),

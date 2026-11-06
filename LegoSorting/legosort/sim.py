@@ -371,11 +371,13 @@ class SimRobot:
 SIM_PREFIX = "ls_"
 
 
-def build_scene(viewer: Viewer, mat: BaseMat):
-    """(Re)create the table and the mat in the viewer."""
+def build_scene(viewer: Viewer, mat: BaseMat, table=True):
+    """(Re)create the mat, and the table under it, in the viewer. The camera sims keep the
+    table: it is the background the vision code was tuned against."""
     viewer.remove_objects(SIM_PREFIX)
     matte = {"opacity": 1.0, "roughness": 0.9, "metalness": 0.0}
-    viewer.add_glb(SIM_PREFIX + "table", table_glb(), matte)
+    if table:
+        viewer.add_glb(SIM_PREFIX + "table", table_glb(), matte)
     viewer.add_glb(SIM_PREFIX + "mat", mat_glb(mat), matte)
 
 
