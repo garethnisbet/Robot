@@ -259,7 +259,7 @@ try:
     import klik3_freecad as k3
     limits = [list(l) for l in k3.LIMITS]
 except Exception:
-    limits = [[-175, 175], [-115, 105], [-153, 75], [-170, 170], [-130, 130], [-3600, 3600]]
+    limits = [[-175, 175], [-115, 105], [-153, 75], [-170, 170], [-132, 132], [-3600, 3600]]
 limits[5] = [max(limits[5][0], -360), min(limits[5][1], 360)]   # usable slider range
 
 joints = []
