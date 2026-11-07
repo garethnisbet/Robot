@@ -13,6 +13,7 @@ import {
   eulerToKappa, getCompensation, updateVirtualAngles,
   pyEulerFromRelQuat,
   pyEulerNear,
+  ikReach,
 } from './kinematics.js';
 import { loadHexapod } from './hexapod.js';
 import { refreshIKLockSelect, setIKLock } from './locks.js';
@@ -273,6 +274,30 @@ export function restoreIKLock(dev, entry) {
 }
 
 // ============================================================
+// setIKPositionRanges
+// ============================================================
+// The X/Y/Z sliders span the device base ± 1.1 × the arm's reach, so a
+// Meca500 and a GP180 both get a usable range. A target outside that range
+// (typed in, gizmo-dragged or carried by a lock) widens it rather than
+// being clamped. Values are in the slider convention (mm, Z up).
+const _basePos = new THREE.Vector3();
+export function setIKPositionRanges(dev, valuesMm = []) {
+  dev.rootGroup.updateWorldMatrix(true, false);
+  _basePos.setFromMatrixPosition(dev.rootGroup.matrixWorld);
+  const centre = [_basePos.x, _basePos.z, _basePos.y].map((v) => v * 1000);
+  const half = Math.ceil(ikReach(dev) * 1100 / 10) * 10;
+  ['ikx', 'iky', 'ikz'].forEach((id, i) => {
+    const el = document.getElementById(id);
+    let lo = Math.floor((centre[i] - half) / 10) * 10;
+    let hi = Math.ceil((centre[i] + half) / 10) * 10;
+    const v = valuesMm[i];
+    if (Number.isFinite(v)) { lo = Math.min(lo, Math.floor(v)); hi = Math.max(hi, Math.ceil(v)); }
+    if (el.min !== String(lo)) el.min = lo;
+    if (el.max !== String(hi)) el.max = hi;
+  });
+}
+
+// ============================================================
 // syncIKSliders
 // ============================================================
 export function syncIKSliders(dev) {
@@ -281,6 +306,7 @@ export function syncIKSliders(dev) {
   const xmm = Math.round(p.x * 1000);
   const ymm = Math.round(p.z * 1000);
   const zmm = Math.round(p.y * 1000);
+  setIKPositionRanges(dev, [xmm, ymm, zmm]);
   document.getElementById('ikx').value = xmm;
   document.getElementById('ikvx').textContent = xmm;
   document.getElementById('iky').value = ymm;
