@@ -11,7 +11,7 @@ import {
   eulerToKappa, getCompensation, clampJoints, effectiveLimitsDeg,
 } from './kinematics.js';
 import {
-  updateSliders, setIKMode, syncIKSliders,
+  updateSliders, setIKMode, syncIKSliders, setIKPositionRanges,
 } from './device.js';
 import { updateVirtualAngles } from './kinematics.js';
 import { updateHexapodPose, computeLegLengthsFromPose, solveHexapodFK, syncHexapodSliders, effectivePoseLimits } from './hexapod.js';
@@ -427,15 +427,19 @@ export function buildControlPanel(dev) {
   rebuildParentDropdown();
   rebuildDeviceParentDropdown();
 
-  // IK editing: the value text is the only visible control for the X/Y/Z
-  // position fields (their number inputs are hidden) — click a value to edit.
+  // IK editing: click a value to type it in.
   ['ikx','iky','ikz','ika','ikb','ikc'].forEach(id => {
     const span = document.getElementById(id.replace('ik', 'ikv'));
     if (span) span.classList.add('editable-val');
     makeSpanEditable(id.replace('ik', 'ikv'), (val) => {
       const s = document.getElementById(id);
-      // Clamp only to bounds that exist (the X/Y/Z position fields are
-      // unbounded number inputs; the orientation fields keep their ranges).
+      // Typed X/Y/Z positions are unbounded: widen the slider to fit the
+      // value instead of clamping it. The orientation fields clamp.
+      if (['ikx','iky','ikz'].includes(id) && State.activeDevice) {
+        const vals = [undefined, undefined, undefined];
+        vals['xyz'.indexOf(id.charAt(2))] = val;
+        setIKPositionRanges(State.activeDevice, vals);
+      }
       const lo = s.min === '' ? -Infinity : parseFloat(s.min);
       const hi = s.max === '' ?  Infinity : parseFloat(s.max);
       s.value = Math.max(lo, Math.min(hi, val));

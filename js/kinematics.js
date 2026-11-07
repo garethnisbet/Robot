@@ -396,3 +396,58 @@ export function relQuatFromPyEuler(alphaDeg, betaDeg, gammaDeg) {
   const rThree = _pyToJsBasis(rDeltaPy);
   return _quatFromMat(rThree);
 }
+
+// ============================================================
+// pyEulerNear — continuous Euler readback for the UI sliders
+// ============================================================
+// pyEulerFromRelQuat always returns the canonical branch (|beta| <= 90°),
+// so a slider driven past beta = 90° would be read back as the equivalent
+// (alpha+180, 180-beta, gamma+180) and the sliders would jump. For the UI
+// we instead return the angle set closest to the previously shown one:
+//   - if the orientation is unchanged, the previous angles are kept as-is
+//     (this also keeps the user's alpha/gamma split at gimbal lock);
+//   - otherwise both branches are tried and the nearer one wins;
+//   - at gimbal lock only alpha+gamma (or alpha-gamma) is defined, so
+//     alpha is held and gamma takes up the rotation.
+// The em matrix here is Rx(alpha)·Ry(beta)·Rz(gamma), the same one
+// relQuatFromPyEuler builds.
+// ============================================================
+
+function _wrapDeg(d) {
+  d = ((d + 180) % 360 + 360) % 360 - 180;
+  return d === -180 ? 180 : d;
+}
+
+function _angDist(a, b) {
+  let s = 0;
+  for (let i = 0; i < 3; i++) { const d = _wrapDeg(a[i] - b[i]); s += d * d; }
+  return s;
+}
+
+export function pyEulerNear(relQuat, prev) {
+  if (!prev) return pyEulerFromRelQuat(relQuat);
+  const qPrev = relQuatFromPyEuler(prev[0], prev[1], prev[2]);
+  if (Math.abs(qPrev.dot(relQuat)) > 1 - 1e-10) return prev.slice();
+
+  const em = _matMul(_jsToPyBasis(_matFromQuat(relQuat)), [[0, 0, 1], [0, 1, 0], [-1, 0, 0]]);
+  const sb = Math.max(-1, Math.min(1, em[0][2]));
+  if (Math.abs(sb) > 1 - 1e-7) {
+    // Gimbal lock: beta = ±90°. Hold alpha, solve gamma from
+    // Rz(gamma) = Ry(-beta)·Rx(-alpha)·em.
+    const b = sb > 0 ? 90 : -90;
+    const a = prev[0];
+    const ar = a * deg2rad, br = b * deg2rad;
+    const ca = Math.cos(ar), sa = Math.sin(ar), cb = Math.cos(br), sbb = Math.sin(br);
+    const RxInv = [[1, 0, 0], [0, ca, sa], [0, -sa, ca]];
+    const RyInv = [[cb, 0, -sbb], [0, 1, 0], [sbb, 0, cb]];
+    const m = _matMul(_matMul(RyInv, RxInv), em);
+    const g = Math.atan2(m[1][0], m[0][0]) * rad2deg;
+    return [_wrapDeg(a), b, _wrapDeg(g)];
+  }
+  const a = Math.atan2(-em[1][2], em[2][2]) * rad2deg;
+  const b = Math.asin(sb) * rad2deg;
+  const g = Math.atan2(-em[0][1], em[0][0]) * rad2deg;
+  const c1 = [_wrapDeg(a), _wrapDeg(b), _wrapDeg(g)];
+  const c2 = [_wrapDeg(a + 180), _wrapDeg(180 - b), _wrapDeg(g + 180)];
+  return _angDist(c1, prev) <= _angDist(c2, prev) ? c1 : c2;
+}
