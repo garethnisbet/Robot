@@ -12,6 +12,7 @@ import {
   clampJoints,
   eulerToKappa, getCompensation, updateVirtualAngles,
   pyEulerFromRelQuat,
+  pyEulerNear,
 } from './kinematics.js';
 import { loadHexapod } from './hexapod.js';
 import { refreshIKLockSelect, setIKLock } from './locks.js';
@@ -288,7 +289,10 @@ export function syncIKSliders(dev) {
   document.getElementById('ikvz').textContent = zmm;
 
   const relQuat = dev.ikTargetQuat.clone().multiply(dev.homeQuaternionInv);
-  const [a, b, g] = pyEulerFromRelQuat(relQuat);
+  // Nearest to what the sliders last showed, so beta can pass ±90°
+  // without alpha/gamma flipping by 180°.
+  const [a, b, g] = pyEulerNear(relQuat, dev.ikEulerUI);
+  dev.ikEulerUI = [a, b, g];
   const ad = Math.round(a);
   const bd = Math.round(b);
   const cd = Math.round(g);

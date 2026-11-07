@@ -542,6 +542,7 @@ deviceOpacityInput.addEventListener('input', (e) => {
     const aDeg = parseFloat(document.getElementById('ika').value);
     const bDeg = parseFloat(document.getElementById('ikb').value);
     const cDeg = parseFloat(document.getElementById('ikc').value);
+    State.activeDevice.ikEulerUI = [aDeg, bDeg, cDeg];
     const relQuat = relQuatFromPyEuler(aDeg, bDeg, cDeg);
     State.activeDevice.ikTargetQuat.copy(relQuat).multiply(State.activeDevice.homeQuaternion);
     State.activeDevice.ikTargetEuler.setFromQuaternion(State.activeDevice.ikTargetQuat, 'YZX');
