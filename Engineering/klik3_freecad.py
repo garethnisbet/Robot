@@ -90,6 +90,11 @@ PLATE_OUTLINE_CH = 1.0 # chamfer on the fork plates' outer-face outline, applied
 # r10 fillet matching the crotch-back fillets. OCC makeChamfer gives an invalid solid there, so
 # it is a profile cut along Y (prism_chamfer_y). ((x, z), size, "fillet"|"chamfer"); [] = sharp
 FORK_CORNER_CH = [((-6.03619, 51.6131), 10.0, "fillet")]
+# 2026-11-14 (user, after FEA rev D put the upper-arm peak there): 1 mm chamfer on the sharp
+# concave crotch corners, where each fork plate's inner face (y = +-PLATE_IN) meets the crotch
+# floor and the front crotch chamfer face. makeChamfer fails, so it is a lofted filler wedge
+# (concave_corner_fill). 0 = sharp
+CROTCH_CORNER_CH = 0     # was 1.0 (2026-11-14); user: "looks untidy", undone
 ARM_OUTER_R = 0        # fork-plate outer-edge round (y = +-PLATE_OUT) + lower-end ring; 0 = sharp (user 2026-11-13, was 1)
 CROTCH_FRONT_CH = 10   # chamfer (legs mm) on the front crotch edge (arm front face / crotch floor, across the spine); user 2026-11-13; 0 = sharp
 CROTCH_EDGE_R = ()     # was (10, 8, 6, 5, 4, 3, 2); () = sharp (user 2026-11-12: remove the inner fillets). front/back crotch edges across the spine (where its faces meet the crotch floor): largest that works
@@ -1916,6 +1921,47 @@ def prism_chamfer_y(shape, x, z, c, side, label, kind="chamfer"):
     return out
 
 
+def concave_corner_fill(shape, side, c, label, box=(-10, 40, 45, 110)):
+    """Chamfer (legs c) the concave edges where the fork plate's inner face (y = side*PLATE_IN)
+    meets the crotch floor, inside the XZ box (xmin, xmax, zmin, zmax), by fusing a filler wedge
+    lofted along each edge (makeChamfer refuses these). Checks the added volume."""
+    walls = [f for f in shape.Faces if f.Surface.__class__.__name__ == "Plane"
+             and abs(f.BoundBox.YMin - side * PLATE_IN) < 0.01 and abs(f.BoundBox.YMax - side * PLATE_IN) < 0.01]
+    nw = V(0, -side, 0)                                   # wall normal, into the crotch
+    wedges, length = [], 0.0
+    for w in walls:
+        for e in w.Edges:
+            b = e.BoundBox
+            if not (b.XMin > box[0] and b.XMax < box[1] and b.ZMin > box[2] and b.ZMax < box[3]):
+                continue
+            others = [f for f in shape.ancestorsOfType(e, Part.Face) if not f.isSame(w)]
+            if not others:
+                continue
+            o = others[0]
+            q = e.valueAt(0.5 * (e.FirstParameter + e.LastParameter))
+            if not shape.isInside(q + nw * 0.3 - o.normalAt(*o.Surface.parameter(q)) * 0.3, 1e-4, False):
+                continue                                  # convex: not a crotch corner
+            secs = []
+            for p in e.discretize(Number=max(4, int(e.Length / 3) + 1)):      # smooth loft, sections ~3 mm apart
+                no = o.normalAt(*o.Surface.parameter(p))
+                no.y = 0
+                no.normalize()
+                a = p - nw * 0.05 - no * 0.05             # 0.05 into the metal so the fuse is clean
+                secs.append(Part.makePolygon([a, p + no * c - nw * 0.05, p + nw * c - no * 0.05, a]))
+            wedges.append(Part.makeLoft(secs, True, False))
+            length += e.Length
+    if not wedges:
+        log("%s chamfer: no concave corner found, left sharp" % label)
+        return shape
+    r = shape.fuse(wedges)
+    added = r.cut(shape).Volume
+    if r.isValid() and len(r.Solids) == len(shape.Solids) and 0 < added <= 0.5 * c * c * length * 1.3:
+        log("%s chamfer %g: %d edges, %.1f mm long, added %.1f mm3" % (label, c, len(wedges), length, added))
+        return r
+    log("%s chamfer %g rejected (valid %s, added %.1f)" % (label, c, r.isValid(), added))
+    return shape
+
+
 def fork_corners(upper):
     """FORK_CORNER_CH breaks on the fork plates (both sides), applied before the covers so that
     PLATE_XZ (the outline the covers, their pockets and the outer-face outline chamfer follow)
@@ -2004,6 +2050,9 @@ def split_upper_arm(doc, l2):
             return h
         neg = _round_outline(neg, -PLATE_OUT)
         pos = _round_outline(pos, PLATE_OUT)
+    if CROTCH_CORNER_CH:
+        neg = concave_corner_fill(neg, -1, CROTCH_CORNER_CH, "crotch corner L")
+        pos = concave_corner_fill(pos, +1, CROTCH_CORNER_CH, "crotch corner R")
     log("upper arm halves valid: L %s R %s" % (neg.isValid(), pos.isValid()))
     doc.removeObject("UpperArm")
     add_shape(doc, l2, "UpperArm_L", neg, ARM_FINISH)
