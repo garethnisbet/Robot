@@ -39,6 +39,9 @@ from meca500_freecad import (X, Y, Z, add_drive, add_shape, box, cyl, drive_shap
 DOC = "KLiK3"
 WORLD_Z = -8                      # whole robot shifted down so the base plate top (8 thick) sits at world z = 0
 STAINLESS, COVER = k1.STAINLESS, k1.COVER
+ANODISED_GREEN = (0.780, 0.835, 0.470)   # #C7D578 (lifted from #B4C06E: FreeCAD shading read it olive): lime/pistachio anodised aluminium, sampled from the user's coffee-pod photo 20261111_153830.jpg (lit faces #C2C876..#A1A365) (user 2026-11-12)
+ARM_FINISH = COVER_FINISH = ANODISED_GREEN   # link bodies, turret and covers; Flange, screws, bearings stay stainless/steel
+m.METALLIC.add(ANODISED_GREEN)
 LOGO = (0.988, 0.059, 0.753)       # KLiK lettering: shocking pink (#FC0FC0)
 BLACK, PLATE, CABLE = k1.BLACK, k1.PLATE, k1.CABLE
 
@@ -67,12 +70,35 @@ SPINE_Y, PLATE_IN, PLATE_OUT = 31, 31.5, 47  # (+2 each, 2026-10-26: bus through
 PLATE_R = 34                      # upper-arm J3 end radius (photo cover r ~33.7)
 ARM_H0 = 28                       # upper arm: half depth of the band (grows as t^2 to PLATE_R at J3)
 J2_HUB_R, HUB_T = 44, 0.4         # J2 hub round the FHA-11C (80 across corners + 0.5 clearance + 3.5 wall); the band swells to it, from t = HUB_T down to J2 (smoothstep: leaves the hub tangentially, no kink)
-ARM_SAG = 12                      # upper arm centre line bowed this far to the back at mid-span (Denso-style banana)
-CROTCH_EDGE_R = (10, 8, 6, 5, 4, 3, 2)     # front/back crotch edges across the spine (where its faces meet the crotch floor): largest that works
-CROTCH_FILLET = 4                 # crotch floor fillets (to the arms' inner faces and the front/back faces)
+ARM_SAG = 12                      # upper arm centre line bowed this far to the back at mid-span (Denso-style banana; tried 0 = straight and put back, user 2026-11-07)
+ARM_FRONT_LINE = True             # upper arm front (fold-side) edge: one straight line tangent to the J2 hub and J3 end arcs, no concave (user 2026-11-07, with the taller elbow)
+CROTCH_HUB_ARC = True             # spine behind the crotch (|y| < PLATE_IN) trimmed to the J2 hub arc r J2_HUB_R, as the turret cheeks, back to where it meets the crotch floor (user 2026-11-07)
+PLATE_END_HULL = True             # fork plates' lower end: the cover-concentric end circle wrapped by one tangent line onto a round at the front corner, just clear of the turret cheeks' sweep (replaces the stepped pocket edge; user 2026-11-07)
+PLATE_END_RF, PLATE_END_CLEAR = 10, 1.0   # that front-corner round, and its clearance to the cheeks' sweep
+PLATE_END_FLOW = False           # OFF 2026-11-12 (user: the cheek should overlap the spine face this cut exposed). fork plates' lower edge = the spine's hub-arc blend line carried straight on from F (user 2026-11-12: "make the upper arm cheeks flow from the highlighted line")
+PLATE_FLOW_RF, PLATE_FLOW_RK = 10, 6   # its rounds: into the straight front edge, and into the plates' back end circle
+PLATE_BACK_LINE = True           # fork plates' back edge: straight, parallel to the arm's front face and tangent to the r PLATE_R J3 end (parallel-sided plates; user 2026-11-12)
+PLATE_BACK_R = 10                # round where that back edge meets the plates' lower end circle
+PLATE_STRAP_CUT = True           # fork plates cut behind the line through the lower end's tangent point (the user's highlighted edge, ~(-6, 51.6)) parallel to the front face, keeping the full r PLATE_R disc round J3: back edge runs straight up into the elbow circle (user's modelled cut on a copy, 2026-11-12)
+UA_CABLE_DX = 18                 # -Y fork board + fork flex moved this far toward the front (along the arm normal) so they stay inside the strap-cut plate
+COVER_FOLLOWS_PLATE = True      # upper-arm covers + their pockets = the fork plate's actual side outline inset 3.5 / 3.2 (as the turret cheek covers), not the old banana pill (user 2026-11-12: cheeks didn't flow with the straight front / hull end)
+UA_FORK_POCKETS = False          # rib / floor pockets under the upper-arm covers (removed, user 2026-11-07)
+EDGE_CH = 3.0          # chamfer theme (user 2026-11-13: chamfers, not fillets): elbow, Ring4, forearm collar/taper/side edges
+PLATE_OUTLINE_CH = 1.0 # chamfer on the fork plates' outer-face outline, applied to the split halves (user 2026-11-13; was a 1 mm round)
+# 2026-11-14 (user): break on each fork plate's convex Y-edge at the foot of the crotch-side
+# face (upper-arm local x -6.04, z 51.61, y +-31..46). Was a 5 mm chamfer, then (same day) an
+# r10 fillet matching the crotch-back fillets. OCC makeChamfer gives an invalid solid there, so
+# it is a profile cut along Y (prism_chamfer_y). ((x, z), size, "fillet"|"chamfer"); [] = sharp
+FORK_CORNER_CH = [((-6.03619, 51.6131), 10.0, "fillet")]
+ARM_OUTER_R = 0        # fork-plate outer-edge round (y = +-PLATE_OUT) + lower-end ring; 0 = sharp (user 2026-11-13, was 1)
+CROTCH_FRONT_CH = 10   # chamfer (legs mm) on the front crotch edge (arm front face / crotch floor, across the spine); user 2026-11-13; 0 = sharp
+CROTCH_EDGE_R = ()     # was (10, 8, 6, 5, 4, 3, 2); () = sharp (user 2026-11-12: remove the inner fillets). front/back crotch edges across the spine (where its faces meet the crotch floor): largest that works
+CROTCH_FILLET = 0                 # was 4; 0 = sharp (user 2026-11-12). crotch floor fillets (to the arms' inner faces and the front/back faces)
 ARM_T0 = 0.6                      # fork arms (and their covers) start here along the centre line (0 = J2, 1 = J3); was 0.45, moved up clear of the r44 cheek hub
-J4Z = 44                          # J4 axis above J3 (photo 31; +13 lifts the forearm over the upper arm so J3 reaches 74 at any J4 roll; Meca500 38)
+J4Z = 74                          # J4 axis above J3 (photo 31; +13 lifts the forearm over the upper arm so J3 reaches 74 at any J4 roll; +30 taller elbow, user 2026-11-07; Meca500 38)
 ELBOW_BACK, ELBOW_HH, ELBOW_HW = 34, 28, 24     # elbow box along the J4 axis: reach behind J3, half height, half width (was 21 = photo 42 wide; 24 makes room for the J4 cable loop)
+ELBOW_FRONT_FILL = True           # under the elbow box: a vertical face at x = DRUM_R, square to the underside, runs down tangent into the J3 drum (user 2026-11-07)
+ELBOW_FRONT_R = 8                 # fillet where that face meets the underside (user 2026-11-07); 0 = sharp
 ELBOW_R = 45                      # elbow box top-rear fillet: large, to blend into the upper arm's r34 end
 ELBOW_Y, DRUM_R = 29.5, 34        # (27.5 -> 29.5 with the wider arm, 2026-10-26) J3 drum between the upper-arm plates (was 24.5; RSA-8A at J3); r34 = PLATE_R, same as the arm's J3 end (user 2026-10-25, was 32)
 J4_GAP_X = 51                     # J4 running gap, along X from J3 (photo seam ~45; +4 so the J4 motor clears the J3 drive)
@@ -89,8 +115,9 @@ HD_SIZES = [17, 14, 14, 8, 11, 5]   # J2 14: slim cheeks; J4 8: clears the J3 ge
                                   # (Meca500 actuator sizes [8, 8, 8, 8, 8, 5] tried 2026-10-22: J2 too weak for this arm)
 USE_ACTUATORS = True              # Meca500-style Harmonic Drive actuators with integrated servo drive + CANopen
 # per joint: (model, connector-box direction in the housing frame); False = the component HD sets in HD_SIZES
+J2_ROT = 15                       # J2 actuator turned this far about +Y (clockwise looking along +Y): connector box 15 deg off the arm axis toward the front (user 2026-11-07)
 ACTUATORS = [("FHA-8C", V(-math.cos(math.radians(25)), math.sin(math.radians(25)), 0)),   # J1: connector into the rear connector box (turned 25 deg so its corner stays inside the r42 column)
-             ("FHA-11C", Z),       # J2: in the shoulder hub, connector up the arm into the hollow spine (was RSA-8A: ~2 N.m continuous, J2 needs ~4.4 at full stretch)
+             ("FHA-11C", V(math.sin(math.radians(J2_ROT)), 0, math.cos(math.radians(J2_ROT)))),       # J2 (turned J2_ROT about +Y): in the shoulder hub, connector up the arm into the hollow spine (was RSA-8A: ~2 N.m continuous, J2 needs ~4.4 at full stretch)
              ("RSA-8A", -X),       # J3: in the elbow drum, connector to the back
              ("RSA-8A", -Z),       # J4: in the elbow box, connector down toward J3 (up, it broke through the elbow lid; ~4 mm over the J3 actuator)
              ("RSA-8A", -X),       # J5: in the wrist drum, connector toward J4
@@ -116,12 +143,14 @@ UA_CORE_T1 = 0.4                  # spine core runs from J2 to here (0..1 along 
 # Split upper arm: two mirror halves joined on the y = 0 plane, so each half-core is an open
 # pocket milled from the joint face (a one-piece sealed core can't be machined).
 SPLIT_UPPER = True
-UA_SPLIT_DRUM = [(-36, -11), (36, -11), (-11, -36), (11, -36), (-36, 11), (36, 11)]   # M3 x 30 in the hub, beside the flats of the square FHA-11C bore (x, z in Link2); none on top (connector box)
-UA_SPLIT_COVER = [(-24, 64), (-11, 64), (2, 64), (12, 76)]  # M3 x 45, heads under the -Y cover (lands kept in the rib pockets); moved up from z 55 (2026-10-25: with the forks starting at ARM_T0 0.6 the outer two floated off the spine); (12, 76): the one solid spot under the J3 -150 crotch floor
-UA_BULKHEAD_Z = (60, 68)                                            # bulkhead across the core (z range) carrying the mid-length bolts; splits the core into two pockets (was 51..59)
-UA_DOWELS = [(0, -37), (-34, 66)]                                   # 3 mm dowels locating the halves; (-34, 66) on the bulkhead's back end (was (14, 82): left in the thin wall under the crotch once DRUM_R went to 34, stuck out; 2026-10-25)
+_UA_SPLIT_DRUM0 = [(-36, -11), (36, -11), (-11, -36), (11, -36), (-36, 11), (36, 11)]   # M3 x 30 in the hub, beside the flats of the square FHA-11C bore (x, z in Link2); none on top (connector box)
+_c2, _s2 = math.cos(math.radians(J2_ROT)), math.sin(math.radians(J2_ROT))
+UA_SPLIT_DRUM = [(x * _c2 + z * _s2, -x * _s2 + z * _c2) for x, z in _UA_SPLIT_DRUM0]   # turned with the J2 actuator
+UA_SPLIT_COVER = [(16, 69), (28, 65)]  # 2026-11-13: (0, 67) was above the CROTCH_HUB_ARC floor (hole through the -Y plate into the crotch, never reached R); new sites have >= 4.2 mm metal round them through both halves. (12, 76) dropped 2026-11-13: its hole sat on the crotch floor (open half-hole, screw exposed).  (-20, 64), (-11, 64) dropped 2026-11-12: behind the PLATE_STRAP_CUT edge (no plate left under their heads). Older: (-24, 64) -> (-20, 64): clear of the PLATE_BACK_LINE edge; (2, 64) -> (0, 67): 8 mm off the PLATE_END_FLOW edge so its counterbore stays inside the cover pocket (2026-11-12)  # M3 x 45, heads under the -Y cover (lands kept in the rib pockets); moved up from z 55 (2026-10-25: with the forks starting at ARM_T0 0.6 the outer two floated off the spine); (12, 76): the one solid spot under the J3 -150 crotch floor
+UA_BULKHEAD_Z = (61, 69)                                           # bulkhead across the core (z range) carrying the mid-length bolts; splits the core into two pockets (was 51..59)
+UA_DOWELS = [(0, -37), (29, 92)]   # (-34, 66) -> (29, 92) 2026-11-12: it sat in the crotch void (27 mm from metal) since the 11-07 CROTCH_HUB_ARC trim, exposed by PLATE_BACK_LINE; (29, 92) = solid spine front corner. Old note:                                 # 3 mm dowels locating the halves; (-34, 66) on the bulkhead's back end (was (14, 82): left in the thin wall under the crotch once DRUM_R went to 34, stuck out; 2026-10-25)
 UA_CORNER_R, UA_FLOOR_R = 6, 2    # spine core long-edge radii (12 mm cutter, L/D ~6); fork pocket floor radius
-LIMITS = [(-175, 175), (-115, 105), (-153, 75), (-170, 170), (-132, 132), (-3600, 3600)]   # J3 -153..75 (was -150..74, user 2026-10-25); J5 +-132 (was 130, user 2026-11-07)
+LIMITS = [(-175, 175), (-145, 105), (-153, 82), (-170, 170), (-132, 132), (-3600, 3600)]   # J2 -145..105 (was -115, user 2026-11-14, unchecked); J3 -153..82 (was ..80, user 2026-11-14, unchecked; was ..75, user 2026-11-13; was -150..74, user 2026-10-25); J5 +-132 (was 130, user 2026-11-07)
 # Support bearings (FEA report recommendations, 2026-10-25): take bending moment off the actuators' own bearings
 J1_SUPPORT = True                 # thin-section 4-point-contact ring (Kaydon KA025XP0 class: 63.5 bore x 69.85 OD x 6.35) on a base spigot round the J1 output disc, outer race in the turret
 J1_BRG = (31.75, 34.925, 6.35)    # bore radius, outside radius, width
@@ -137,6 +166,65 @@ J5_BRG = (7.5, 13, 5)
 LIGHTEN = True                    # mass cuts: base column ring pockets (from below), wrist drum -Y face pockets, deeper forearm back-face pockets
 FA_POCKET_X0 = -3                 # forearm back-face rib pockets run from SLOT_X down to here (was SLOT_X - 20 = 8)
 KLIK_FONT = "/usr/share/fonts/opentype/cantarell/Cantarell-ExtraBold.otf"   # heavy, like the photo lettering
+OK_LOGO = True                    # Oxford Kinematics "OK" linkage mark (+ OXFORD KINEMATICS) replaces the KLiK lettering (user 2026-11-12; oxford-kinematics-logo.svg, image_e0d1ebee.jpg)
+OK_FONT = "/usr/share/texmf/fonts/opentype/public/tex-gyre/texgyreadventor-regular.otf"   # geometric sans like the plate's lettering
+MACHINED = (0.87, 0.89, 0.90)     # bare machined aluminium (the mark is cut through the anodising)
+m.METALLIC.add(MACHINED)
+
+
+def _trace_face(poly, f):
+    """Part face from a traced polygon {'outer': [[x, y]...], 'holes': [...]} via f(x, y) -> Vector."""
+    def wire(pts):
+        vs = [f(*q) for q in pts]
+        return Part.makePolygon(vs + [vs[0]])
+    face = Part.Face(wire(poly["outer"]))
+    for h in poly["holes"]:
+        face = face.cut(Part.Face(wire(h)))
+    return face
+
+
+def ok_logo(width, depth, origin, up, normal, text=False, proud=0.08):
+    """Oxford Kinematics mark, traced from the user's photo image_e0d1ebee.jpg (perspective
+    removed; ok_logo_trace.json, pixels of the rectified plate), `width` across, centred on
+    `origin`, tops toward `up`, standing `proud` above the face along `normal`. Returns
+    (silver, dark, green): bare-aluminium islands (+ OXFORD KINEMATICS below, at the photo's
+    spacing, if `text`), dark grooves + pivot bores, anodised-green pivot rings."""
+    import json, os
+    T = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ok_logo_trace.json")))
+    x0, y0, w, h = T["mark_bbox"]
+    cx, cy = x0 + w / 2.0, y0 + h / 2.0
+    s = width / float(w)
+    f = lambda x, y: V((x - cx) * s, -(y - cy) * s, 0)
+    P = _trace_face(T["mark"][0], f)
+    disc = lambda c, r: Part.Face(Part.Wire(Part.makeCircle(r * s, f(*c), Z)))
+    ring = lambda c, r0, r1: disc(c, r1).cut(disc(c, r0))
+    piv = T["piv"]                                   # TL, TR, MR, BL, BR (px)
+    grooves = [ring(c, 69, 75) for c in piv]         # pivot discs' outline grooves
+    (tl, tr, _, bl, br) = piv
+    for (ya, yb), pa, pb in ((T["grooves"]["top"], tl, tr), (T["grooves"]["bottom"], bl, br)):   # bar / O seams
+        grooves.append(Part.Face(Part.makePolygon([f(pa[0], ya), f(pb[0], ya), f(pb[0], yb), f(pa[0], yb), f(pa[0], ya)])))
+    grooves += [_trace_face(p, f) for p in T.get("inset", [])]   # inset outline lines round the O, bars and link
+    bores = [disc(c, 13) for c in piv]
+    greens = [ring(c, 28, 37) for c in piv]
+    dark = P.common(grooves[0].fuse(grooves[1:])).fuse(bores)
+    green = greens[0].fuse(greens[1:])
+    silver = P.cut(dark).cut(green)
+    if text:
+        for poly in T["text"]:
+            silver = silver.fuse(_trace_face(poly, f))
+    lift = lambda face, top: face.extrude(V(0, 0, depth)).translated(V(0, 0, top - depth))
+    x_dir = up.cross(normal)
+    pl = App.Placement(origin, App.Rotation(x_dir, normal.cross(x_dir), normal, "ZXY"))
+    return (m.moved(lift(silver, proud), pl), m.moved(lift(dark, proud * 0.4), pl), m.moved(lift(green, proud * 0.6), pl))
+
+
+def add_ok_logo(doc, container, name, parts_list):
+    """Add the three layers of one or more ok_logo() results as name, name_dark, name_green."""
+    for k, (suffix, col) in enumerate((("", MACHINED), ("_dark", m.DARK), ("_green", ARM_FINISH))):
+        sh = parts_list[0][k]
+        for p in parts_list[1:]:
+            sh = sh.fuse(p[k])
+        add_shape(doc, container, name + suffix, sh, col)
 
 
 def klogo(*args, **kw):
@@ -245,6 +333,11 @@ def make_sheet(doc):
 def arm_centre(t):
     """Upper-arm centre line at t (0 = J2, 1 = J3): point, unit normal toward the
     front (+X, the concave side) and half depth."""
+    s = min(max(t / HUB_T, 0.0), 1.0)
+    hub = (J2_HUB_R - ARM_H0) * (1 - s) ** 2 * (1 + 2 * s)   # zero slope at both ends: G1 into the round hub cap and into the plain band
+    h = ARM_H0 + (PLATE_R - ARM_H0) * t * t + hub
+    if abs(ARM_SAG) < 1e-6:                              # straight arm: J2 -> J3 along +Z
+        return V(0, 0, t * L2), V(1, 0, 0), h
     R = (L2 ** 2 / 4 + ARM_SAG ** 2) / (2 * ARM_SAG)
     cx, cz = R - ARM_SAG, L2 / 2                         # centre of curvature, in front of the arm
     a0, a1 = math.atan2(-cz, -cx), math.atan2(L2 - cz, -cx)
@@ -280,6 +373,23 @@ def _back_edge(t, inset):
     return P1 * h00 + D1 * h10 + P2 * h01 + D2 * h11
 
 
+def front_line(inset):
+    """Straight front edge of the upper arm: the line tangent (front side) to the J2 hub
+    circle and the J3 end circle, both shrunk by `inset`. Returns its tangent points on
+    the J2 and J3 circles and its unit outward normal."""
+    (c0, _, h0), (c1, _, h1) = arm_centre(0), arm_centre(1)
+    r0, r1 = h0 - inset, h1 - inset
+    d = c1 - c0
+    L = d.Length
+    u = d * (1 / L)
+    w = V(u.z, 0, -u.x)                                  # perpendicular to the J2-J3 chord
+    if w.x < 0:
+        w = w * -1                                       # toward the front (+X)
+    k = (r0 - r1) / L
+    m = u * k + w * math.sqrt(1 - k * k)
+    return c0 + m * r0, c1 + m * r1, m
+
+
 def arm_profile(t0, t1, inset, n=24):
     """Face in the XZ plane: the banana band along the arm centre line from t0
     to t1, half depth minus `inset`, with round ends."""
@@ -303,6 +413,11 @@ def arm_profile(t0, t1, inset, n=24):
     (c0, n0, h0), (c1, n1, h1) = pts[0], pts[-1]
     # tangent along +t is n rotated: check its sign against the chord
     sgn = 1 if (V(n1.z, 0, -n1.x)).dot(c1 - c0) > 0 else -1
+    if ARM_FRONT_LINE and t0 == 0 and t1 == 1:
+        A, B, _ = front_line(inset)
+        edges = [Part.LineSegment(A, B).toShape(), cap(c1, n1, h1, sgn, B, back[-1]), spline(back[::-1]),
+                 cap(c0, n0, h0, -sgn, A, back[0])]
+        return Part.Face(Part.Wire(Part.__sortEdges__(edges)))
     edges = [spline(front), cap(c1, n1, h1, sgn, front[-1], back[-1]), spline(back[::-1]),
              cap(c0, n0, h0, -sgn, front[0], back[0])]
     return Part.Face(Part.Wire(Part.__sortEdges__(edges)))
@@ -463,6 +578,47 @@ def checked_cut(shape, tool, name=""):
     return shape
 
 
+def crotch_front_chamfer(upper, spot, c):
+    """Chamfer the front crotch edge (along Y at `spot` = (x, z), Link2 frame) with legs `c`:
+    a triangular prism through the corner and the points c mm along the arm's front face and
+    along the crotch floor, cut across |y| <= PLATE_IN (makeFillet/makeChamfer fail on this
+    edge). Stores the y = 0 triangle in CROTCH_CH_XZ for the hollow core."""
+    global CROTCH_CH_XZ
+    x, z = spot
+    sec = upper.slice(Y, 0.0)
+    cv = V(x, 0, z)
+    es = [e for w in sec for e in w.Edges if min((v.Point - cv).Length for v in e.Vertexes) < 0.5]
+    if len(es) != 2:
+        log("crotch front chamfer: corner at (%.1f, %.1f) has %d edges, skipped" % (x, z, len(es)))
+        return upper
+    corner = min((v.Point for v in es[0].Vertexes), key=lambda p: (p - cv).Length)
+    legs = []
+    for e in es:
+        pts = e.discretize(Distance=0.2)
+        if (pts[0] - corner).Length > (pts[-1] - corner).Length:
+            pts = pts[::-1]
+        acc, q = 0.0, pts[-1]
+        for a, b in zip(pts, pts[1:]):
+            acc += (b - a).Length
+            if acc >= c:
+                q = b
+                break
+        legs.append(q)
+    m = (legs[0] + legs[1]) * 0.5
+    n = corner - m
+    n.normalize()                                          # outward, from the chamfer face to the corner
+    u = legs[1] - legs[0]
+    u.normalize()
+    A, B = legs[0] - u * 1.0, legs[1] + u * 1.0            # chamfer line run 1 mm past both legs: the crotch floor
+    tri = Part.Face(Part.makePolygon([A, B, B + n * 15, A + n * 15, A]))   # curves near its leg and left a sliver
+    tool = tri.extrude(V(0, 2 * PLATE_IN, 0)).translated(V(0, -PLATE_IN, 0))
+    res = checked_cut(upper, tool, "front crotch chamfer %g" % c)
+    if res is not upper and res.isValid():
+        CROTCH_CH_XZ = Part.Face(Part.makePolygon([legs[0], corner, legs[1], legs[0]]))
+        log("crotch front chamfer %g at (%.1f, %.1f): legs to (%.1f, %.1f) / (%.1f, %.1f)" % (c, corner.x, corner.z, legs[0].x, legs[0].z, legs[1].x, legs[1].z))
+    return res
+
+
 def round_corner_2d(shape, cx, cz, r, half_y, win=14):
     """Round a convex edge running along Y at (cx, cz) when makeFillet refuses it: take
     the y = 0 outline near the corner, round its convex corners by an opening (offset in
@@ -503,12 +659,16 @@ def cut_pockets(shape, tp, name="", pre_refine=True):
             if want < 1:
                 continue
             ok = False
-            for fuzz in (None, 0.001, 0.01):
+            for fuzz in (None, 0.001, 0.01, 0.05):
                 try:
                     r = shape.cut(p) if fuzz is None else shape.cut([p], fuzz)
                 except Exception as e:
                     continue
-                if r.isValid() and len(r.Solids) == len(shape.Solids) and shape.Volume - r.Volume > 0.9 * want:
+                if len(r.Solids) > len(shape.Solids):          # drop slivers the cut chipped off
+                    big = [q for q in r.Solids if q.Volume > 1]
+                    if len(big) == len(shape.Solids):
+                        r = big[0] if len(big) == 1 else Part.makeCompound(big)
+                if r.isValid() and len(r.Solids) == len(shape.Solids) and shape.Volume - r.Volume > 0.7 * want:
                     shape, ok = r, True
                     break
             if not ok:
@@ -553,6 +713,8 @@ def hollow_upper_arm(upper, e2h, e3o):
     core = arm_profile(0, UA_CORE_T1, UA_WALL).cut(c2)
     if CROTCH_XZ is not None:                           # stay UA_WALL below the crotch pocket (it deepens with the J3 limit)
         core = core.cut(CROTCH_XZ.makeOffset2D(UA_WALL, join=0))
+        if CROTCH_CH_XZ is not None:
+            core = core.cut(CROTCH_CH_XZ.makeOffset2D(UA_WALL, join=0))
         core = max(core.Faces, key=lambda f: f.Area) if len(core.Faces) > 1 else core.Faces[0]
     core = core.extrude(V(0, 2 * hy, 0)).translated(V(0, -hy, 0))
     core = _fillet_y_planes(core, UA_CORNER_R, (hy, -hy))
@@ -574,6 +736,8 @@ def hollow_upper_arm(upper, e2h, e3o):
         else:
             log("upper arm core %d/%d: CUT FAILED" % (i + 1, len(tools)))
     # fork pockets: 3 mm ledge inside the cover pocket (cover outline at inset 3.5)
+    if not UA_FORK_POCKETS:
+        return upper
     floor = PLATE_IN + UA_WEB
     top = PLATE_OUT - 2.5                                       # cover pocket floor
     if TRI_POCKETS:
@@ -615,6 +779,29 @@ def rrect_yz(x, hy, hz, r):
     return Part.Wire(edges)
 
 
+def bevel(shape, c, edges=None):
+    """Chamfer `edges` (default all) at c, backing off if OCC refuses (chamfer twin of soft())."""
+    edges = shape.Edges if edges is None else edges
+    for cc in (c, 0.6 * c, 0.35 * c):
+        try:
+            out = shape.makeChamfer(cc, edges)
+            if out.isValid():
+                if cc != c:
+                    log("bevel %g failed, used %g" % (c, cc))
+                return out
+        except Exception:
+            pass
+    log("bevel %g failed, left sharp" % c)
+    return shape
+
+
+def crect_yz(x, hy, hz, c):
+    """Closed chamfered-rectangle wire in the plane at `x` (y +-hy, z +-hz, 45 deg corner legs c)."""
+    p = [V(x, hy, hz - c), V(x, hy - c, hz), V(x, -hy + c, hz), V(x, -hy, hz - c),
+         V(x, -hy, -hz + c), V(x, -hy + c, -hz), V(x, hy - c, -hz), V(x, hy, -hz + c)]
+    return Part.makePolygon(p + [p[0]])
+
+
 def rounded_square(half, r, z0, h):
     b = box(2 * half, 2 * half, h, V(-half, -half, z0))
     return soft(b, r, [e for e in b.Edges if is_along(e, Z)])
@@ -635,6 +822,154 @@ json.dump([list(ring.interpolate(i * ring.length / n).coords[0]) for i in range(
 
 
 CROTCH_XZ = None
+CROTCH_CH_XZ = None     # y = 0 face of the front crotch chamfer cut (hollow_upper_arm keeps the core a wall off it)
+PLATE_XZ = None      # fork plate side outline (Link2 XZ, y = 0), set by build() after the side trims
+
+
+def plate_end_flow(upper, F, d):
+    """Fork plates' lower edge carried on from the spine's hub-arc blend: the straight line
+    through F (where the blend meets the crotch floor) along its direction d continues as
+    the plates' lower edge, rounded PLATE_FLOW_RF into the straight front edge and
+    PLATE_FLOW_RK into the plates' back end circle. Cuts |y| >= SPINE_Y only, then
+    re-takes PLATE_XZ so the covers follow (user 2026-11-12)."""
+    global PLATE_XZ
+    c0, _, h0 = arm_centre(ARM_T0)
+    nU = V(-d.z, 0, d.x)                                     # normal toward the plate (up/back)
+    if nU.z < 0:
+        nU = nU * -1
+    A, B, m = front_line(0)
+    uf = B - A
+    uf.normalize()
+
+    def meet(p1, d1, p2, d2):                                # intersection of two lines in XZ
+        den = d1.x * d2.z - d1.z * d2.x
+        s = ((p2.x - p1.x) * d2.z - (p2.z - p1.z) * d2.x) / den
+        return p1 + d1 * s
+    rf, rk = PLATE_FLOW_RF, PLATE_FLOW_RK
+    C = meet(F + nU * rf, d, A - m * rf, uf)                 # front corner round
+    T1, T2 = C - nU * rf, C + m * rf
+    # back kink: circle r rk tangent to the flow line (plate side) and inside the end circle
+    best = None
+    P0 = F + nU * rk - c0
+    a2, b2, cc = 1.0, 2 * P0.dot(d), P0.dot(P0) - (h0 - rk) ** 2
+    disc = b2 * b2 - 4 * a2 * cc
+    for s in ((-b2 + math.sqrt(disc)) / 2, (-b2 - math.sqrt(disc)) / 2) if disc >= 0 else ():
+        K = F + nU * rk + d * s
+        if s > -1e-6 and (best is None or s < best[0]):
+            best = (s, K)
+    if best is None:
+        log("plate end flow: no back-kink round, cut skipped")
+        return upper
+    K = best[1]
+    Tl = K - nU * rk
+    rad = K - c0
+    rad.normalize()
+    Ta = c0 + rad * h0
+    mid = lambda c, p, q, r: c + ((p + q) * 0.5 - c).normalize() * r
+    P1 = T2 + m * 40
+    P4 = Ta + rad * 40
+    edges = [Part.Arc(Ta, mid(K, Ta, Tl, rk), Tl).toShape(), Part.LineSegment(Tl, T1).toShape(),
+             Part.Arc(T1, mid(C, T1, T2, rf), T2).toShape(), Part.LineSegment(T2, P1).toShape(),
+             Part.LineSegment(P1, V(P1.x, 0, -200)).toShape(), Part.LineSegment(V(P1.x, 0, -200), V(P4.x, 0, -200)).toShape(),
+             Part.LineSegment(V(P4.x, 0, -200), P4).toShape(), Part.LineSegment(P4, Ta).toShape()]
+    face = Part.Face(Part.Wire(edges))
+    t = PLATE_OUT - SPINE_Y + 8
+    for sy in (1, -1):
+        upper = checked_cut(upper, face.extrude(V(0, t, 0)).translated(V(0, SPINE_Y if sy > 0 else -SPINE_Y - t, 0)), "plate end flow %+d" % sy)
+    log("plate end flow: line from F (%.1f, %.1f) at %.1f deg, front round r%s at (%.1f, %.1f), back round r%s at (%.1f, %.1f)"
+        % (F.x, F.z, math.degrees(math.atan2(d.z, d.x)), rf, C.x, C.z, rk, K.x, K.z))
+    ws = [w for w in upper.slice(Y, PLATE_OUT - 1.5) if w.isClosed()]
+    if ws and COVER_FOLLOWS_PLATE:
+        PLATE_XZ = max((Part.Face(w) for w in ws), key=lambda f: f.Area).translated(V(0, -(PLATE_OUT - 1.5), 0))
+        log("upper arm plate outline (after flow cut): %.0f mm2, %d edges" % (PLATE_XZ.Area, len(PLATE_XZ.Edges)))
+    return upper
+
+
+def plate_back_line(upper):
+    """Cut the fork plates (|y| >= SPINE_Y) behind the line parallel to the arm's straight
+    front face and tangent to the J3 end circle (r PLATE_R) on the back, so the plates are
+    parallel-sided; PLATE_BACK_R round into the lower end circle. Re-takes PLATE_XZ."""
+    global PLATE_XZ
+    A, B, m = front_line(0)
+    uf = B - A
+    uf.normalize()
+    if uf.z < 0:
+        uf = uf * -1                                         # up the arm
+    J3c = arm_centre(1)[0]
+    P = J3c - m * PLATE_R                                    # back tangent point on the J3 end
+    c0, _, h0 = arm_centre(ARM_T0)
+    rb = PLATE_BACK_R
+    # round: centre rb in front of the line, inside the end circle (|K - c0| = h0 - rb)
+    Q0 = P + m * rb - c0
+    b2, cc = 2 * Q0.dot(uf), Q0.dot(Q0) - (h0 - rb) ** 2
+    disc = b2 * b2 - 4 * cc
+    if disc < 0:
+        log("plate back line: end circle not cut by the line, nothing to do")
+        return upper
+    K = min((P + m * rb + uf * s for s in ((-b2 + math.sqrt(disc)) / 2, (-b2 - math.sqrt(disc)) / 2)), key=lambda k: k.z)
+    Tb = K - m * rb
+    rad = K - c0
+    rad.normalize()
+    Ta = c0 + rad * h0
+    mid = ((Ta + Tb) * 0.5 - K)
+    mid.normalize()
+    U = P + uf * 200
+    Pd = Ta + rad * 60
+    edges = [Part.Arc(Ta, K + mid * rb, Tb).toShape(), Part.LineSegment(Tb, U).toShape(),
+             Part.LineSegment(U, U - m * 150).toShape(), Part.LineSegment(U - m * 150, Pd - m * 150).toShape(),
+             Part.LineSegment(Pd - m * 150, Pd).toShape(), Part.LineSegment(Pd, Ta).toShape()]
+    face = Part.Face(Part.Wire(edges))
+    t = PLATE_OUT - SPINE_Y + 8
+    for sy in (1, -1):
+        upper = checked_cut(upper, face.extrude(V(0, t, 0)).translated(V(0, SPINE_Y if sy > 0 else -SPINE_Y - t, 0)), "plate back line %+d" % sy)
+    log("plate back line: tangent to the J3 end at (%.1f, %.1f), r%s round into the end circle at (%.1f, %.1f)" % (P.x, P.z, rb, K.x, K.z))
+    ws = [w for w in upper.slice(Y, PLATE_OUT - 1.5) if w.isClosed()]
+    if ws and COVER_FOLLOWS_PLATE:
+        PLATE_XZ = max((Part.Face(w) for w in ws), key=lambda f: f.Area).translated(V(0, -(PLATE_OUT - 1.5), 0))
+        log("upper arm plate outline (after back line): %.0f mm2, %d edges" % (PLATE_XZ.Area, len(PLATE_XZ.Edges)))
+    return upper
+
+
+def plate_strap_cut(upper, E):
+    """Remove the fork plates (|y| >= SPINE_Y) behind the line through E parallel to the
+    arm's straight front face, from E's level up, except the r PLATE_R disc round J3: the
+    plates' back edge runs straight from E up into the elbow circle. Re-takes PLATE_XZ."""
+    global PLATE_XZ
+    A, B, m = front_line(0)
+    uf = B - A
+    uf.normalize()
+    if uf.z < 0:
+        uf = uf * -1
+    E = V(E.x, 0, E.z)
+    E = E - uf * 6                                  # start below the tangent point: else a 0.5 mm wedge of the hull edge survives behind it (stray face, user 2026-11-12)
+    poly = Part.Face(Part.makePolygon([E, E + uf * 250, E + uf * 250 - m * 150, E - m * 150, E]))
+    J3c = arm_centre(1)[0]
+    face = poly.cut(Part.Face(Part.Wire(Part.makeCircle(PLATE_R, J3c, Y))))
+    t = PLATE_OUT - SPINE_Y + 8
+    for sy in (1, -1):
+        upper = checked_cut(upper, face.extrude(V(0, t, 0)).translated(V(0, SPINE_Y if sy > 0 else -SPINE_Y - t, 0)), "plate strap cut %+d" % sy)
+    log("plate strap cut: line from (%.1f, %.1f) along (%.4f, %.4f), r%s J3 disc kept" % (E.x, E.z, uf.x, uf.z, PLATE_R))
+    ws = [w for w in upper.slice(Y, PLATE_OUT - 1.5) if w.isClosed()]
+    if ws and COVER_FOLLOWS_PLATE:
+        PLATE_XZ = max((Part.Face(w) for w in ws), key=lambda f: f.Area).translated(V(0, -(PLATE_OUT - 1.5), 0))
+        log("upper arm plate outline (after strap cut): %.0f mm2, %d edges" % (PLATE_XZ.Area, len(PLATE_XZ.Edges)))
+    return upper
+
+
+def cover_outline(inset):
+    """XZ face of the upper-arm cover (inset 3.5) or its pocket (3.2): the plate outline
+    PLATE_XZ shrunk by `inset` so the border round the cover is even, like the turret
+    cheeks'; falls back to the old banana band when there is no outline."""
+    if COVER_FOLLOWS_PLATE and PLATE_XZ is not None:
+        try:
+            f = PLATE_XZ.makeOffset2D(-inset, join=0)
+            f = f.Faces[0] if f.Faces else None
+            if f is not None and f.isValid() and f.Area > 0.5 * PLATE_XZ.Area:
+                return f
+            log("cover_outline(%s): offset gave a bad face, falling back" % inset)
+        except Exception as e:
+            log("cover_outline(%s): offset failed (%s), falling back" % (inset, e))
+    return arm_profile(ARM_T0, 1, inset)
 
 
 def elbow_pocket(elbow, clear=2.5, half_y=PLATE_IN, step=1, smooth=0):
@@ -869,7 +1204,11 @@ def build(doc_name=DOC):
     add_shape(doc, root, "Base", base, BLACK)
     add_shape(doc, root, "Base_ring", cyl(40, 1, V(0, 0, BASE_TOP), Z).cut(e1h).cut(cyl(J1_BRG[1] + 0.6 if J1_SUPPORT else 0.01, 3, V(0, 0, BASE_TOP - 1), Z)), m.DARK)
     # ~13 mm letters centred on the flat side face of the connector box (x BOX_X+4..0 past its corner round)
-    lb = klogo(6.75, 0.6, V((BOX_X + 4) / 2, BOX_Y[1], (pt + BOX_TOP) / 2), Z, Y)
+    if OK_LOGO:      # OK mark over OXFORD KINEMATICS, bare aluminium on the black box
+        add_ok_logo(doc, root, "Logo_base", [ok_logo(36, 0.6, V((BOX_X + 4) / 2, BOX_Y[1], (pt + BOX_TOP) / 2 + 9), Z, Y, text=True)])
+        lb = None
+    else:
+        lb = klogo(6.75, 0.6, V((BOX_X + 4) / 2, BOX_Y[1], (pt + BOX_TOP) / 2), Z, Y)
     if lb:
         add_shape(doc, root, "Logo_base", lb, LOGO)
     conn = None
@@ -899,12 +1238,12 @@ def build(doc_name=DOC):
     turret = cyl(COLLAR_R, COLLAR_H, V(0, 0, tb), Z).common(
         box(2 * COLLAR_R, 2 * SLOT_Y, COLLAR_H, V(-COLLAR_R, -SLOT_Y, tb)))
     # (collar weight pocket removed 2026-10-23 at user request: solid collar)
-    turret = soft(turret, 2).cut(e1o)
+    turret = bevel(turret, 2).cut(e1o)                 # chamfer theme (2026-11-13; was r2)
     cheeks = None
     for sy in (1, -1):
         y_in = SLOT_Y if sy > 0 else -TURRET_HALF
         ch = cheek_face().extrude(V(0, TURRET_HALF - SLOT_Y, 0)).translated(V(0, y_in, 0))
-        ch = soft(ch, 2)
+        ch = bevel(ch, 2)                              # chamfer theme (2026-11-13; was r2)
         cheeks = ch if cheeks is None else cheeks.fuse(ch)
     cheeks = cheeks.cut(e1o)
     if J1_SUPPORT:
@@ -933,7 +1272,7 @@ def build(doc_name=DOC):
         for x, z in CHEEK_DOWELS:                                                 # dowels: 5 mm each side of the joint
             pin = ycyl(1.5, 10, V(x, sy * SLOT_Y, tb + z))
             cheeks, turret = cheeks.cut(pin), turret.cut(pin)
-    add_shape(doc, l1, "Turret", turret.removeSplitter(), STAINLESS)
+    add_shape(doc, l1, "Turret", turret.removeSplitter(), ARM_FINISH)
     # Covers following the cheek outline (curved front included), CHEEK_COVER_IN smaller
     # all round, set flush into a 2.5 mm pocket in each cheek (0.3 mm clearance round the edge).
     cw, cb = CHEEK_R - CHEEK_COVER_IN, ct + CHEEK_COVER_IN                        # cover half width, bottom
@@ -960,16 +1299,20 @@ def build(doc_name=DOC):
             keep = [disc(V(J2X, sy * yfl, J2Z), J2_COIL_R + 10 if CABLES else 18, Y)]   # J2 boss (+ cable coil cavity behind it, outside the FHA-11C output disc)
             keep += [disc(V(p.x, sy * yfl, p.z), 5, Y) for p in sp]              # lands under the cover screws
             cheeks = cut_pockets(cheeks, tri_pockets(region, sy * Y, depth, keep, u=Z, margin=0), "cheeks")
-    add_shape(doc, l1, "Turret_cheeks", cheeks, STAINLESS)
+    add_shape(doc, l1, "Turret_cheeks", cheeks, ARM_FINISH)
     sp = [V(p.x, TURRET_HALF, p.z) for p in sp]                                  # flush countersunk heads on the cover face
     spf = [V(p.x, -p.y, p.z) for p in sp]
     covers = covers.cut(countersinks(sp, Y, 2.5)).cut(countersinks(spf, -Y, 2.5))
-    add_shape(doc, l1, "Turret_covers", covers, COVER)
+    add_shape(doc, l1, "Turret_covers", covers, COVER_FINISH)
     # KLiK lettering on both cheek covers, centred on the J2 hub, upright at home
     yo = TURRET_HALF + 0.1
-    lt = klogo(6.75, 0.6, V(J2X, yo, J2Z), Z, Y)
-    if lt:
-        add_shape(doc, l1, "Logo_turret", lt.fuse(klogo(6.75, 0.6, V(J2X, -yo, J2Z), Z, -Y)), LOGO)
+    if OK_LOGO:      # OK mark centred on J2, OXFORD KINEMATICS below it (between the cover screws)
+        add_ok_logo(doc, l1, "Logo_turret", [ok_logo(23, 0.6, V(J2X, TURRET_HALF, J2Z + 2), Z, Y, text=True),
+                                             ok_logo(23, 0.6, V(J2X, -TURRET_HALF, J2Z + 2), Z, -Y, text=True)])
+    else:
+        lt = klogo(6.75, 0.6, V(J2X, yo, J2Z), Z, Y)
+        if lt:
+            add_shape(doc, l1, "Logo_turret", lt.fuse(klogo(6.75, 0.6, V(J2X, -yo, J2Z), Z, -Y)), LOGO)
     cs_screws(doc, l1, "Turret_screws", sp, Y)
     cs_screws(doc, l1, "Turret_screws_far", spf, -Y)
     fix = [V(sx * CHEEK_FIX_X, TURRET_HALF - 2.5, tb + z) for sx in (1, -1) for z in CHEEK_FIX_Z]   # on the cover-pocket floor (under the cover)
@@ -992,12 +1335,20 @@ def build(doc_name=DOC):
     xe, zt = J4_GAP_X - 0.5, hz0 + 2 * ELBOW_HH
     xb = -ELBOW_BACK
     zb = 0.0 if ELBOW_BACK <= DRUM_R + 1e-6 else hz0
-    prof = Part.Face(Part.makePolygon([V(xb, -ELBOW_HW, zb), V(0, -ELBOW_HW, zb), V(0, -ELBOW_HW, hz0), V(xe, -ELBOW_HW, hz0),
+    # front: with ELBOW_FRONT_FILL the underside stops at x = DRUM_R and a face square to it
+    # runs down to J3 height, tangent to the drum there (as the back face does)
+    xf = DRUM_R if ELBOW_FRONT_FILL else 0.0
+    prof = Part.Face(Part.makePolygon([V(xb, -ELBOW_HW, zb), V(xf, -ELBOW_HW, zb), V(xf, -ELBOW_HW, hz0), V(xe, -ELBOW_HW, hz0),
                                        V(xe, -ELBOW_HW, zt), V(xb, -ELBOW_HW, zt), V(xb, -ELBOW_HW, zb)]))
     top = prof.extrude(V(0, 2 * ELBOW_HW, 0))
     top = top.makeFillet(ELBOW_R, [e for e in top.Edges if is_along(e, Y) and on_plane(e, x=-ELBOW_BACK)
                                and e.BoundBox.ZMin > J4Z])
-    top = top.makeChamfer(3, [e for e in top.Edges if is_along(e, X)])
+    if xf > 0 and ELBOW_FRONT_R > 0:
+        top = top.makeFillet(ELBOW_FRONT_R, [e for e in top.Edges if is_along(e, Y) and on_plane(e, x=xf) and on_plane(e, z=hz0)])
+    front = [e for e in top.Edges if xf > 0 and (is_along(e, Z) and on_plane(e, x=xf) or                 # its side edges (and the
+             isinstance(e.Curve, Part.Circle) and abs(e.Curve.Radius - ELBOW_FRONT_R) < 1e-6 and          # fillet's), chamfered
+             abs(abs(e.BoundBox.YMin) - ELBOW_HW) < 1e-6 and e.BoundBox.XMax < xe)]                       # like the underside's
+    top = top.makeChamfer(EDGE_CH, [e for e in top.Edges if is_along(e, X)] + front)
     elbow = drum.fuse(top).removeSplitter()
     if not USE_ACTUATORS:
         elbow = elbow.fuse(ycyl(12, 10, V(0, -ELBOW_Y - 5, 0))).removeSplitter()     # J3 support trunnion
@@ -1013,7 +1364,7 @@ def build(doc_name=DOC):
             a = math.radians(30 + 60 * i)
             cap3 = cap3.cut(ycyl(1.1, 2, V(30.5 * math.cos(a), -(ELBOW_Y + 0.75), 30.5 * math.sin(a))))
             elbow = elbow.cut(ycyl(0.8, 6, V(30.5 * math.cos(a), -(ELBOW_Y - 3), 30.5 * math.sin(a))))
-        add_shape(doc, l3, "J3_cap", cap3.removeSplitter(), STAINLESS)
+        add_shape(doc, l3, "J3_cap", cap3.removeSplitter(), ARM_FINISH)
         add_shape(doc, l3, "J3_support_inner", ycyl(sum(J3_BRG[:2]) / 2 - 0.15, J3_BRG[2], V(0, -(y3 + J3_BRG[2] / 2), 0)).cut(ycyl(J3_BRG[0], 10, V(0, -(y3 + J3_BRG[2] / 2), 0))), m.BEARING)
 
     # --- link 2: one-piece Denso-style upper arm -----------------------------------------
@@ -1029,16 +1380,51 @@ def build(doc_name=DOC):
     upper = arm_profile(0, 1, 0).extrude(V(0, 2 * PLATE_OUT, 0)).translated(V(0, -PLATE_OUT, 0))
     # Round the outer edges now, while the slab is a plain extrusion; after the cuts below,
     # OCC fails or returns a broken solid on the spline sides.
-    upper = upper.makeFillet(1, [e for e in upper.Edges if on_plane(e, y=PLATE_OUT) or on_plane(e, y=-PLATE_OUT)])
+    if ARM_OUTER_R:
+        upper = upper.makeFillet(ARM_OUTER_R, [e for e in upper.Edges if on_plane(e, y=PLATE_OUT) or on_plane(e, y=-PLATE_OUT)])
     c0, n0, h0 = arm_centre(ARM_T0)
     tg = V(n0.z, 0, -n0.x)                                                       # along the arm
     if tg.dot(arm_centre(1)[0] - c0) < 0:
         tg = tg * -1
-    # half-plane on the J2 side of the cover's lower-end centre, minus that end's disk
-    trim = Part.Face(Part.makePolygon([c0 + n0 * 300, c0 + n0 * 300 - tg * 300, c0 - n0 * 300 - tg * 300,
-                                       c0 - n0 * 300, c0 + n0 * 300])).cut(
-        Part.Face(Part.Wire(Part.makeCircle(h0, c0, Y))))
     tp = turret_pocket(clear=0.1)        # turret cheeks' sweep over J2; 0.1 so the arms' r29 end arc stays whole (0.13 gap at J2 -95)
+    T0 = None
+    if PLATE_END_HULL:
+        # keep = hull of the end circle (c0, h0) and a PLATE_END_RF round tangent to the
+        # straight front edge, open upward; the round sits as low as the cheeks allow
+        A, Bf, m_ = front_line(0) if ARM_FRONT_LINE else (None, None, None)
+        def keep_for(zf):
+            if ARM_FRONT_LINE:
+                u_ = Bf - A
+                cf = A + u_ * ((zf - A.z) / u_.z) - m_ * PLATE_END_RF
+            else:
+                c_, n_, h_ = arm_centre(0.5)
+                cf = V(c_.x + h_ - PLATE_END_RF, 0, zf)
+            d = cf - c0
+            L = d.Length
+            du = d * (1 / L)
+            w = V(du.z, 0, -du.x)
+            if w.z > 0:
+                w = w * -1                                      # the lower side
+            k = (h0 - PLATE_END_RF) / L
+            nn = du * k + w * math.sqrt(1 - k * k)
+            t0, t1 = c0 + nn * h0, cf + nn * PLATE_END_RF
+            top = max(c0.z, cf.z) + 300
+            poly = Part.Face(Part.makePolygon([t0, t1, cf, V(cf.x + PLATE_END_RF, 0, cf.z), V(cf.x + PLATE_END_RF, 0, top),
+                                               V(c0.x - h0, 0, top), V(c0.x - h0, 0, c0.z), c0, t0]))
+            K = poly.fuse([Part.Face(Part.Wire(Part.makeCircle(h0, c0, Y))),
+                           Part.Face(Part.Wire(Part.makeCircle(PLATE_END_RF, cf, Y)))]).removeSplitter()
+            return K, t0, cf
+        for zf in range(int(c0.z) - 40, int(c0.z) + 40):
+            K, T0, cf = keep_for(zf)
+            if K.distToShape(tp)[0] >= PLATE_END_CLEAR:
+                break
+        log("upper arm plate ends: front round r%s at (%.1f, %.1f), clear of the cheek sweep by %.1f" % (PLATE_END_RF, cf.x, cf.z, K.distToShape(tp)[0]))
+        trim = Part.Face(Part.makePolygon([V(-300, 0, -300), V(300, 0, -300), V(300, 0, 600), V(-300, 0, 600), V(-300, 0, -300)])).cut(K)
+    else:
+        # half-plane on the J2 side of the cover's lower-end centre, minus that end's disk
+        trim = Part.Face(Part.makePolygon([c0 + n0 * 300, c0 + n0 * 300 - tg * 300, c0 - n0 * 300 - tg * 300,
+                                           c0 - n0 * 300, c0 + n0 * 300])).cut(
+            Part.Face(Part.Wire(Part.makeCircle(h0, c0, Y))))
     # One fused cutter per side (trim + cheek clearance cylinder + turret pocket), so the
     # arms' inner faces at |y| = SPINE_Y come out as single faces, not split along the
     # cutters' seams (refine can't merge those afterwards).
@@ -1050,25 +1436,42 @@ def build(doc_name=DOC):
     # 1 mm round on the plates' lower-end arc (the trim disk) where it meets the outer faces.
     # makeFillet fails there (the arc runs into the outer-edge fillets), so cut it instead:
     # a quarter-round ring revolved about the disk axis over the J2-side half.
+    dirv, angs = n0, (180, -180)
+    if T0 is not None:                    # only the arc from the back edge round to the tangent line
+        dirv = (T0 - c0) * (1 / h0)
+        a = math.degrees(math.acos(max(-1.0, min(1.0, dirv.dot(n0 * -1)))))
+        angs = sorted((a, -a, 360 - a, a - 360), key=abs)
+
     def end_round(yo, sy, r=1.0):
-        P = lambda rho, dy: c0 + n0 * rho + V(0, yo + sy * dy, 0)
+        P = lambda rho, dy: c0 + dirv * rho + V(0, yo + sy * dy, 0)
         k = math.sqrt(0.5)
         f = Part.Face(Part.Wire([Part.LineSegment(P(h0 - r, 0.5), P(h0 - r, 0)).toShape(),
                                  Part.Arc(P(h0 - r, 0), P(h0 - r + r * k, -r + r * k), P(h0, -r)).toShape(),
                                  Part.LineSegment(P(h0, -r), P(h0 + 0.5, -r)).toShape(),
                                  Part.LineSegment(P(h0 + 0.5, -r), P(h0 + 0.5, 0.5)).toShape(),
                                  Part.LineSegment(P(h0 + 0.5, 0.5), P(h0 - r, 0.5)).toShape()]))
-        for ang in (180, -180):
+        for ang in angs:
             ring = f.revolve(c0, Y, ang)
             if ring.isInside(c0 - tg * (h0 + 0.2) + V(0, yo - sy * 0.2, 0), 1e-6, True):
                 return ring
-    for sy in (1, -1):
-        upper = upper.cut(end_round(sy * PLATE_OUT, sy))
+    for sy in ((1, -1) if ARM_OUTER_R else ()):
+        upper = upper.cut(end_round(sy * PLATE_OUT, sy, ARM_OUTER_R))
+    global PLATE_XZ
+    PLATE_XZ = None
+    if COVER_FOLLOWS_PLATE:
+        # the fork plate's side outline (below the 1 mm face rounds), in the y = 0 plane
+        ws = [w for w in upper.slice(Y, PLATE_OUT - 1.5) if w.isClosed()]
+        if ws:
+            PLATE_XZ = max((Part.Face(w) for w in ws), key=lambda f: f.Area).translated(V(0, -(PLATE_OUT - 1.5), 0))
+            log("upper arm plate outline: %.0f mm2, %d edges" % (PLATE_XZ.Area, len(PLATE_XZ.Edges)))
+        else:
+            log("upper arm plate outline: slice failed, covers fall back to the arm band")
     # Crotch: one smooth cut - the elbow's swept pocket, notches filled and fitted with
     # a spline, its ends rounded so the floor blends into the arms' inner faces with a
     # true fillet; then its front/back edges rounded too.
     pk = elbow_pocket(elbow, smooth=8)
     try:
+        if not CROTCH_FILLET: raise ValueError("crotch fillet off")
         pf = pk.makeFillet(CROTCH_FILLET, [e for e in pk.Edges if on_plane(e, y=PLATE_IN) or on_plane(e, y=-PLATE_IN)])
         # a fillet can come back valid but inside out (volume of everything else): only
         # take it if it is a slightly bigger version of the pocket
@@ -1079,12 +1482,87 @@ def build(doc_name=DOC):
     except Exception:
         pass
     upper = checked_cut(upper, pk, "upper arm crotch")
+    hub_seams = []
+    if CROTCH_HUB_ARC:
+        # Behind J2 the crotch floor stands above the hub circle. Bring it down to the arc:
+        # the floor follows the arc from the back face (tangent there) to Q, then one smooth
+        # curve (cubic Hermite, tangent to the arc at Q and to the floor at F) into the floor.
+        R = J2_HUB_R
+        sec = max((Part.Face(w) for w in upper.slice(Y, 0) if w.isClosed()), key=lambda f: f.Area)
+        q = [p for p in sec.OuterWire.discretize(Distance=0.25) if p.z > 30 and -30 < p.x < 30]
+        q.sort(key=lambda p: p.x)
+
+        def floor_at(x):
+            for a, b in zip(q, q[1:]):
+                if a.x <= x <= b.x and b.x > a.x:
+                    return a.z + (b.z - a.z) * (x - a.x) / (b.x - a.x)
+            return None
+
+        def herm(P0, D0, P1, D1, n=40):
+            out = []
+            for k in range(n + 1):
+                t = k / n
+                h00, h10, h01, h11 = 2 * t ** 3 - 3 * t ** 2 + 1, t ** 3 - 2 * t ** 2 + t, -2 * t ** 3 + 3 * t ** 2, t ** 3 - t ** 2
+                out.append(P0 * h00 + D0 * h10 + P1 * h01 + D1 * h11)
+            return out
+
+        best = None
+        for fx in [x * 0.5 for x in range(-36, 1)]:                # F between x -18 and 0
+            fz = floor_at(fx)
+            fz2 = floor_at(fx + 0.5)
+            if fz is None or fz2 is None:
+                continue
+            F = V(fx, 0, fz)
+            tF = V(0.5, 0, fz2 - fz)
+            tF.normalize()
+            for ai in range(0, 41):
+                al = math.radians(100 + ai * 1.25)                  # Q on the arc, 100..150 deg
+                Q = V(R * math.cos(al), 0, R * math.sin(al))
+                tQ = V(math.sin(al), 0, -math.cos(al))              # along the arc, toward the top
+                L = (F - Q).Length
+                pts = herm(Q, tQ * L, F, tF * L)
+                ok = all(b.x > a.x for a, b in zip(pts, pts[1:]))
+                ok = ok and all(math.hypot(p.x, p.z) >= R - 0.05 for p in pts)
+                ok = ok and all((floor_at(p.x) or -1e9) >= p.z - 0.05 for p in pts[1:-1])
+                if not ok:
+                    continue
+                turn = 0.0                                          # sharpest bend (deg per mm)
+                for a, b, c in zip(pts, pts[1:], pts[2:]):
+                    u1, u2 = b - a, c - b
+                    ang = math.degrees(math.atan2(u1.x * u2.z - u1.z * u2.x, u1.dot(u2)))
+                    turn = max(turn, abs(ang) / max(1e-6, (u1.Length + u2.Length) / 2))
+                if best is None or turn < best[0]:
+                    best = (turn, Q, F, pts)
+        if best is not None:
+            turn, Q, F, pts = best
+            cur = Part.BSplineCurve()
+            cur.interpolate(pts[::-1])
+            edges = [Part.LineSegment(V(-80, 0, 0), V(-80, 0, 120)).toShape(), Part.LineSegment(V(-80, 0, 120), V(F.x, 0, 120)).toShape(),
+                     Part.LineSegment(V(F.x, 0, 120), F).toShape(), cur.toShape(),
+                     Part.LineSegment(Q, V(0, 0, 0)).toShape(), Part.LineSegment(V(0, 0, 0), V(-80, 0, 0)).toShape()]
+            tool = Part.Face(Part.Wire(edges)).cut(Part.Face(Part.Wire(Part.makeCircle(R, V(0, 0, 0), Y))))
+            upper = checked_cut(upper, tool.extrude(V(0, 2 * PLATE_IN, 0)).translated(V(0, -PLATE_IN, 0)), "spine to the J2 hub arc")
+            hub_seams = [(Q.x, Q.z), (F.x, F.z)]
+            if PLATE_END_FLOW:
+                dF = pts[-1] - pts[-2]
+                dF.normalize()
+                upper = plate_end_flow(upper, F, dF)
+            if PLATE_BACK_LINE:
+                upper = plate_back_line(upper)
+            if PLATE_STRAP_CUT and T0 is not None:
+                upper = plate_strap_cut(upper, T0)
+            if FORK_CORNER_CH:
+                upper = fork_corners(upper)
+            log("spine floor on the J2 hub arc to (%.1f, %.1f), smooth curve into the crotch at (%.1f, %.1f), max bend %.1f deg/mm" % (Q.x, Q.z, F.x, F.z, turn))
+        else:
+            log("spine hub arc: blend NOT found")
     edge_fb = [e for e in upper.Edges if 40 < e.BoundBox.ZMin and e.BoundBox.ZMax < 120 and e.BoundBox.XLength < 1.5
                and e.BoundBox.ZLength < 1.5 and abs(e.BoundBox.YLength - 2 * PLATE_IN) < 12]
     # Round them one at a time (largest radius that works), so one failure can't silently
     # drop the others: the back one is where the spine's back face meets the crotch floor.
     spots = [(e.BoundBox.Center.x, e.BoundBox.Center.z) for e in edge_fb]
-    for x, z in spots:
+    spots = [(x, z) for x, z in spots if all(math.hypot(x - a, z - b) > 2 for a, b in hub_seams)]   # tangent seams: nothing to round
+    for x, z in (spots if CROTCH_EDGE_R else []):
         done = False
         for rad in CROTCH_EDGE_R:
             es = [e for e in upper.Edges if abs(e.BoundBox.Center.x - x) < 0.5 and abs(e.BoundBox.Center.z - z) < 0.5
@@ -1104,11 +1582,13 @@ def build(doc_name=DOC):
                 log("crotch edge (x %.1f, z %.1f): fillet failed, rounded r6 in 2D instead" % (x, z))
             else:
                 log("crotch edge (x %.1f, z %.1f): fillet FAILED" % (x, z))
+    if CROTCH_FRONT_CH and spots:
+        upper = crotch_front_chamfer(upper, max(spots), CROTCH_FRONT_CH)
     upper = checked_cut(checked_cut(upper, e2h, "upper arm J2 bore"), e3o, "upper arm J3 seat")
     if not USE_ACTUATORS:
         upper = upper.cut(ycyl(18.2, 8.5, V(0, -PLATE_IN - 4.25, L2)))           # J3 support seat
     # Pockets for the flush covers: cover outline + 0.3 mm, 2.5 mm deep in each arm face.
-    pocket = arm_profile(ARM_T0, 1, 3.5 - 0.3).extrude(V(0, 2.51, 0))
+    pocket = cover_outline(3.5 - 0.3).extrude(V(0, 2.51, 0))
     upper = checked_cut(checked_cut(upper, pocket.translated(V(0, PLATE_OUT - 2.5, 0)), "cover pocket +Y"), pocket.translated(V(0, -PLATE_OUT - 0.01, 0)), "cover pocket -Y")
     if HOLLOW_UPPER:
         upper = hollow_upper_arm(upper, e2h, e3o)
@@ -1124,13 +1604,14 @@ def build(doc_name=DOC):
         y0, y1 = J2_BARREL_Y - 0.5, SLOT_Y + 1 + J2_BRG[2]
         upper = upper.fuse(ycyl(J2_BRG[0], y1 - y0, V(0, -(y0 + y1) / 2, 0)))
         add_shape(doc, l2, "J2_support_inner", ycyl(sum(J2_BRG[:2]) / 2 - 0.15, J2_BRG[2], V(0, -(SLOT_Y + 1 + J2_BRG[2] / 2), 0)).cut(ycyl(J2_BRG[0], 10, V(0, -(SLOT_Y + 1 + J2_BRG[2] / 2), 0))), m.BEARING)
-    add_shape(doc, l2, "UpperArm", upper, STAINLESS)   # (no refine: on the FHA-11C hub arm it left a solid later booleans fail on)
+    add_shape(doc, l2, "UpperArm", upper, ARM_FINISH)   # (no refine: on the FHA-11C hub arm it left a solid later booleans fail on)
     if not USE_ACTUATORS:
         add_shape(doc, l2, "J3_support",
                   ycyl(18, 7, V(0, -PLATE_IN - 4.5, L2)).cut(ycyl(12.15, 9, V(0, -PLATE_IN - 4.5, L2))), m.BEARING)
     # Long pill covers following the arm's curve, recessed flush, KLiK logo on each.
     t0 = ARM_T0
-    cov = arm_profile(t0, 1, 3.5).extrude(V(0, 2.5, 0)).translated(V(0, -1.25, 0))
+    cov_xz = cover_outline(3.5)
+    cov = cov_xz.extrude(V(0, 2.5, 0)).translated(V(0, -1.25, 0))
     try:
         cf = cov.makeFillet(0.8, cov.Edges)
         if cf.isValid():
@@ -1138,7 +1619,7 @@ def build(doc_name=DOC):
     except Exception:
         pass
     add_shape(doc, l2, "Upper_covers", cov.translated(V(0, PLATE_OUT - 1.25, 0)).fuse(       # flush in the arm faces
-        cov.translated(V(0, -PLATE_OUT + 1.25, 0))), COVER)
+        cov.translated(V(0, -PLATE_OUT + 1.25, 0))), COVER_FINISH)
     zo = PLATE_OUT + 0.1
     tm = (t0 + 1) / 2
     cm, nm, _ = arm_centre(tm)
@@ -1150,7 +1631,27 @@ def build(doc_name=DOC):
         c, n, h = arm_centre(t)
         r = h - 3.5 - 5
         sp += [V(c.x + n.x * r, zo - 0.1, c.z + n.z * r), V(c.x - n.x * r, zo - 0.1, c.z - n.z * r)]
-    sp = [V(p.x, PLATE_OUT, p.z) for p in sp]                                    # flush countersunk heads on the cover face
+    if PLATE_XZ is not None:
+        # keep each screw >= 5 mm inside the new cover edge: pull it onto that inset outline if not
+        try:
+            inner = cov_xz.makeOffset2D(-5)
+            sp = [p if inner.isInside(V(p.x, 0, p.z), 1e-6, True) else
+                  inner.OuterWire.distToShape(Part.Vertex(V(p.x, 0, p.z)))[1][0][0] for p in sp]
+            if math.hypot(sp[0].x - sp[1].x, sp[0].z - sp[1].z) < 20:
+                # lower pair crowded (narrow strap-cut cover): spread them across the cover's
+                # lower end, on the 5 mm inset line 8 mm above its bottom
+                # (raised until both are >= 8 mm off the split bolts, whose heads sit under the covers)
+                for dz in range(8, 40):
+                    zl = inner.BoundBox.ZMin + dz
+                    cut = inner.OuterWire.section(Part.makeLine(V(-200, 0, zl), V(200, 0, zl)))
+                    xs = sorted(v.Point.x for v in cut.Vertexes)
+                    if len(xs) >= 2 and all(math.hypot(x - bx, zl - bz) >= 8 for x in (xs[0], xs[-1]) for bx, bz in (UA_SPLIT_COVER if SPLIT_UPPER else [])):
+                        sp[0], sp[1] = V(xs[-1], sp[0].y, zl), V(xs[0], sp[1].y, zl)
+                        log("upper cover screws: lower pair spread to x %.1f / %.1f at z %.1f" % (xs[-1], xs[0], zl))
+                        break
+        except Exception as e:
+            log("upper cover screws: inset check failed: %s" % e)
+    sp = [V(p.x, PLATE_OUT, p.z) for p in sp]                                  # flush countersunk heads on the cover face
     spf = [V(p.x, -p.y, p.z) for p in sp]
     uc = doc.getObject("Upper_covers")
     uc.Shape = uc.Shape.cut(countersinks(sp, Y, 2.5)).cut(countersinks(spf, -Y, 2.5))
@@ -1167,10 +1668,10 @@ def build(doc_name=DOC):
         hw = 15 + ACT_CLEAR
         elbow = elbow.cut(box(J4_GAP_X + 1 - x_a, 2 * hw, ELBOW_LID_Z - J4Z, V(x_a, -hw, J4Z)))
         lidbox = box(J4_GAP_X + 1 - x_a, 2 * ELBOW_HW + 10, 40, V(x_a, -ELBOW_HW - 5, ELBOW_LID_Z))
-        add_shape(doc, l3, "Elbow_lid", elbow.common(lidbox), STAINLESS)
+        add_shape(doc, l3, "Elbow_lid", elbow.common(lidbox), ARM_FINISH)
         elbow = elbow.cut(lidbox)
         lid_sy = (hw + ELBOW_HW) / 2                                             # screws into the side walls
-    add_shape(doc, l3, "Elbow", elbow, STAINLESS)
+    add_shape(doc, l3, "Elbow", elbow, ARM_FINISH)
     ep = [V(x, sy * lid_sy, J4Z + ELBOW_HH) for i in range(3) for x in (-ELBOW_BACK + ELBOW_R + 5 + i * (J4_GAP_X - 6 + ELBOW_BACK - ELBOW_R - 5) / 2,) for sy in (1, -1)]
     lid = doc.getObject("Elbow_lid") if USE_ACTUATORS else doc.getObject("Elbow")
     lid.Shape = lid.Shape.cut(cbores(ep, Z, hole_r=1.7, hole_len=(J4Z + ELBOW_HH - 3.3 - ELBOW_LID_Z) if USE_ACTUATORS else 0))   # counterbore + clearance through the lid
@@ -1204,20 +1705,18 @@ def build(doc_name=DOC):
         prof = fuse(box(J5X - xf, 2 * FW, 2 * FH, V(xf, -FW, -FH)), ycyl(FH, 2 * FW, V(J5X, 0, 0))).removeSplitter()
     fa_h = lambda x: FH + FA_SLOPE * (x - xf)               # forearm half height along x (the tapered part)
     side_edges = [e for e in prof.Edges if (on_plane(e, y=FW) or on_plane(e, y=-FW)) and e.BoundBox.XMax > xf + 0.5]
+    forearm = prof.makeChamfer(EDGE_CH, side_edges)        # chamfer theme (2026-11-13; was an r7 round)
     try:
-        forearm = prof.makeFillet(7, side_edges)
-    except Exception:
-        forearm = prof.makeChamfer(5, side_edges)
-    try:
-        forearm = forearm.makeFillet(1.5, [e for e in forearm.Edges if on_plane(e, x=xf)])
+        forearm = forearm.makeChamfer(1.5, [e for e in forearm.Edges if on_plane(e, x=xf)])
     except Exception:
         pass
     # Elbow-width collar then a taper out to the full forearm width (as in the
     # photos): keeps the wide forearm clear of the upper-arm side plates when J3 folds.
     xc, xt = xf + COLLAR4_L, xf + COLLAR4_L + TAPER4_L
     hz = fa_h(xc) + 0.01                                  # just over the forearm so top/bottom stay its own faces
-    env = Part.Face(rrect_yz(x0 - 1, ELBOW_HW, hz, 5)).extrude(V(xc - x0 + 1, 0, 0))
-    env = env.fuse(Part.makeLoft([rrect_yz(xc, ELBOW_HW, hz, 5), rrect_yz(xt, FW, fa_h(xt) + 0.01, 7)], True, True))
+    cr = EDGE_CH                                          # collar + taper corners chamfered like the forearm/elbow (2026-11-13; were r5 -> r7)
+    env = Part.Face(crect_yz(x0 - 1, ELBOW_HW, hz, cr)).extrude(V(xc - x0 + 1, 0, 0))
+    env = env.fuse(Part.makeLoft([crect_yz(xc, ELBOW_HW, hz, cr), crect_yz(xt, FW, fa_h(xt) + 0.01, cr)], True, True))
     env = env.fuse(box(J5X + RE + 10 - xt, 2 * FW + 10, 2 * RE + 10, V(xt, -FW - 5, -RE - 5))).removeSplitter()
     fc0 = forearm.common(env)
     forearm = fc0 if fc0.Volume > 1 else forearm.common(env, 0.001)   # the steep taper loft can defeat the plain boolean
@@ -1261,10 +1760,10 @@ def build(doc_name=DOC):
         forearm = forearm.cut(ycyl(J5_BRG[1], y_b - y_a, V(J5X, (y_a + y_b) / 2, 0)))
         add_shape(doc, l4, "J5_support_outer", ycyl(J5_BRG[1], J5_BRG[2], V(J5X, y5 + J5_BRG[2] / 2, 0)).cut(ycyl(sum(J5_BRG[:2]) / 2 + 0.15, 10, V(J5X, y5 + J5_BRG[2] / 2, 0))), m.BEARING)
     rear = box(xc - x0 + 1, 2 * FW + 10, 2 * RE + 10, V(x0 - 1, -FW - 5, -RE - 5))
-    add_shape(doc, l4, "Forearm_collar", forearm.common(rear), STAINLESS)
-    add_shape(doc, l4, "Forearm", forearm.cut(rear), STAINLESS)
+    add_shape(doc, l4, "Forearm_collar", forearm.common(rear), ARM_FINISH)
+    add_shape(doc, l4, "Forearm", forearm.cut(rear), ARM_FINISH)
     ring = box(2, 2 * ELBOW_HW, 2 * ELBOW_HH, V(x0, -ELBOW_HW, -ELBOW_HH))
-    ring = ring.makeChamfer(3, [e for e in ring.Edges if is_along(e, X)])
+    ring = ring.makeChamfer(EDGE_CH, [e for e in ring.Edges if is_along(e, X)])
     add_shape(doc, l4, "Ring4", ring.cut(e4o), m.DARK)
     fc = hull_xz(V(COVER_X[0], 0, 0), COVER_X[2], V(COVER_X[1], 0, 0), COVER_X[2], 2.3)
     fc = soft(fc, 0.8)
@@ -1282,17 +1781,21 @@ def build(doc_name=DOC):
         ytop = DOME_TOP
     else:
         covers = covers.fuse(fc.translated(V(0, FW - 0.85, 0)))
-    add_shape(doc, l4, "Forearm_covers", covers, COVER)
+    add_shape(doc, l4, "Forearm_covers", covers, COVER_FINISH)
     xl = (COVER_X[0] + COVER_X[1]) / 2
-    lf = klogo(5, 0.6, V(xl, ytop + 0.05, 0), Z, Y)
+    if OK_LOGO:      # mark only on the small oval covers
+        add_ok_logo(doc, l4, "Logo_forearm", [ok_logo(15, 0.6, V(xl, ytop, 0), Z, Y), ok_logo(15, 0.6, V(xl, -FW - 0.3, 0), Z, -Y)])   # halved 2026-11-13 (was 30; turret 46 -> 23)
+        lf = None
+    else:
+        lf = klogo(5, 0.6, V(xl, ytop + 0.05, 0), Z, Y)
     if lf:
         add_shape(doc, l4, "Logo_forearm", lf.fuse(klogo(5, 0.6, V(xl, -FW - 0.35, 0), Z, -Y)), LOGO)
 
     # --- link 5: wrist drum + block -------------------------------------------------------
     drum5 = ycyl(WRIST_R, 2 * WRIST_Y, V(0, 0, 0))
     blk = box(WRIST, 2 * WRIST_BY, 2 * WRIST_BZ - 1, V(0, -WRIST_BY, -WRIST_BZ + 0.5))
-    blk = soft(blk, 3, [e for e in blk.Edges if is_along(e, X)])
-    wrist = soft(drum5, 2).fuse(blk).removeSplitter()
+    blk = bevel(blk, EDGE_CH, [e for e in blk.Edges if is_along(e, X)])     # chamfer theme (2026-11-13; was r3)
+    wrist = bevel(drum5, 2).fuse(blk).removeSplitter()                      # (was r2)
     wrist = wrist.cut(cyl(12.6, 8, V(WRIST - 6, 0, 0), X))
     if not USE_ACTUATORS:
         wrist = wrist.fuse(ycyl(3.2, J5_GAP_Y + 3.5 - WRIST_Y + 1, V(0, (J5_GAP_Y + 3.5 + WRIST_Y - 1) / 2, 0)))   # support-bearing stub
@@ -1316,7 +1819,7 @@ def build(doc_name=DOC):
                 cap = cap.fuse(ycyl(J5_BRG[0] + 2.5, y5 - 28.5, V(0, (28.5 + y5) / 2, 0))).fuse(ycyl(J5_BRG[0], J5_BRG[2], V(0, y5 + J5_BRG[2] / 2, 0)))
                 cap = cap.cut(ycyl(4, 30, V(0, 30, 0)))
                 add_shape(doc, l5, "J5_support_inner", ycyl(sum(J5_BRG[:2]) / 2 - 0.15, J5_BRG[2], V(0, y5 + J5_BRG[2] / 2, 0)).cut(ycyl(J5_BRG[0], 10, V(0, y5 + J5_BRG[2] / 2, 0))), m.BEARING)
-            add_shape(doc, l5, "J5_cap", cap.removeSplitter(), STAINLESS)
+            add_shape(doc, l5, "J5_cap", cap.removeSplitter(), ARM_FINISH)
         if LIGHTEN:
             # pockets in the drum ring from its -Y face (hidden: it faces the forearm's far wall):
             # 3 mm outer skin, 2 mm round the J5 actuator, solid where the block joins (x > 8), 6 ribs
@@ -1331,9 +1834,9 @@ def build(doc_name=DOC):
             if pk:
                 wrist = checked_cut(wrist, soft(Part.makeCompound(pk).translated(V(0, -0.01, 0)), 1.5) if False else Part.makeCompound(pk).translated(V(0, -0.01, 0)), "wrist drum pockets")
         nosebox = box(20, 100, 100, V(WRIST - NOSE_T, -50, -50))
-        add_shape(doc, l5, "Wrist_nose", wrist.common(nosebox), STAINLESS)
+        add_shape(doc, l5, "Wrist_nose", wrist.common(nosebox), ARM_FINISH)
         wrist = wrist.cut(nosebox).cut(m.moved(af.prism(ACTUATORS[5][0], ACT_CLEAR, -49.5, 10), ACT_PL[6]))
-    add_shape(doc, l5, "Wrist", wrist, STAINLESS)
+    add_shape(doc, l5, "Wrist", wrist, ARM_FINISH)
 
     # --- link 6: stepped tool flange ----------------------------------------------------------
     flange = fuse(cyl(12, 6, V(-6, 0, 0), X), cyl(16.5, 6, V(0, 0, 0), X),
@@ -1359,6 +1862,97 @@ def build(doc_name=DOC):
     return doc
 
 
+def corner_tool_y(p, t1, t2, c, y_len, kind="chamfer"):
+    """Material to remove at a convex corner along Y: p = corner point (at the start y),
+    t1/t2 = unit in-face directions away from the edge (in XZ), y_len = signed extrusion.
+    chamfer: triangle with legs c. fillet: the region between the corner and a radius-c arc
+    tangent to both faces (any corner angle)."""
+    if kind == "fillet":
+        th = math.acos(max(-1.0, min(1.0, t1.dot(t2))))
+        a1, a2 = p + t1 * (c / math.tan(th / 2)), p + t2 * (c / math.tan(th / 2))
+        bis = (t1 + t2); bis.normalize()
+        ctr = p + bis * (c / math.sin(th / 2))
+        quad = Part.Face(Part.makePolygon([p, a1, ctr, a2, p])).extrude(V(0, y_len, 0))
+        disk = Part.Face(Part.Wire(Part.makeCircle(c, ctr, V(0, 1, 0)))).extrude(V(0, y_len, 0))
+        return quad.cut(disk)
+    return Part.Face(Part.makePolygon([p, p + t1 * c, p + t2 * c, p])).extrude(V(0, y_len, 0))
+
+
+def prism_chamfer_y(shape, x, z, c, side, label, kind="chamfer"):
+    """Chamfer (legs c) or fillet (radius c) the straight Y-direction edge(s) at (x, z) on the
+    y-`side` of `shape` by cutting a profile along Y (makeChamfer fails on some fork-plate
+    corners). Checks the removed volume; returns the shape unchanged (logged) if the edge is
+    missing or the cut is bad."""
+    edges = [e for e in shape.Edges if e.BoundBox.XLength < 0.01 and e.BoundBox.ZLength < 0.01
+             and e.BoundBox.YLength > 0.5 and abs(e.BoundBox.XMin - x) < 0.05 and abs(e.BoundBox.ZMin - z) < 0.05
+             and side * e.BoundBox.Center.y > 0]
+    if not edges:
+        log("%s %s: edge at x %.2f z %.2f not found, left sharp" % (label, kind, x, z))
+        return shape
+    out = shape
+    for e in edges:
+        q = e.valueAt(0.5 * (e.FirstParameter + e.LastParameter))
+        dirs = []
+        for f in shape.ancestorsOfType(e, Part.Face):
+            n = f.normalAt(*f.Surface.parameter(q))
+            t = V(-n.z, 0, n.x)                             # in-face, perpendicular to the Y edge
+            t.normalize()
+            if f.distToShape(Part.Vertex(q + t * 0.5))[0] > f.distToShape(Part.Vertex(q - t * 0.5))[0]:
+                t = -t
+            dirs.append(t)
+        if len(dirs) != 2:
+            log("%s %s: %d faces on the edge, left sharp" % (label, kind, len(dirs)))
+            continue
+        b = e.BoundBox
+        y0, y1 = (b.YMin, b.YMax + 1) if side > 0 else (b.YMax, b.YMin - 1)   # +1 clears the outer-face outline chamfer
+        tool = corner_tool_y(V(b.XMin, y0, b.ZMin), dirs[0], dirs[1], c, y1 - y0, kind)
+        r = out.cut(tool)
+        dv = out.Volume - r.Volume
+        if r.isValid() and len(r.Solids) == len(out.Solids) and 0 < dv <= tool.Volume + 0.1:
+            log("%s %s %g: removed %.1f mm3" % (label, kind, c, dv))
+            out = r
+        else:
+            log("%s %s %g rejected (valid %s, dV %.1f)" % (label, kind, c, r.isValid(), dv))
+    return out
+
+
+def fork_corners(upper):
+    """FORK_CORNER_CH breaks on the fork plates (both sides), applied before the covers so that
+    PLATE_XZ (the outline the covers, their pockets and the outer-face outline chamfer follow)
+    gets the same corner (user 2026-11-14: keep cover + edge chamfer consistent with it)."""
+    global PLATE_XZ
+    for (cx, cz), c, kind in FORK_CORNER_CH:
+        for side in (-1, 1):
+            upper = prism_chamfer_y(upper, cx, cz, c, side, "fork corner %s" % "LR"[side > 0], kind)
+        if PLATE_XZ is None:
+            continue
+        py = PLATE_XZ.BoundBox.YMin
+        vs = [v for v in PLATE_XZ.Vertexes if math.hypot(v.X - cx, v.Z - cz) < 0.05]
+        if not vs:
+            log("fork corner: no PLATE_XZ vertex at (%.2f, %.2f); covers keep the sharp corner" % (cx, cz))
+            continue
+        v = vs[0]
+        dirs = []
+        for e in PLATE_XZ.OuterWire.Edges:
+            for par, sgn in ((e.FirstParameter, 1), (e.LastParameter, -1)):
+                if e.valueAt(par).distanceToPoint(v.Point) < 0.05:
+                    t = e.tangentAt(par) * sgn
+                    t.y = 0
+                    t.normalize()
+                    dirs.append(t)
+        if len(dirs) != 2:
+            log("fork corner: PLATE_XZ vertex has %d edges, left sharp" % len(dirs))
+            continue
+        tool = corner_tool_y(V(v.X, py - 1, v.Z), dirs[0], dirs[1], c, 2, kind)
+        f = PLATE_XZ.cut(tool)
+        if f.Faces and abs(f.Faces[0].Area - PLATE_XZ.Area) < tool.Volume:
+            log("fork corner: PLATE_XZ %s %g, area %.1f -> %.1f mm2" % (kind, c, PLATE_XZ.Area, f.Faces[0].Area))
+            PLATE_XZ = f.Faces[0]
+        else:
+            log("fork corner: PLATE_XZ cut failed, covers keep the sharp corner")
+    return upper
+
+
 def split_upper_arm(doc, l2):
     """Split UpperArm on y = 0 into UpperArm_L (-Y) and UpperArm_R (+Y), with M3 socket cap
     screws from the -Y side (counterbored, clearance in L, tapped in R) and two dowels."""
@@ -1380,10 +1974,40 @@ def split_upper_arm(doc, l2):
     tc = Part.makeCompound(tools)
     neg = cut_pockets(shape.common(box(300, 150, 400, V(-150, -150, -100))), tc, "upper arm split holes L", pre_refine=False)
     pos = cut_pockets(shape.common(box(300, 150, 400, V(-150, 0, -100))), tc, "upper arm split holes R", pre_refine=False)
+    # 2026-11-13: merge the coplanar faces the CROTCH_HUB_ARC tool outline leaves on the fork
+    # plates' inner faces (stray seam at x -5.5 / z 120). removeSplitter mutated its source in an
+    # earlier try (both halves went invalid), so refine a copy and keep the original on failure.
+    for nm in ("neg", "pos"):
+        h = locals()[nm]
+        r = refine(h.copy())
+        if r is not h and h.isValid() and r.isValid():
+            log("upper arm %s refined: %d -> %d faces, dV %.1f mm3" % (nm, len(h.Faces), len(r.Faces), r.Volume - h.Volume))
+            if nm == "neg":
+                neg = r
+            else:
+                pos = r
+    # 2026-11-13 (user): 1 mm round on the outline of each fork plate's outer face (y = +-PLATE_OUT),
+    # done on the finished halves (the outline only exists after the strap/back-line cuts)
+    if PLATE_OUTLINE_CH:
+        def _round_outline(h, yy):
+            fs = [g for g in h.Faces if g.Surface.__class__.__name__ == "Plane" and abs(g.BoundBox.YMin - yy) < 0.01
+                  and abs(g.BoundBox.YMax - yy) < 0.01]
+            if not fs:
+                return h
+            try:
+                r = h.makeChamfer(PLATE_OUTLINE_CH, max(fs, key=lambda g: g.Area).OuterWire.Edges)
+                if r.isValid() and len(r.Solids) == len(h.Solids):
+                    log("plate outline chamfer y %+.1f: dV %.1f mm3" % (yy, r.Volume - h.Volume))
+                    return r
+            except Exception as ex:
+                log("plate outline chamfer y %+.1f failed: %s" % (yy, ex))
+            return h
+        neg = _round_outline(neg, -PLATE_OUT)
+        pos = _round_outline(pos, PLATE_OUT)
     log("upper arm halves valid: L %s R %s" % (neg.isValid(), pos.isValid()))
     doc.removeObject("UpperArm")
-    add_shape(doc, l2, "UpperArm_L", neg, STAINLESS)
-    add_shape(doc, l2, "UpperArm_R", pos, STAINLESS)
+    add_shape(doc, l2, "UpperArm_L", neg, ARM_FINISH)
+    add_shape(doc, l2, "UpperArm_R", pos, ARM_FINISH)
     screws(doc, l2, "Split_screws", heads, -Y)
     add_shape(doc, l2, "Split_dowels", Part.makeCompound([ycyl(1.5, 10, V(x, 0, z)) for x, z in UA_DOWELS]), m.STEEL)
     log("upper arm split: L %.0f R %.0f mm3, %d screws, %d dowels" % (neg.Volume, pos.Volume, len(heads), len(UA_DOWELS)))
@@ -1467,6 +2091,10 @@ def show_panel(doc_name=DOC):
     for sp in joints:
         sp.setDecimals(3)                   # 0.1 deg rounding would put the flange ~0.1 mm off target
     kin = kinematics(doc_name)
+    real_limits = list(kin.limits)
+    free = dock.findChild(QtWidgets.QCheckBox, "FreeLimits")
+    if free is not None:                    # IK follows the panel's "Free" box: any angle within +-180 (J6 +-360)
+        free.toggled.connect(lambda on: setattr(kin, "limits", [(-180.0, 180.0)] * 5 + [(-360.0, 360.0)] if on else real_limits))
 
     box_ = QtWidgets.QGroupBox("Cartesian (IK) - flange in base frame")
     g = QtWidgets.QGridLayout(box_)
@@ -1629,9 +2257,9 @@ def show_panel(doc_name=DOC):
         sp.valueChanged.connect(show_fk)
     for sp in cart:
         sp.valueChanged.connect(solve)
-    grid.addWidget(box_, 7, 0, 1, 3)
-    grid.setRowStretch(7, 0)
-    grid.setRowStretch(8, 1)
+    grid.addWidget(box_, 8, 0, 1, 3)
+    grid.setRowStretch(8, 0)
+    grid.setRowStretch(9, 1)
     show_fk()
     return dock
 
