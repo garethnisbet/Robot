@@ -8,6 +8,7 @@ import {
   kappaToEuler, eulerToKappa, getCompensation, updateVirtualAngles,
   updateChain, pyEulerFromRelQuat, relQuatFromPyEuler,
 } from './kinematics.js';
+import { renderFrame } from './scene.js';
 import { loadDevice } from './device.js';
 import { updateSliders, setIKMode, syncIKSliders, setDeviceOpacity } from './device.js';
 import {
@@ -1239,8 +1240,7 @@ export function handleCommand(data) {
     // Downscaled by default: a full-res canvas is megabytes of base64 and the
     // point here is a readable view, not a print-quality render.
     const maxW = Math.max(64, Math.min(2048, Number(data.maxWidth) || 800));
-    State.orbitControls.update();
-    State.renderer.render(State.scene, State.activeCamera);
+    renderFrame({ transparent: !!data.transparent });
 
     const glCanvas = State.renderer.domElement;
     const scale = Math.min(1, maxW / glCanvas.width);
@@ -1328,7 +1328,7 @@ export function handleCommand(data) {
         getCamera:        { params: '', description: 'Get camera position and target (mm)' },
         setCamera:        { params: 'position?, target?', description: 'Set camera position and/or target (mm)' },
         snapCamera:       { params: 'view', description: 'Snap to axis view (+X,-X,+Y,-Y,+Z,-Z,top,bottom,front,back,left,right,iso)' },
-        captureImage:     { params: 'maxWidth?', description: 'Render one frame and return it as a base64 PNG' },
+        captureImage:     { params: 'maxWidth?, transparent?', description: 'Render one frame and return it as a base64 PNG (transparent: true drops the background)' },
         setFloorCollision:{ params: 'enabled?', description: 'Toggle floor-plane collision checks' },
         // Scene
         getSceneState:    { params: '', description: 'Get full scene state (devices, objects, camera)' },

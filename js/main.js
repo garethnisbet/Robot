@@ -22,7 +22,7 @@ import {
   navCanvas, NAV_AXES, navHitTest,
   navHovered, setNavHovered, renderNavGizmo,
   snapAnim, setSnapAnim, snapClock, easeNavSnap,
-  setFloorSize,
+  setFloorSize, renderFrame,
 } from './scene.js';
 import {
   updateFK, getEEWorldPosition, getEEWorldQuaternion,
@@ -1085,7 +1085,7 @@ stlSelectBtn.addEventListener('click', () => {
 // Floor size slider
 document.getElementById('floorSize').addEventListener('input', (e) => {
   const r = parseFloat(e.target.value);
-  document.getElementById('floorSizeVal').textContent = `${r} m`;
+  document.getElementById('floorSizeVal').textContent = r > 0 ? `${r} m` : 'off';
   setFloorSize(r);
 });
 
@@ -1469,9 +1469,15 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // Screenshot button — composite WebGL canvas with the control panel
+let transparentShots = false;
+document.getElementById('transparentBtn').addEventListener('click', (e) => {
+  transparentShots = !transparentShots;
+  e.currentTarget.textContent = `Transparent BG: ${transparentShots ? 'ON' : 'OFF'}`;
+  e.currentTarget.classList.toggle('active', transparentShots);
+});
+
 document.getElementById('screenshotBtn').addEventListener('click', async () => {
-  State.orbitControls.update();
-  State.renderer.render(State.scene, State.activeCamera);
+  renderFrame({ transparent: transparentShots });
 
   const glCanvas = State.renderer.domElement;
   const out = document.createElement('canvas');
@@ -1480,7 +1486,8 @@ document.getElementById('screenshotBtn').addEventListener('click', async () => {
   const ctx = out.getContext('2d');
   ctx.drawImage(glCanvas, 0, 0, out.width, out.height);
 
-  const panel = document.getElementById('panel');
+  // A transparent shot is meant for dropping into figures, so leave the panel out.
+  const panel = transparentShots ? null : document.getElementById('panel');
   if (panel && typeof html2canvas === 'function') {
     try {
       const scale = glCanvas.width / window.innerWidth;
@@ -1668,7 +1675,7 @@ async function _restoreScene(data) {
   if (data.floorSize != null) {
     setFloorSize(data.floorSize);
     document.getElementById('floorSize').value = data.floorSize;
-    document.getElementById('floorSizeVal').textContent = `${data.floorSize} m`;
+    document.getElementById('floorSizeVal').textContent = data.floorSize > 0 ? `${data.floorSize} m` : 'off';
   }
 
   // Restore camera

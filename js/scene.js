@@ -283,6 +283,11 @@ scene.add(gridPlane);
 
 export function setFloorSize(radius) {
   State.setFloorSize(radius);
+  // Size 0 hides the floor (shadow catcher and grid) entirely.
+  const visible = radius > 0;
+  shadowPlane.visible = visible;
+  gridPlane.visible = visible;
+  if (!visible) return;
   const ext = radius * 2;
 
   shadowPlane.geometry.dispose();
@@ -290,6 +295,17 @@ export function setFloorSize(radius) {
 
   gridPlane.geometry.dispose();
   gridPlane.geometry = new THREE.PlaneGeometry(ext * 2, ext * 2);
+}
+
+// Render one frame for capture. With transparent=true the scene background is
+// dropped for this frame only, so the canvas (alpha: true) reads back with
+// alpha 0 wherever nothing was drawn. The next animate() frame restores it.
+export function renderFrame({ transparent = false } = {}) {
+  State.orbitControls.update();
+  const bg = State.scene.background;
+  if (transparent) State.scene.background = null;
+  State.renderer.render(State.scene, State.activeCamera);
+  State.scene.background = bg;
 }
 
 // ============================================================
