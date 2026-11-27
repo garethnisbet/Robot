@@ -801,7 +801,8 @@ Snap views: `+X`, `-X`, `+Y`, `-Y`, `+Z`, `-Z`, `top`, `bottom`, `front`, `back`
 ```
 Renders one frame and returns it, so a remote client can see the scene without a human
 at the tab. `maxWidth` (64–2048, default 800) bounds the longest edge — a full-resolution
-canvas is megabytes of base64.
+canvas is megabytes of base64. Add `"transparent": true` to drop the scene background, giving a PNG
+with alpha 0 wherever nothing was drawn.
 
 **Scene persistence:**
 ```json

@@ -794,7 +794,8 @@ async def get_collisions() -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def capture_view(view: Optional[str] = None, max_width: int = 800) -> Image:
+async def capture_view(view: Optional[str] = None, max_width: int = 800,
+                       transparent: bool = False) -> Image:
     """Render the current scene and return it as an image.
 
     Use this to actually look at a pose or the end of a trajectory rather than
@@ -804,11 +805,15 @@ async def capture_view(view: Optional[str] = None, max_width: int = 800) -> Imag
         view: optionally snap the camera first — one of +X, -X, +Y, -Y, +Z, -Z,
               top, bottom, front, back, left, right, iso.
         max_width: longest edge of the returned image in pixels.
+        transparent: drop the scene background so the PNG has alpha 0
+              wherever nothing was drawn (the floor grid and shadows still
+              show unless the floor size is set to 0).
     """
     v = viewer()
     if view:
         await v.request({"cmd": "snapCamera", "view": view}, "camera")
-    reply = await v.request({"cmd": "captureImage", "maxWidth": int(max_width)},
+    reply = await v.request({"cmd": "captureImage", "maxWidth": int(max_width),
+                             "transparent": bool(transparent)},
                             "image", timeout=20.0)
     return Image(data=base64.b64decode(reply["data"]), format="png")
 
